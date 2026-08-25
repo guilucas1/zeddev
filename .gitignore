@@ -217,6 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# vsCode Personal configs
+.vscode/settings.json
+
 # Claude
 .claude/
 .mcp.json
