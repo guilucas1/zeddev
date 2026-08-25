@@ -1,11 +1,15 @@
 # Implementation Plan
 
-**Status as of 2026-08-25:** P0 foundation partially landed. `src/` now contains six dependency-free
+**Status as of 2026-08-25:** P0 foundation mostly landed. `src/` now contains eight dependency-free
 workspace packages (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`, `@zeddev/logging`,
-`@zeddev/config`, `@zeddev/testing`), a working test/typecheck toolchain, and 89 passing tests.
-The remaining P0 items — `db`, `queue`, `storage`, container definitions, and the baseline schema —
-all require a running PostgreSQL and are deliberately deferred to the next increment rather than
-stubbed. Verify with `npm run check` before assuming any of the above still holds.
+`@zeddev/config`, `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`) and 143 passing tests, of which
+37 run against a real PostgreSQL. Persistence, migrations, and database-enforced tenant isolation are
+in place and proven by cross-tenant negative tests. The remaining P0 items are `queue`, `storage`, and
+container definitions.
+
+Run `npm run db:up` then `npm run check` before assuming any of the above still holds. `npm run check`
+now *refuses* to pass without a database, because the database-backed suites are where every tenant
+isolation guarantee is verified and a green run without them proves considerably less than it looks.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -94,6 +98,31 @@ These are load-bearing — most items below assume them. Recorded here so they a
   dependencies and zero build dependencies. Rationale is `cost-efficient-operation.md` indirectly —
   every dependency is a supply-chain and maintenance cost carried on a platform whose whole premise
   is near-zero fixed cost — and pnpm is not installed on the target machine.
+- **[DECISION] The PostgreSQL client is hand-written, not a driver dependency.** `@zeddev/db`
+  implements protocol v3 directly over `node:net`/`node:tls`: startup, SCRAM-SHA-256 (plus md5 and
+  cleartext), the extended query flow, the simple query flow for DDL, and `LISTEN`/`NOTIFY`. Rationale
+  is the same one that rejected a test framework — every dependency is a supply-chain and maintenance
+  cost carried against a near-zero-fixed-cost premise — plus the observation that the needed subset is
+  small and closed, because the wire protocol has been stable since 2003. The obvious objection is that
+  a hand-written driver is where subtle bugs live; the answer is that there is no fake server anywhere
+  in the package, so every path is tested against a real PostgreSQL. Revisit if the platform ever needs
+  binary format, COPY, or connection cancellation, none of which are implemented.
+- **[DECISION] Database configuration is discrete keys, not a connection URL.** A URL is a single string
+  containing a password, which makes every accidental disclosure of it — a log line, a crash dump, a
+  process listing — a credential disclosure. Discrete keys let exactly one of them be marked `secret`,
+  so it arrives wrapped in `Secret` and cannot be serialised by accident.
+- **[DECISION] Row-level security scopes are named after *reasons*, not privilege levels.** There is no
+  "admin" scope. There are three situations in which the tenant filter provably cannot apply, and each
+  gets its own session setting: `app.tenant_id` (normal operation), `app.identity_scope`
+  (authentication, before a tenant is known — the tenant is *derived from* the account, so the lookup
+  necessarily crosses tenants), and `app.platform_scope` (the operator's cross-tenant health view that
+  `tenant-data-isolation.md` AC7 explicitly permits). The set of tables each scope can reach is fixed in
+  migrations, which is what makes AC7's *negative* half structural: no table holding conversation
+  content will ever carry a platform-scope policy.
+- **[DECISION] Migrations are forward-only.** No `down` scripts. A rollback script is written when the
+  schema is understood and executed when it is not, and "roll back the migration" on a table holding
+  tenant data means deleting the columns holding that data. Recovering from a bad migration is a new
+  forward migration.
 - **[DECISION] Log redaction is an allowlist, not a denylist.** `src/lib/logging` permits only field
   names in `OPERATIONAL_FIELDS`; everything else is replaced with `[redacted]`. A denylist fails open
   the first time a field is named `body` or `pw`. Log calls also take a dotted event name rather than
@@ -142,8 +171,11 @@ call must never be able to cause Meta to redeliver.
   reaching operator-visible diagnostics. Redaction must be impossible to bypass by accident, which means
   it belongs in the logger, not in each call site. Building this after the fact means auditing every log
   line ever written.
-- `src/lib/db` — connection management, migration runner, tenant-context session binding, and RLS policy
-  helpers. Includes the convention that every tenant-scoped table gets `tenant_id` plus a policy.
+- **[DONE]** `src/lib/db` — a dependency-free PostgreSQL client (protocol v3, TLS, SCRAM-SHA-256),
+  connection pool, migration runner, tenant-context session binding, and the startup preflight that
+  refuses to run where row-level security cannot be enforced.
+- **[DONE]** `src/lib/schema` — baseline migrations for tenants, identity, and audit records, with
+  row-level security on every tenant-scoped table. See §4c for what was learned building it.
 - **[DONE]** `src/lib/secrets` — sealing and unsealing of recoverable secrets, one-way transformation for account
   credentials, and redaction helpers, per `credential-and-secret-handling.md`.
 - **[DONE]** `src/lib/time` — clock port with a controllable fake.
@@ -154,14 +186,18 @@ call must never be able to cause Meta to redeliver.
   declare which spec file and acceptance criterion it covers.
 - Container definitions: one Dockerfile per service, a Compose file for laptop and VPS, and a documented
   environment-variable reference. `environment-portability.md` requires the config input list be complete
-  enough to explain every behavioral difference between tiers.
-- Baseline database schema and migrations for tenants, users, and the audit/event records that several
-  specs require.
+  enough to explain every behavioral difference between tiers. The reference should be *generated* from
+  the config schemas via `renderReference()` rather than written, so it cannot drift — that is the whole
+  reason `@zeddev/config` has that function.
+- **[DONE]** Baseline database schema and migrations for tenants, users, and the audit/event records that
+  several specs require. Delivered as `@zeddev/schema`: `tenants`, `tenant_lifecycle_events`, `accounts`,
+  `client_sessions`, `account_tokens`, `operators`, `operator_sessions`, `access_records`,
+  `tenant_secrets`, `secret_access_records`.
 
-> **P0 remaining scope.** `db`, `queue`, `storage`, container definitions, and the baseline schema
-> are the next increment. They were deferred as a block because all five need a running PostgreSQL to
-> be testable, and delivering them stubbed would violate the "no placeholders" rule while producing
-> tests that prove nothing.
+> **P0 remaining scope.** `queue`, `storage`, and container definitions. The queue is unblocked now —
+> it is built on `@zeddev/db`, and `LISTEN`/`NOTIFY` support is already in the client so a worker can
+> wait for work rather than poll (idle cost near zero, per `cost-efficient-operation.md`). §4c records
+> the fairness constraint the queue must satisfy, which is not obvious from the schema.
 
 ### P1 — Control plane (a client can sign up, configure, and reach "ready")
 
@@ -269,8 +305,10 @@ call must never be able to cause Meta to redeliver.
 - **[DONE, ongoing] Acceptance-criteria traceability.** `specTest(spec, criterion, name, fn)` in
   `src/lib/testing` records the mapping and throws at definition time if the spec filename does not
   exist, so a spec rename breaks the build instead of silently orphaning the criterion. `npm run
-  spec-coverage` reports per-spec coverage. Current state: 8 of 27 specs have covering tests, 39
-  spec-linked assertions. The 19 uncovered specs are all P1-P4 features not yet built.
+  spec-coverage` reports per-spec coverage. Current state: 12 of 27 specs have covering tests, 63
+  spec-linked assertions; `tenant-data-isolation.md` is at 9 of 10 criteria and
+  `credential-and-secret-handling.md` at 14 of 15. The 15 uncovered specs are all P1-P4 features not
+  yet built.
 
 ---
 
@@ -352,6 +390,66 @@ can be defaulted safely.
 - **`specs/` acceptance criteria are machine-countable.** All 27 specs use a consistent
   `- Given ... when ... then ...` bullet format under an `## Acceptance Criteria` heading, which is
   what makes the coverage denominator possible. Preserve that format when editing specs.
+
+---
+
+## 4c. Findings from the persistence increment
+
+- **A PostgreSQL superuser is exempt from every row-level security policy, and `FORCE ROW LEVEL
+  SECURITY` does not change that.** This is the most important thing learned in this increment. The
+  exemption is total and silent: no error, no warning, every policy simply does not apply. It also
+  applies to any role carrying `BYPASSRLS`. A deployment whose `DATABASE_USER` is the superuser the
+  database was created with — the default in every quick-start container image, including this repo's
+  own first version of `scripts/db.sh` — therefore has *no tenant isolation whatsoever* while appearing
+  to work perfectly. It was caught only because the cross-tenant tests were written to assert that data
+  is *absent*; had they been written the other way round they would have passed while proving nothing.
+  **Mitigations, both landed:** `assertTenantIsolationEnforceable()` in `@zeddev/db` fails startup
+  against such a role, and every test fixture creates its own `NOSUPERUSER NOBYPASSRLS` role. The
+  fixture role still *owns* the schema, which is fine precisely because every tenant-scoped table uses
+  `FORCE ROW LEVEL SECURITY` — that is what `FORCE` is for. Call the preflight from every service's
+  startup path as services are built.
+- **A green test run can prove much less than it appears to.** The database suites skip themselves when
+  no database is configured, which is right, but it left `npm run check` fully green with every
+  isolation assertion unexecuted. This is the same shape as the §4b finding that `npm test` does not
+  typecheck. Fixed by making `check` require a database and adding `check:offline` as a named, visible
+  choice; `scripts/db.sh up` now writes `.env.test`, which `npm test` loads automatically, so there is
+  no export step to forget.
+- **`describe(name, { skip }, fn)` does not execute `fn`.** So `specTest` calls inside a skipped suite
+  never register, and spec coverage silently under-reported the database-backed specs — the tenant
+  isolation and credential specs, which most need the traceability. Any command that collects coverage
+  must invoke the tests exactly as `npm test` does. `scripts/spec-coverage.ts` was fixed accordingly.
+- **A failing `before` hook in `node:test` reports only `cancelledByParent` on its children.** The real
+  error appears solely on the parent suite's entry, which the default reporter does not show. Use
+  `--test-reporter=tap` and read the suite line. This cost real time.
+- **PostgreSQL's own error text quotes row data.** A unique-violation detail reads
+  `Key (email)=(...) already exists`. Propagating the server's `message`/`detail` would put a client's
+  email or an end customer's phone number into an operator-visible diagnostic, violating
+  `operator-health-monitoring.md` AC9. `src/lib/db/errors.ts` therefore maps failures onto the taxonomy
+  using the SQLSTATE and constraint name only, and drops the prose at that boundary — not further
+  downstream, because downstream is where someone eventually logs it. There is a test asserting the
+  address does not appear in the diagnostic.
+- **`InternalError` being retryable was wrong for known-terminal failures.** A SQL syntax error or a
+  missing table will fail identically on every attempt. Added `DefectError` to `@zeddev/errors` — same
+  `internal` kind, `retryable: false` — rather than adding a `retryable` constructor argument, which
+  would have broken the taxonomy's central invariant that retryability is a property of the *type*.
+- **The fixture could not seed `tenant_secrets` under the identity scope**, which was the policy working
+  as designed: authentication has no business reading a tenant's WhatsApp credential. Worth recording
+  because it is a good sign, not a problem — the test fixture is subject to exactly the same rules as
+  the application, so a fixture that needs a scope the application would not have is a design smell.
+- **Queue fairness is a requirement, not an optimisation.** `message-delivery-reliability.md` requires
+  that one tenant's failure, backlog, or surge not delay another's, while `cost-efficient-operation.md`
+  forbids dedicated per-tenant infrastructure. Together these mean the dequeue must be fair *within*
+  shared capacity — round-robin or per-tenant capacity partitioning — never a single global FIFO where
+  one tenant's retry storm starves the line. No spec names an algorithm; the outcome is what binds.
+
+### Deferred hardening: a second database role
+
+The platform scope is currently opened by any code that can call `withPlatformScope`. What that buys
+over a bare `WHERE` clause is real — closed by default, one explicit and greppable act to open, scoped
+to a single transaction, and unable to reach conversation content no matter who calls it, because the
+reachable set is fixed in migrations. But it is weaker than a second PostgreSQL role that simply lacks
+the grant. The schema is built so that introducing one later changes no application code. Worth doing
+before the operator dashboard ships in P3.
 
 ---
 

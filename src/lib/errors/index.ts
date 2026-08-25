@@ -446,6 +446,31 @@ export class InternalError extends ZedError {
 }
 
 /**
+ * A defect in this codebase: the operation is malformed and cannot succeed.
+ *
+ * Shares the `internal` kind with `InternalError` but inverts `retryable`, and
+ * that inversion is the entire reason it exists. `InternalError` is retryable
+ * because an unknown cause might clear; a *known* programming defect — a SQL
+ * syntax error, a reference to a table that does not exist, a call with the wrong
+ * arity — will produce the identical failure on every attempt. Retrying it burns
+ * the free-tier allowance `cost-efficient-operation.md` assumes stays unspent and
+ * delays surfacing the bug.
+ *
+ * Kept as a distinct class rather than a `retryable` constructor argument because
+ * the taxonomy's central invariant is that whether a failure may be retried is a
+ * property of its *type*. Letting a throw site choose is what produced the
+ * inconsistency this module exists to remove.
+ */
+export class DefectError extends ZedError {
+  override readonly kind = 'internal' as const;
+  override readonly retryable = false;
+
+  constructor(message: string, options?: Partial<ZedErrorOptions>) {
+    super(message, { ...options, code: options?.code ?? 'internal.defect' });
+  }
+}
+
+/**
  * Whether a failure may be retried.
  *
  * Unknown errors — anything not from this taxonomy — are treated as NOT

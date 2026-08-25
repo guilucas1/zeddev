@@ -10,11 +10,14 @@
     "src/services/*"
   ],
   "scripts": {
-    "test": "node --test \"src/**/*.test.ts\"",
-    "test:coverage": "node --test --experimental-test-coverage \"src/**/*.test.ts\"",
+    "test": "node --env-file-if-exists=.env.test --test \"src/**/*.test.ts\"",
+    "test:coverage": "node --env-file-if-exists=.env.test --test --experimental-test-coverage \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "check": "npm run typecheck && npm test",
-    "spec-coverage": "node scripts/spec-coverage.ts"
+    "check": "npm run typecheck && node scripts/require-db.ts && npm test",
+    "spec-coverage": "node scripts/spec-coverage.ts",
+    "db:up": "bash scripts/db.sh up",
+    "db:down": "bash scripts/db.sh down",
+    "check:offline": "npm run typecheck && npm test"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

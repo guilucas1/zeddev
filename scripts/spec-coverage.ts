@@ -28,7 +28,13 @@ const workDir = mkdtempSync(join(tmpdir(), 'zeddev-coverage-'));
 const coverageFile = join(workDir, 'coverage.jsonl');
 
 try {
-  execFileSync('node', ['--test', 'src/**/*.test.ts'], {
+  // The `--env-file-if-exists` flag must match what `npm test` uses. A suite
+  // declared with `describe(..., { skip })` does not run its callback at all, so
+  // its `specTest` calls never execute and never record a criterion. Invoking the
+  // suite differently here would therefore under-report coverage for exactly the
+  // database-backed specs — tenant isolation, credential handling — that most
+  // need the traceability.
+  execFileSync('node', ['--env-file-if-exists=.env.test', '--test', 'src/**/*.test.ts'], {
     cwd: REPO_ROOT,
     env: { ...process.env, ZEDDEV_SPEC_COVERAGE_FILE: coverageFile },
     stdio: 'ignore',
