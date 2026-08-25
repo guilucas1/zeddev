@@ -1,0 +1,17 @@
+{
+  "name": "@zeddev/logging",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@zeddev/errors": "*",
+    "@zeddev/secrets": "*",
+    "@zeddev/time": "*"
+  },
+  "devDependencies": {
+    "@zeddev/testing": "*"
+  }
+}

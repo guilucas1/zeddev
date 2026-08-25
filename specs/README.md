@@ -72,6 +72,10 @@ below unless a specific spec says otherwise:
   client-controlled go-live/pause toggle.
 - [`client-offboarding-and-data-retention.md`](./client-offboarding-and-data-retention.md) — what happens
   to a client's data when they leave, retention window, and on-demand deletion.
+- [`authentication-and-access.md`](./authentication-and-access.md) — how clients and the operator prove
+  identity, and the separation between the two identity spaces. *(Added during planning — see below.)*
+- [`credential-and-secret-handling.md`](./credential-and-secret-handling.md) — protection, rotation, and
+  destruction of the platform's and each tenant's secrets. *(Added during planning — see below.)*
 
 ### Conversation & AI behavior (JTBD 2)
 - [`text-conversation-handling.md`](./text-conversation-handling.md) — core text-in/text-out AI
@@ -85,6 +89,10 @@ below unless a specific spec says otherwise:
 - [`bot-disclosure-setting.md`](./bot-disclosure-setting.md) — client choice of whether the bot discloses
   it's automated/AI.
 - [`human-handoff.md`](./human-handoff.md) — client-configurable handoff of a conversation to a human.
+- [`message-burst-aggregation.md`](./message-burst-aggregation.md) — grouping an end-customer's rapid
+  consecutive messages into one conversational turn with one reply. *(Added during planning — see below.)*
+- [`message-delivery-reliability.md`](./message-delivery-reliability.md) — inbound webhook acceptance,
+  deduplication, ordering, and outbound send/retry guarantees. *(Added during planning — see below.)*
 
 ### Bot configuration (JTBD 3)
 - [`persona-and-tone-configuration.md`](./persona-and-tone-configuration.md) — configuring the bot's
@@ -93,6 +101,8 @@ below unless a specific spec says otherwise:
   via freeform text and/or uploaded documents.
 - [`behavior-rules-configuration.md`](./behavior-rules-configuration.md) — configuring do's/don'ts and
   guardrails.
+- [`language-configuration.md`](./language-configuration.md) — choosing the single language the bot
+  replies in. *(Added during planning — see below.)*
 
 ### Conversation memory (JTBD 4)
 - [`conversation-memory.md`](./conversation-memory.md) — per-end-customer conversation context and its
@@ -118,9 +128,35 @@ below unless a specific spec says otherwise:
 - [`cost-efficient-operation.md`](./cost-efficient-operation.md) — operating at zero/near-zero cost at low
   volume, with cost scaling only as usage grows.
 
+## Specs added during planning
+
+The five specs marked above were written during the planning phase, after a gap analysis of the original
+twenty-two against the product goal. Each closes a requirement that some existing spec depended on but no
+spec owned:
+
+- `language-configuration.md` — `text-conversation-handling.md` and `voice-message-understanding.md` both
+  require "the single language configured for that client business", but nothing defined configuring it;
+  `persona-and-tone-configuration.md` and `business-knowledge-configuration.md` each disclaim it.
+- `message-burst-aggregation.md` — `voice-message-understanding.md` defers multi-message burst handling to
+  `text-conversation-handling.md`, which never mentions bursts, and `image-message-understanding.md`
+  requires multi-image turns while leaving the grouping window undefined. This spec is now the single
+  source of truth for what one conversational turn is.
+- `authentication-and-access.md` — `tenant-data-isolation.md` and `client-conversation-visibility.md` both
+  push authentication out of scope and hand it to nobody, and operator authentication to the
+  platform-wide surfaces in `operator-health-monitoring.md` was entirely unspecified.
+- `message-delivery-reliability.md` — nothing covered webhooks, duplicate inbound delivery, ordering,
+  outbound retry, or WhatsApp's 24-hour customer service window, yet `operator-health-monitoring.md`
+  already requires a "failed message deliveries" metric that nothing produced.
+- `credential-and-secret-handling.md` — nothing mentioned protection at rest, though
+  `tenant-data-isolation.md` requires per-tenant WhatsApp credentials be unusable across tenants.
+
+They follow the same behavior-only convention as the rest of this directory.
+
 ## Notes for the next phase
 
 - Every spec's **Open Questions / Assumptions** section flags things left unresolved on purpose (exact
   retention window length, exact reset-policy options, exact metrics list, etc.) — review these before or
   during planning, since several are genuinely open rather than obvious defaults.
-- `IMPLEMENTATION_PLAN.md` is intentionally not created by this phase — it belongs to PLANNING mode.
+- `IMPLEMENTATION_PLAN.md` now exists at the repository root. It records the technology and sequencing
+  decisions this directory deliberately avoids, the cross-spec conflicts found during planning, and the
+  subset of the open questions above that actually block work.
