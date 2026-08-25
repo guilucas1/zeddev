@@ -9,6 +9,7 @@
   "dependencies": {
     "@zeddev/config": "*",
     "@zeddev/db": "*",
+    "@zeddev/identity": "*",
     "@zeddev/storage": "*"
   },
   "devDependencies": {

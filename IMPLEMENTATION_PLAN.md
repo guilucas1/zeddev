@@ -1,17 +1,24 @@
 # Implementation Plan
 
-**Status as of 2026-08-25:** P0 foundation mostly landed. `src/` now contains twelve dependency-free
-workspace packages (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`, `@zeddev/logging`,
-`@zeddev/config`, `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`, `@zeddev/tenancy`,
-`@zeddev/storage`, `@zeddev/deployment`) and 307 passing tests, zero skipped, of which a growing share run
+**Status as of 2026-08-25:** P0 foundation landed except container definitions; the P1 control plane has
+started with its identity layer. `src/` now contains thirteen dependency-free workspace packages
+(`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`, `@zeddev/logging`, `@zeddev/config`,
+`@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`, `@zeddev/tenancy`, `@zeddev/storage`,
+`@zeddev/identity`, `@zeddev/deployment`) and 376 passing tests, zero skipped, of which a growing share run
 against both a real PostgreSQL and a real S3-compatible object storage server (MinIO). Persistence,
 migrations, and database-enforced tenant isolation are in place and proven by cross-tenant negative tests.
 A durable, tenant-fair job queue is in place, with per-partition FIFO ordering, lease-based at-least-once
 delivery, and a dead-letter path. Object storage is done: an S3-compatible port, a hand-written SigV4
 signer, a real adapter, and an in-memory fake proven against the real one by a shared conformance suite.
+`@zeddev/identity` now covers signup, transactional tenant provisioning, email verification, client and
+operator authentication as two non-overlapping identity spaces, sessions with both expiry bounds, logout,
+password change, self-service reset, failed-attempt lockout, the audit trail, and the action→principal
+permission table — all tested against a real PostgreSQL. See §4f.
+
 The remaining P0 item is container definitions, and it is only half unblocked — the generated
 environment-variable reference has landed as `docs/configuration.md`, but the Dockerfiles cannot be
-written yet because `src/services/*` is still empty; there is nothing to containerize.
+written yet because `src/services/*` is still empty; there is nothing to containerize. The identity
+domain is deliberately transport-free, so the next increment that unblocks it is `services/api`.
 
 Run `npm run db:up` and `npm run storage:up`, then `npm run check`, before assuming any of the above
 still holds. `npm run check` now *refuses* to pass without both a database and an object storage server,
@@ -174,6 +181,34 @@ These are load-bearing — most items below assume them. Recorded here so they a
   rather than trusting us, and an oversized upload is rejected before a byte moves — which is what makes
   `business-knowledge-configuration.md`'s "reject without silently discarding it" true in both directions.
   Revisit if the platform ever accepts large media.
+- **[DECISION] Identity is a domain library, not a service.** `@zeddev/identity` contains no HTTP. The
+  API service will own status codes, cookies, headers, and request-level rate limiting; the library owns
+  what is *true* about identity. The payoff is that the rules hardest to get right — the tenant binding,
+  session invalidation on credential change, the failed-attempt counter that must survive a rollback — are
+  all database behaviour and are tested against a real PostgreSQL with no server in the loop.
+- **[DECISION] Session, lockout, and token expiry are judged by the database clock, not an injected
+  `Clock`.** Same reasoning `@zeddev/queue` gives for leases: several instances share these rows, and an
+  instance with a fast clock must not reject a session its neighbours honour. The cost is that a
+  `FakeClock` cannot drive an expiry, so those tests configure sub-second windows and really wait. This is
+  the one place the clock-port decision in §1 is deliberately not applied.
+- **[DECISION] Client login reveals nothing; signup reveals duplicates.** `authentication-and-access.md`
+  AC3 requires an unknown address and a known one be indistinguishable on failure, so unverified email, a
+  not-ready tenant, and a wrong password all produce one `AuthenticationError` with no reason, and the
+  reason goes to `access_records` instead. `client-signup-and-tenancy.md` AC3 requires the opposite at
+  signup — "rejected with a clear reason" — which is the spec's own trade, since a signup form that cannot
+  say "already registered" is unusable. Timing is equalised on the login path with a decoy scrypt, because
+  a carefully worded response undone by a 100 ms difference is not a closed oracle.
+- **[DECISION] Permission is a table keyed by action, not by principal.** `ACTION_PRINCIPALS` in
+  `@zeddev/identity` maps each action to the single principal type that holds it.
+  `authentication-and-access.md` AC15–AC17 require the operator's denials be enforced "as an access-control
+  rule rather than merely the absence of a button" and "through any surface", which rules out per-route
+  checks: a rule scattered across routes is one a new route can omit. Keyed by action rather than by
+  principal because a new action then fails to compile until someone names its holder, instead of silently
+  appearing in neither list.
+- **[DECISION] Session tokens are hashed with SHA-256, account passwords with scrypt.** Not an
+  inconsistency: scrypt exists to make an offline *dictionary* attack expensive, and a 256-bit CSPRNG token
+  has no dictionary. Paying 32 MiB and ~100 ms per request to defend an attack that cannot be mounted would
+  be a self-inflicted denial of service on the hot path.
 - **[DECISION] The environment-variable reference is generated, never written.**
   `environment-portability.md` states completeness as an inspectable criterion, and a hand-maintained
   reference stops being complete on the second key anyone adds — silently. `@zeddev/deployment` renders
@@ -258,16 +293,26 @@ call must never be able to cause Meta to redeliver.
 
 ### P1 — Control plane (a client can sign up, configure, and reach "ready")
 
-- Client signup: business name, email, credential strength enforcement, duplicate-email rejection, email
-  verification, and **transactional tenant provisioning** — `client-signup-and-tenancy.md` requires that a
-  provisioning failure never leave a usable account pointing at a partial tenant.
-- Client authentication: login, session issuance with inactivity and absolute lifetimes, logout, password
-  change, self-service reset with single-use expiring tokens, session invalidation on credential change,
-  and failed-attempt lockout. Per `authentication-and-access.md`.
-- Tenant binding derived from the authenticated identity and never accepted from caller input. This is the
-  precondition the whole of `tenant-data-isolation.md` rests on.
-- Operator authentication as a **separate identity space** from client authentication, with enforcement
-  that no client credential can reach operator surfaces and no operator credential can act as a client.
+- **[DONE]** Client signup: business name, email, credential strength enforcement, duplicate-email
+  rejection, email verification, and **transactional tenant provisioning** — a provisioning failure rolls
+  back entirely and then marks the tenant `failed` in a transaction of its own, so there is both no partial
+  tenant and a visible error state. Delivered as `@zeddev/identity`. The verification *link* is minted but
+  not delivered; see the mail-port follow-up in §4f.
+- **[DONE]** Client authentication: login, session issuance with inactivity and absolute lifetimes, logout,
+  password change, self-service reset with single-use expiring tokens, session invalidation on credential
+  change, and failed-attempt lockout that lifts on its own.
+- **[DONE]** Tenant binding derived from the authenticated identity and never accepted from caller input.
+  Structural: no function on `IdentityService` takes a tenant id, and `withClientSession` opens the
+  tenant-bound transaction from the value stored on the session row at login.
+- **[DONE]** Operator authentication as a **separate identity space**: separate tables, separate token
+  prefixes, separate code paths, and `withOperatorSession` opening the *platform* scope rather than a
+  tenant scope — so even a defective operator route cannot reach a tenant-private table, because no policy
+  admits the read.
+> **P1 remaining scope.** Everything below this line, plus the two things the identity increment
+> deliberately did not build: a **mail port** (signup returns the verification token instead of sending it,
+> so the loop is not closable end to end without one) and `services/api`, which is what turns
+> `@zeddev/identity` into something a browser can reach — and which also unblocks P0's Dockerfiles.
+
 - Persona and tone configuration: structured fields (bot name required, formality, style traits) plus
   optional freeform text, both applied together, with length limits and independent clearing of the
   freeform field. This is the only configuration gating readiness.
@@ -362,12 +407,13 @@ call must never be able to cause Meta to redeliver.
 - **[DONE, ongoing] Acceptance-criteria traceability.** `specTest(spec, criterion, name, fn)` in
   `src/lib/testing` records the mapping and throws at definition time if the spec filename does not
   exist, so a spec rename breaks the build instead of silently orphaning the criterion. `npm run
-  spec-coverage` reports per-spec coverage. Current state: 13 of 27 specs have covering tests, 116
-  spec-linked assertions; `tenant-data-isolation.md` is at 16 criteria, `credential-and-secret-handling.md`
-  at 17, `environment-portability.md` at 15, and `message-delivery-reliability.md` at 13.
-  `business-knowledge-configuration.md` and `client-offboarding-and-data-retention.md` now have covering
-  tests (3 each), where before they had none. The 14 remaining uncovered specs are all P1-P4 features not
-  yet built.
+  spec-coverage` reports per-spec coverage. Current state: 13 of 27 specs have covering tests, 162
+  spec-linked assertions. `authentication-and-access.md` jumped from 2 to 32 and
+  `client-signup-and-tenancy.md` from 1 to 12 in the identity increment, which are now the two
+  best-covered specs in the set — appropriately, since every other spec's "identity is already
+  established" assumption rests on them. `credential-and-secret-handling.md` is at 21,
+  `environment-portability.md` at 16, `tenant-data-isolation.md` at 16, `message-delivery-reliability.md`
+  at 13. The 14 remaining uncovered specs are all P1–P4 features not yet built.
 
 ---
 
@@ -421,9 +467,13 @@ can be defaulted safely.
 - Notification channel for operator alerting, and separately for client handoff notifications. Both specs
   deliberately leave the channel open. Blocks P2 handoff and P3 alerting.
 - Whether multi-factor authentication is required for the operator identity. It is the only credential in
-  the system with visibility across every tenant. Blocks the P1 operator auth item if the answer is yes.
+  the system with visibility across every tenant. **No longer blocking** — operator authentication shipped
+  without it, and because the operator login path is deliberately separate from the client one, adding a
+  second factor is a change to one function. Still worth answering before launch.
 - Whether signup needs CAPTCHA or equivalent anti-abuse. `client-signup-and-tenancy.md` flags this as a
-  likely necessary control that was never confirmed in scope.
+  likely necessary control that was never confirmed in scope. Signup is now reachable in principle, so
+  this becomes live the moment `services/api` exposes it; the failed-attempt lockout defends *login* and
+  does nothing for signup volume.
 - Whether formality and communication style are required for readiness or safely defaulted — currently
   only the bot name is confirmed as required.
 - Accepted document formats and size limits for knowledge upload.
@@ -627,6 +677,93 @@ before the operator dashboard ships in P3.
 - `ensureBucket()` is deliberately not called on first write. Auto-creating on demand turns a typo in
   `STORAGE_BUCKET` into a silently-created empty bucket that the platform then writes tenant documents
   into — a data-loss shape that looks exactly like success.
+
+---
+
+## 4f. Findings from the identity increment
+
+- **A failed login that throws from inside its transaction never locks anything out.** The whole point of
+  `accounts.failed_attempt_count` is that it *persists*, and a `throw` inside `pool.transaction` rolls it
+  back. The lockout would then never engage while every rejection test still passed — the failure is
+  invisible from the outside, because the only observable difference is the eleventh attempt succeeding at
+  full rate. Fixed by having every credential-evaluating transaction return a discriminated outcome and
+  throwing after the commit. The test reads the column directly rather than only asserting the rejection,
+  because asserting the rejection is exactly what would not have caught this.
+- **The identity scope can write `access_records` and `tenant_lifecycle_events` but cannot read them
+  back.** Both tables grant SELECT to the platform scope and to a bound tenant only. Three tests were
+  written reading them under `withIdentityScope` and returned empty arrays — which is precisely what a
+  *missing row* also looks like, so the first reading was "the record was never written". This is the §4c
+  lesson arriving from a new direction: a query that returns nothing has two explanations and the policy is
+  usually the one nobody checks. Worth knowing before P3 builds the operator's audit view.
+- **A leak test over an empty result set passes for the wrong reason.** The assertion that no access record
+  contains an email address was green while reading zero rows, for the scope reason above. It now asserts
+  the row count is non-zero *first*. Same shape as §4d's needle-matching-a-fixture-identifier finding: a
+  test that can be satisfied without exercising anything is worse than no test, because it is trusted.
+- **A time-bounded test loop must be bounded by time, not by iterations.** The absolute-session-lifetime
+  test kept a session active with three fixed sleeps and then waited for expiry. On a slow round trip the
+  third resolution landed *past* the bound and the test failed inside its own setup, reporting a rejection
+  where it expected success — a flake that looks like a real defect. Rewritten to loop while elapsed time
+  is under a fraction of the window. Any test that races a real clock needs this shape.
+- **Two identity spaces means accepting duplicated code.** `logIn` and `operatorLogIn` are structurally the
+  same function against different tables, and factoring them into one helper parameterised by table name is
+  the single most obvious cleanup in the package. It is also exactly how the spaces come to overlap: one
+  conditional, one wrong argument, and a client credential reaches the operator table.
+  `authentication-and-access.md` requires they "never overlap", so the duplication *is* the guarantee. Do
+  not merge them.
+- **Row-level security cannot express "this row is visible but this verb is not."** The operator can read
+  the `tenants` row and must not be able to change activation state on it. The schema gets half of that
+  — `tenants_platform_read` is `FOR SELECT` — but "may not offboard" is a verb on a surface, not a row
+  predicate. That half necessarily lives above the database, which is why `ACTION_PRINCIPALS` exists and
+  why it is a table rather than a set of route checks.
+- **Provisioning needed a seam, and the seam had to be tested even though it is empty.** The
+  `provisionTenant` hook does nothing today because the tables later phases will populate do not exist.
+  What is fully implemented is the *failure* semantics around it, and there is a test that drives a
+  throwing hook through the rollback, the `failed` state, the refused login, the unaffected bystander
+  tenant, and the successful retry of the same link. That is the expensive part to retrofit; the body is
+  not.
+- **A reset link and a verification link are not equally dangerous, and should not share a lifetime.** A
+  reset link is account takeover in one click and is requestable by anyone who knows an address; a
+  verification link is only useful to someone who already controls the mailbox. Defaults are one hour and
+  twenty-four hours respectively.
+- **A reset must clear the lockout.** Otherwise the client locked out by an attacker's guessing — which is
+  the most common reason anyone reaches the reset flow — completes it and still cannot log in, and
+  `client-signup-and-tenancy.md`'s "recover access without operator involvement" is false in the one case
+  it most needs to be true.
+- **A wrong current password on the authenticated change surface must not count toward the lockout.** That
+  surface already requires a valid session, so incrementing there lets anyone holding a stolen session lock
+  the rightful owner out — converting a confidentiality breach into a denial of service against the victim.
+
+### The numbers §4 left open, now decided
+
+`authentication-and-access.md` explicitly defers these ("must be defined at implementation time"). They are
+now `IDENTITY_*` keys in `docs/configuration.md`, with the reasoning recorded beside each default in
+`src/lib/identity/config.ts`: session inactivity 12h, absolute lifetime 7d, lockout at 10 consecutive
+failures for 15m, verification link 24h, reset link 1h, minimum password length 12. Startup additionally
+refuses an absolute lifetime below the inactivity timeout — individually valid on both keys, and jointly it
+leaves only one of the two required expiry rules in force.
+
+### Follow-ups the identity increment leaves open
+
+- **A mail port does not exist.** `signUp` and `requestPasswordReset` return the token rather than sending
+  it, on the same separation that keeps the WhatsApp transport out of the conversation domain. Until a
+  `@zeddev/mail` port lands, email verification cannot complete without the caller doing the delivery, and
+  `client-signup-and-tenancy.md` AC6 is only provable in a test. This is the first thing `services/api`
+  needs.
+- **The common-password blocklist is a few hundred stems carried in source, not a breach corpus.** It
+  covers the top of the frequency table, which is where the mass is, but a real deployment should check
+  against a breached-credential list. That needs either a dependency or a data file, and both deserve a
+  deliberate decision rather than being smuggled in here.
+- **The operator is created by `createOperator`, and nothing calls it yet.** There is no operator signup
+  surface and there should not be. A deployment bootstrap must call it; that belongs with `services/api`.
+- **Multi-factor authentication for the operator is still open** (§4). Nothing in this increment forecloses
+  it — the operator login path is separate, so a second factor lands in one function.
+- **`resolveClientSession` records only denials, not successful resolutions.** Recording every request
+  would put one row per request into an append-only table on a platform whose premise is near-zero fixed
+  cost, and it would say nothing the login record does not. If an audit requirement later demands
+  per-request records, that is a deliberate change with a retention policy attached, not a default.
+- **Nothing calls `assertTenantIsolationEnforceable()` or `verifyAccess()` yet.** Still true, and now more
+  pressing: `@zeddev/identity` is the first package whose correctness depends entirely on row-level
+  security being enforced. Every service's startup path must call both.
 
 ---
 

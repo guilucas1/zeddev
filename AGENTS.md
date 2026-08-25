@@ -56,6 +56,14 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - **A tenant id is validated in exactly one place**: `assertTenantId`/`normalizeTenantId` from
   `@zeddev/tenancy`. Do not re-derive the rule — in object storage a tenant id is a key path
   segment, so a value containing `/` silently relocates one tenant's object under another's prefix.
+- **Identity rules live in `@zeddev/identity` and nowhere else.** Password strength
+  (`assertPasswordStrength`), email canonicalisation (`assertEmail`/`normalizeEmail`), and the
+  action→principal-type table (`ACTION_PRINCIPALS`) are each defined once. Signup, password change,
+  and password reset all call the same strength check; a second copy would let the weakest of the
+  three define the platform's actual policy.
+- **A new permission means a new entry in `ACTION_PRINCIPALS`** in `src/lib/identity/principals.ts`.
+  Adding an action without naming the principal type that holds it is a type error, and
+  `principals.test.ts` asserts over the whole table rather than over examples.
 - **Adding a `*_CONFIG_SCHEMA` to a package means registering it** in `PLATFORM_CONFIG_SCHEMAS`
   in `src/lib/deployment/index.ts` and running `npm run config-reference`. A test scans
   `src/lib` and fails the build otherwise.
@@ -76,6 +84,11 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - Migrations live at `src/lib/schema/migrations/NNNN_snake_case_name.sql`, are
   forward-only, gapless from `0001`, and are checksummed after they are applied
   (editing an applied one fails the run).
+- `@zeddev/identity`'s tests also run against a real PostgreSQL. Session, lockout, and token
+  expiry are judged by the **database** clock, not an injected `Clock`, so a `FakeClock` cannot
+  drive them: those tests build a service with a sub-second window and really wait, the same way
+  `@zeddev/queue`'s PostgreSQL lease tests do. Pass `credentialParams: { N: 1024, r: 8, p: 1 }` to
+  `IdentityService` in tests — the production scrypt cost is deliberately ~100 ms per hash.
 
 ### Object-storage-backed tests
 
@@ -121,3 +134,9 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   `.env.test` and can be run in either order. Do not make either one truncate the file.
 - A new log field name is silently redacted unless it is added to `OPERATIONAL_FIELDS` in
   `src/lib/logging/index.ts`.
+- `access_records` and `tenant_lifecycle_events` grant SELECT only to the **platform scope** and to
+  a bound tenant — not to the identity scope that writes them. A test reading them under
+  `withIdentityScope` gets an empty array, which looks exactly like a missing row.
+- A failed login must commit its failed-attempt counter, so `IdentityService` returns an outcome
+  from the transaction and throws after it commits. Throwing from inside would roll the counter
+  back and the lockout would silently never engage. Keep that shape when adding credential paths.

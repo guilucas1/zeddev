@@ -63,6 +63,20 @@ Holds uploaded knowledge documents and fetched inbound media. Any S3-compatible 
 | `STORAGE_SECRET_ACCESS_KEY` | string | yes | — | Secret key paired with the access key. **(secret)** |
 | `STORAGE_TLS` | boolean | no | `true` | Whether to speak TLS to the endpoint. False is appropriate only when the endpoint is reached over a trusted local network, such as a container network on a single host. |
 
+## Identity and sessions
+
+The session, lockout, and recovery-link bounds that authentication-and-access.md requires be defined but deliberately leaves unspecified. They are configuration rather than constants because a laptop, a VPS, and a managed cloud deployment can legitimately want different values — a demo instance with a short absolute session lifetime, a production one with a longer inactivity window — and environment-portability.md requires every such behavioural difference be explainable from this list. Startup additionally rejects an absolute lifetime shorter than the inactivity timeout, which is individually valid on both keys and jointly leaves only one of the two required expiry rules in force.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `IDENTITY_EMAIL_VERIFICATION_TTL` | duration | no | `86400000` | How long an email-verification link remains redeemable. Required by authentication-and-access.md AC11, which mandates a defined expiry for any recovery link or code but prescribes no value. |
+| `IDENTITY_LOGIN_LOCKOUT_DURATION` | duration | no | `900000` | How long authentication is refused for an account that reached the failed-attempt threshold. Expires on its own so that lockout never requires operator intervention to clear, which client-signup-and-tenancy.md requires of every recovery path. |
+| `IDENTITY_LOGIN_MAX_FAILED_ATTEMPTS` | integer | no | `10` | Consecutive failed authentication attempts against one account before further attempts are locked out rather than evaluated. Required by authentication-and-access.md AC12. Counted on the account row so the count survives a restart — an in-memory counter would let routine redeploys reset an attacker’s budget. |
+| `IDENTITY_MIN_PASSWORD_LENGTH` | integer | no | `12` | Minimum accepted length for a client or operator password. The credential-strength standard client-signup-and-tenancy.md requires but leaves undefined. There are no composition rules by design — see credentials.ts for why length plus a blocklist beats "one uppercase and one digit". |
+| `IDENTITY_PASSWORD_RESET_TTL` | duration | no | `3600000` | How long a password-reset link remains redeemable. Deliberately much shorter than the verification link: a reset link grants account takeover in one click and can be requested by anyone who knows the address. |
+| `IDENTITY_SESSION_ABSOLUTE_LIFETIME` | duration | no | `604800000` | Maximum total life of a session regardless of activity. Caps how long a stolen token remains usable, which an inactivity timeout alone cannot do because activity refreshes it. Required by authentication-and-access.md AC6. |
+| `IDENTITY_SESSION_INACTIVITY_TIMEOUT` | duration | no | `43200000` | How long a client or operator session survives without use. Measured from the last request the session made, and refreshed on each one. Required by authentication-and-access.md AC5, which mandates an inactivity bound but leaves the value to implementation. |
+
 ## Template
 
 ```sh
@@ -110,6 +124,34 @@ DATABASE_STATEMENT_TIMEOUT=30000
 
 # Role to authenticate as.
 DATABASE_USER=zeddev
+
+# How long an email-verification link remains redeemable. Required by authentication-and-access.md AC11, which mandates a defined expiry for any recovery link or code but prescribes no value.
+# default: 86400000
+IDENTITY_EMAIL_VERIFICATION_TTL=86400000
+
+# How long authentication is refused for an account that reached the failed-attempt threshold. Expires on its own so that lockout never requires operator intervention to clear, which client-signup-and-tenancy.md requires of every recovery path.
+# default: 900000
+IDENTITY_LOGIN_LOCKOUT_DURATION=900000
+
+# Consecutive failed authentication attempts against one account before further attempts are locked out rather than evaluated. Required by authentication-and-access.md AC12. Counted on the account row so the count survives a restart — an in-memory counter would let routine redeploys reset an attacker’s budget.
+# default: 10
+IDENTITY_LOGIN_MAX_FAILED_ATTEMPTS=10
+
+# Minimum accepted length for a client or operator password. The credential-strength standard client-signup-and-tenancy.md requires but leaves undefined. There are no composition rules by design — see credentials.ts for why length plus a blocklist beats "one uppercase and one digit".
+# default: 12
+IDENTITY_MIN_PASSWORD_LENGTH=12
+
+# How long a password-reset link remains redeemable. Deliberately much shorter than the verification link: a reset link grants account takeover in one click and can be requested by anyone who knows the address.
+# default: 3600000
+IDENTITY_PASSWORD_RESET_TTL=3600000
+
+# Maximum total life of a session regardless of activity. Caps how long a stolen token remains usable, which an inactivity timeout alone cannot do because activity refreshes it. Required by authentication-and-access.md AC6.
+# default: 604800000
+IDENTITY_SESSION_ABSOLUTE_LIFETIME=604800000
+
+# How long a client or operator session survives without use. Measured from the last request the session made, and refreshed on each one. Required by authentication-and-access.md AC5, which mandates an inactivity bound but leaves the value to implementation.
+# default: 43200000
+IDENTITY_SESSION_INACTIVITY_TIMEOUT=43200000
 
 # Access key identifying the platform to the object storage endpoint.
 STORAGE_ACCESS_KEY_ID=

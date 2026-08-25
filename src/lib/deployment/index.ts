@@ -32,6 +32,7 @@
 
 import { renderEnvTemplate, renderReference, type ConfigSchema } from '@zeddev/config';
 import { DATABASE_CONFIG_SCHEMA } from '@zeddev/db';
+import { IDENTITY_CONFIG_SCHEMA } from '@zeddev/identity';
 import { STORAGE_CONFIG_SCHEMA } from '@zeddev/storage';
 
 export interface ConfigSection {
@@ -61,6 +62,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       'Holds uploaded knowledge documents and fetched inbound media. Any S3-compatible endpoint: a container on a laptop or VPS, or a managed bucket in the cloud. The only protocol difference between those is STORAGE_ADDRESSING_STYLE, which is configured rather than detected — detecting it would be environment-tier branching, which environment-portability.md forbids outright.',
     schema: STORAGE_CONFIG_SCHEMA,
+  },
+  {
+    title: 'Identity and sessions',
+    rationale:
+      'The session, lockout, and recovery-link bounds that authentication-and-access.md requires be defined but deliberately leaves unspecified. They are configuration rather than constants because a laptop, a VPS, and a managed cloud deployment can legitimately want different values — a demo instance with a short absolute session lifetime, a production one with a longer inactivity window — and environment-portability.md requires every such behavioural difference be explainable from this list. Startup additionally rejects an absolute lifetime shorter than the inactivity timeout, which is individually valid on both keys and jointly leaves only one of the two required expiry rules in force.',
+    schema: IDENTITY_CONFIG_SCHEMA,
   },
 ];
 
