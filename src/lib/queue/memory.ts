@@ -25,7 +25,8 @@
 
 import { DefectError, toDiagnostic } from '@zeddev/errors';
 import { SystemClock, type Clock } from '@zeddev/time';
-import { DEFAULT_BACKOFF, type Backoff } from './backoff.ts';
+import type { Backoff } from '@zeddev/time';
+import { DEFAULT_BACKOFF } from './backoff.ts';
 import {
   assertQueueName,
   digestKey,

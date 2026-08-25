@@ -19,6 +19,12 @@
  * Durations must be measured monotonically, timestamps recorded from wall clock.
  */
 
+export {
+  exponentialBackoff,
+  type Backoff,
+  type ExponentialBackoffOptions,
+} from './backoff.ts';
+
 /** Milliseconds. A named alias because a bare `number` in a signature invites unit bugs. */
 export type Millis = number;
 

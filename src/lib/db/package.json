@@ -12,6 +12,7 @@
     "@zeddev/errors": "*",
     "@zeddev/logging": "*",
     "@zeddev/secrets": "*",
+    "@zeddev/tenancy": "*",
     "@zeddev/time": "*"
   },
   "devDependencies": {

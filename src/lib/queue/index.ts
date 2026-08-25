@@ -29,12 +29,10 @@
  * standard.
  */
 
-export {
-  DEFAULT_BACKOFF,
-  exponentialBackoff,
-  type Backoff,
-  type ExponentialBackoffOptions,
-} from './backoff.ts';
+// The curve itself is re-exported from `@zeddev/time`, not from here. A second
+// export path for one function is how two call sites end up believing they are
+// configuring different things.
+export { DEFAULT_BACKOFF } from './backoff.ts';
 export { runConsumer, type ConsumerOptions, type JobHandler } from './consumer.ts';
 export { PostgresQueue, type PostgresQueueOptions } from './postgres.ts';
 export {

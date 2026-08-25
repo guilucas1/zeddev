@@ -9,7 +9,8 @@
 
 import assert from 'node:assert/strict';
 import { unitTest } from '@zeddev/testing';
-import { FakeClock, SystemClock } from './index.ts';
+import { describe } from 'node:test';
+import { exponentialBackoff, FakeClock, SystemClock } from './index.ts';
 
 unitTest('FakeClock starts at a fixed instant so timestamps in tests are deterministic', () => {
   const clock = new FakeClock('2026-03-01T12:00:00.000Z');
@@ -187,4 +188,43 @@ unitTest('SystemClock timers can be cancelled', async () => {
 
   await clock.sleep(30);
   assert.equal(fired, false);
+});
+
+// ---------------------------------------------------------------------------
+// Backoff
+//
+// Moved here with the code it covers. A test left behind in the package that no
+// longer owns the function is how a shared utility loses its coverage silently:
+// the old package keeps passing, and nothing says the new one is untested.
+// ---------------------------------------------------------------------------
+
+describe('backoff', () => {
+  unitTest('doubles per attempt and stops at the ceiling', () => {
+    // Jitter off, so the curve itself is what is under test. The jittered path is
+    // exercised separately below.
+    const backoff = exponentialBackoff({ baseMs: 1000, maxMs: 8000, jitter: 0 });
+    assert.deepEqual([1, 2, 3, 4, 5, 6].map(backoff), [1000, 2000, 4000, 8000, 8000, 8000]);
+  });
+
+  unitTest('never overflows on an implausibly high attempt number', () => {
+    // A lease that expires repeatedly could in principle drive the attempt count
+    // high; `2 ** attempt` without a clamp becomes Infinity, and an interval of
+    // Infinity is a job that is never retried and never dead-lettered.
+    const backoff = exponentialBackoff({ baseMs: 1000, maxMs: 60_000, jitter: 0 });
+    assert.equal(backoff(1000), 60_000);
+  });
+
+  unitTest('full jitter draws from zero up to the computed delay', () => {
+    const lowest = exponentialBackoff({ baseMs: 1000, maxMs: 8000, random: () => 0 });
+    const highest = exponentialBackoff({ baseMs: 1000, maxMs: 8000, random: () => 1 });
+    assert.equal(lowest(3), 0);
+    assert.equal(highest(3), 4000);
+  });
+
+  unitTest('partial jitter keeps a fixed floor', () => {
+    // The property that matters: with jitter below 1 there is always a minimum
+    // wait, so a retry storm cannot collapse into an immediate hot loop.
+    const backoff = exponentialBackoff({ baseMs: 1000, maxMs: 8000, jitter: 0.5, random: () => 0 });
+    assert.equal(backoff(2), 1000);
+  });
 });

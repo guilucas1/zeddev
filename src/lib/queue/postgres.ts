@@ -52,7 +52,8 @@ import {
 } from '@zeddev/db';
 import type { Logger } from '@zeddev/logging';
 import { SystemClock, type Clock } from '@zeddev/time';
-import { DEFAULT_BACKOFF, type Backoff } from './backoff.ts';
+import type { Backoff } from '@zeddev/time';
+import { DEFAULT_BACKOFF } from './backoff.ts';
 import {
   assertQueueName,
   digestKey,

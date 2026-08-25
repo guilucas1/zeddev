@@ -1,0 +1,17 @@
+{
+  "name": "@zeddev/deployment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@zeddev/config": "*",
+    "@zeddev/db": "*",
+    "@zeddev/storage": "*"
+  },
+  "devDependencies": {
+    "@zeddev/testing": "*"
+  }
+}

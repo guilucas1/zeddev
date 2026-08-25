@@ -122,6 +122,15 @@ export const OPERATIONAL_FIELDS = new Set<string>([
   'windowMs',
 
   // Configuration and providers.
+  // Object storage. All three are safe by construction and none of them can hold
+  // content: 'bucket' is infrastructure configuration, 'objectId' is 128 random
+  // bits minted by the platform, and 'objectKind' is a closed enum. Note what is
+  // absent: no object *key* (it embeds a tenant id), no content type (it is
+  // caller-supplied free text on an upload), and no filename.
+  'bucket',
+  'objectId',
+  'objectKind',
+
   'provider',
   'model',
   'configKey',

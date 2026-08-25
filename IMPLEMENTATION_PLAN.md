@@ -1,16 +1,22 @@
 # Implementation Plan
 
-**Status as of 2026-08-25:** P0 foundation mostly landed. `src/` now contains nine dependency-free
+**Status as of 2026-08-25:** P0 foundation mostly landed. `src/` now contains twelve dependency-free
 workspace packages (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`, `@zeddev/logging`,
-`@zeddev/config`, `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`) and 208 passing
-tests, of which 37 run against a real PostgreSQL. Persistence, migrations, and database-enforced tenant
-isolation are in place and proven by cross-tenant negative tests. A durable, tenant-fair job queue is in
-place, with per-partition FIFO ordering, lease-based at-least-once delivery, and a dead-letter path. The
-remaining P0 items are `storage` and container definitions.
+`@zeddev/config`, `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`, `@zeddev/tenancy`,
+`@zeddev/storage`, `@zeddev/deployment`) and 307 passing tests, zero skipped, of which a growing share run
+against both a real PostgreSQL and a real S3-compatible object storage server (MinIO). Persistence,
+migrations, and database-enforced tenant isolation are in place and proven by cross-tenant negative tests.
+A durable, tenant-fair job queue is in place, with per-partition FIFO ordering, lease-based at-least-once
+delivery, and a dead-letter path. Object storage is done: an S3-compatible port, a hand-written SigV4
+signer, a real adapter, and an in-memory fake proven against the real one by a shared conformance suite.
+The remaining P0 item is container definitions, and it is only half unblocked — the generated
+environment-variable reference has landed as `docs/configuration.md`, but the Dockerfiles cannot be
+written yet because `src/services/*` is still empty; there is nothing to containerize.
 
-Run `npm run db:up` then `npm run check` before assuming any of the above still holds. `npm run check`
-now *refuses* to pass without a database, because the database-backed suites are where every tenant
-isolation guarantee is verified and a green run without them proves considerably less than it looks.
+Run `npm run db:up` and `npm run storage:up`, then `npm run check`, before assuming any of the above
+still holds. `npm run check` now *refuses* to pass without both a database and an object storage server,
+because the database- and storage-backed suites are where every tenant isolation guarantee is verified
+and a green run without them proves considerably less than it looks.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -142,6 +148,37 @@ These are load-bearing — most items below assume them. Recorded here so they a
   `cost-efficient-operation.md` forbids the other obvious answer, a queue per tenant. Fair scheduling
   inside shared capacity is what is left. An optional per-tenant in-flight cap covers the case round-robin
   cannot: a tenant whose handler hangs occupying every worker.
+- **[DECISION] Object storage is reached through a port that cannot be given a key.** Everywhere else
+  tenant isolation is enforced by row-level security below the application; object storage has no
+  equivalent, since a bucket is a flat keyspace. So there is no operation on the port that takes a key:
+  `put` mints the identifier, and `get`/`head`/`delete` take an `ObjectRef` carrying its owning tenant,
+  reachable only through a handle already bound to one tenant. A cross-tenant ref is refused before any
+  request leaves the process. Object ids are 128 random bits, so `tenant-data-isolation.md`'s "even if
+  guessed" has nothing to enumerate. Honest limitation: this is application-layer, weaker than RLS; the
+  mitigation is that the authoritative index of which objects exist belongs in PostgreSQL under RLS, and
+  the key layout (`<tenantId>/<kind>/<id>`, tenant first) leaves a bucket policy scoped to
+  `<tenantId>/*` expressible later — the object-storage analogue of the deferred second database role in
+  §4c.
+- **[DECISION] One S3-compatible adapter, never two.** A laptop container, a VPS container, and a managed
+  cloud bucket all speak the same protocol, so all three are the same code reached through different
+  `STORAGE_*` values. The one genuine protocol difference — path vs virtual-host bucket addressing — is
+  `STORAGE_ADDRESSING_STYLE`, configured rather than detected, because "if the host is an IP address, use
+  path style" is environment-tier detection wearing a disguise, which `environment-portability.md` AC5
+  forbids.
+- **[DECISION] The SigV4 signer and the HTTP client are hand-written**, on the same reasoning §1 already
+  records for the PostgreSQL client. SigV4 is a published, frozen algorithm with official test vectors,
+  and the AWS SDK is several hundred packages. `node:http`/`node:https` rather than `fetch` because
+  `fetch` adds headers underneath a signature.
+- **[DECISION] Object bodies are buffered, not streamed**, bounded by `STORAGE_MAX_OBJECT_BYTES` (default
+  32 MiB). In exchange every write can be hashed before it is sent, so the remote verifies integrity
+  rather than trusting us, and an oversized upload is rejected before a byte moves — which is what makes
+  `business-knowledge-configuration.md`'s "reject without silently discarding it" true in both directions.
+  Revisit if the platform ever accepts large media.
+- **[DECISION] The environment-variable reference is generated, never written.**
+  `environment-portability.md` states completeness as an inspectable criterion, and a hand-maintained
+  reference stops being complete on the second key anyone adds — silently. `@zeddev/deployment` renders
+  `docs/configuration.md` from the schemas that actually parse the environment, and a test fails the build
+  when the committed file drifts or when a package grows a `*_CONFIG_SCHEMA` that no registry knows about.
 
 ### Component map (the units `component-independence.md` requires be independently deployable)
 
@@ -198,22 +235,26 @@ call must never be able to cause Meta to redeliver.
   backoff with full jitter, a dead-letter path, per-partition FIFO ordering, round-robin tenant fairness, and
   a `LISTEN`/`NOTIFY` consumer that sleeps rather than polls. Ships a real adapter, an in-memory fake, and a
   shared conformance suite that runs against both. See §4d.
-- `src/lib/storage` — S3-compatible object storage port.
+- **[DONE]** `src/lib/storage` — S3-compatible object storage port: hand-written SigV4 signer, a real
+  adapter, an in-memory fake, and a shared conformance suite that runs both. See §4e.
 - **[DONE]** `src/lib/testing` — in-memory fakes for every port, plus a spec-traceability helper so each test can
   declare which spec file and acceptance criterion it covers.
 - Container definitions: one Dockerfile per service, a Compose file for laptop and VPS, and a documented
   environment-variable reference. `environment-portability.md` requires the config input list be complete
-  enough to explain every behavioral difference between tiers. The reference should be *generated* from
-  the config schemas via `renderReference()` rather than written, so it cannot drift — that is the whole
-  reason `@zeddev/config` has that function.
+  enough to explain every behavioral difference between tiers. The reference is now *generated* from the
+  config schemas — `@zeddev/deployment` renders it as `docs/configuration.md`, so it cannot drift. What
+  remains is the Dockerfiles and the Compose file themselves, and that half is blocked: `src/services/*`
+  is still empty, so there is no service to write a Dockerfile for.
 - **[DONE]** Baseline database schema and migrations for tenants, users, and the audit/event records that
   several specs require. Delivered as `@zeddev/schema`: `tenants`, `tenant_lifecycle_events`, `accounts`,
   `client_sessions`, `account_tokens`, `operators`, `operator_sessions`, `access_records`,
   `tenant_secrets`, `secret_access_records`.
 
-> **P0 remaining scope.** `storage` and container definitions. The queue is done; §4d records what was
-> learned building it, including two follow-ups the P2 services must pick up (setting
-> `maxInFlightPerTenant`, and calling `purgeSucceeded` from the scheduler).
+> **P0 remaining scope.** Container definitions — specifically the Dockerfiles and Compose file, blocked
+> on `src/services/*` existing. The queue and object storage are both done; §4d and §4e record what was
+> learned building them, including follow-ups later phases must pick up: setting `maxInFlightPerTenant`
+> and calling `purgeSucceeded` from the scheduler (queue), and calling `verifyAccess()` from every
+> service's startup path (storage).
 
 ### P1 — Control plane (a client can sign up, configure, and reach "ready")
 
@@ -321,10 +362,12 @@ call must never be able to cause Meta to redeliver.
 - **[DONE, ongoing] Acceptance-criteria traceability.** `specTest(spec, criterion, name, fn)` in
   `src/lib/testing` records the mapping and throws at definition time if the spec filename does not
   exist, so a spec rename breaks the build instead of silently orphaning the criterion. `npm run
-  spec-coverage` reports per-spec coverage. Current state: 12 of 27 specs have covering tests, 84
-  spec-linked assertions; `tenant-data-isolation.md` is at 10 of 10 criteria,
-  `credential-and-secret-handling.md` at 14 of 15, and `message-delivery-reliability.md` at 11 of 17.
-  The 15 uncovered specs are all P1-P4 features not yet built.
+  spec-coverage` reports per-spec coverage. Current state: 13 of 27 specs have covering tests, 116
+  spec-linked assertions; `tenant-data-isolation.md` is at 16 criteria, `credential-and-secret-handling.md`
+  at 17, `environment-portability.md` at 15, and `message-delivery-reliability.md` at 13.
+  `business-knowledge-configuration.md` and `client-offboarding-and-data-retention.md` now have covering
+  tests (3 each), where before they had none. The 14 remaining uncovered specs are all P1-P4 features not
+  yet built.
 
 ---
 
@@ -521,6 +564,69 @@ before the operator dashboard ships in P3.
   migration. It is safe to add — the table holds routing metadata only — but it should be a deliberate act.
 - `dedupeKey` is enqueue idempotency, **not** the AC4 inbound-redelivery suppression. That record must
   outlive the queue row and belongs to the gateway with its own retention.
+
+---
+
+## 4e. Findings from the object storage increment
+
+- **An HTTP HEAD response carries no body, so S3's error code is unavailable on it.** The first version of
+  `verifyAccess()` did `HEAD /<bucket>`, which cannot distinguish "no such bucket" from "wrong credential"
+  from "denied" — every startup misconfiguration collapsed to the same undiagnosable 403, defeating the
+  whole point of a preflight under `environment-portability.md`. Caught only because the tests asserted
+  the *specific* error class rather than that it failed. Fixed by listing one key instead: same round
+  trip, and it proves reachability, credential validity, bucket existence, and read permission.
+- **`URLSearchParams` is not the same encoder SigV4 requires.** It renders a space as `+` where SigV4
+  requires `%20`, and encodes a different unreserved set. Sending one form while signing another is a 403
+  that appears only for values containing the offending character — here, a listing continuation token,
+  which is to say only once a tenant has enough objects to paginate. The query string is now written with
+  the signer's own encoder.
+- **A hand-written signer needs an external oracle, and SigV4 has one.** The published worked example is
+  asserted at each intermediate stage — canonical request, string to sign, derived signing key — not only
+  at the final signature, because a single end assertion says "it is broken" and nothing about where. This
+  is the property `@zeddev/db`'s SCRAM implementation does not have and this one does.
+- **A shared utility copied is a shared utility that will diverge.** `exponentialBackoff` moved from
+  `@zeddev/queue` to `@zeddev/time` when storage needed the same curve — an object store on a free tier
+  answers a burst with `SlowDown` for the same reason a queue's upstream does. `DEFAULT_BACKOFF` stayed in
+  the queue, because the *parameters* are a property of what is being retried. Same move for
+  `assertTenantId`, which now lives in a new `@zeddev/tenancy`: `@zeddev/storage` must not depend on
+  `@zeddev/db` (an object store that drags in a PostgreSQL wire client is a `component-independence.md`
+  violation), so the rule's home is neither of them. That rule is sharper in storage than in the database:
+  a tenant id is a *path segment* in every object key, so a value containing `/` does not fail, it
+  silently relocates one tenant's object under another's prefix.
+- **The pagination loop is the part of a deletion sweep that is never exercised.** A continuation-token
+  loop tested only below the page size is not tested, and what it breaks — `deleteTenant` stopping short —
+  is precisely the promise `client-offboarding-and-data-retention.md` calls irreversible. The test fixture
+  pins the page size to 2 so every listing in the conformance suite crosses at least one boundary.
+  Relatedly, a truncated listing with no continuation token now raises rather than silently ending the
+  loop.
+- **A prefix sweep must not delete what it did not write.** A bucket may hold keys from another
+  application on a small deployment. `deleteTenant` parses every key and skips what does not match the
+  platform's layout, rather than deleting whatever the prefix returns.
+- **Two harness scripts writing one `.env.test` is an ordering bug waiting to happen.** `scripts/db.sh`
+  truncated the file; adding `scripts/storage.sh` would have meant whichever ran last silently disabled
+  the other's suite — the §4c "green run that proves nothing" failure, arriving by a new route. Both
+  scripts now upsert only their own `ZEDDEV_TEST_*` block. `scripts/require-db.ts` became
+  `scripts/require-services.ts` and requires both, because the object store is the one place in the
+  platform where isolation is *not* enforced below the application, so its isolation tests are the least
+  affordable to skip.
+
+### Follow-ups the object storage port leaves open
+
+- No encryption of object *bodies* at rest. There is no confirmed spec requirement for it —
+  `credential-and-secret-handling.md` scopes at-rest protection to credentials — but the §4 open question
+  about whether the protection boundary must defend against an attacker holding the running host decides
+  it, and knowledge documents plus inbound media are the largest body of client content outside the
+  database. `@zeddev/secrets`' `SecretSealer` is the tool if the answer is yes.
+- The authoritative index of stored objects belongs in PostgreSQL under RLS and does not exist yet. Until
+  it does, tenant isolation for objects rests on the port's ownership check and unguessable ids rather than
+  on row-level security. P1's business-knowledge work owns this.
+- A bucket policy or IAM policy scoped to `<tenantId>/*` is expressible against the key layout and is not
+  implemented. Worth doing when the platform runs somewhere that offers it.
+- Nothing calls `verifyAccess()` yet; every service's startup path must, alongside
+  `assertTenantIsolationEnforceable()`.
+- `ensureBucket()` is deliberately not called on first write. Auto-creating on demand turns a typo in
+  `STORAGE_BUCKET` into a silently-created empty bucket that the platform then writes tenant documents
+  into — a data-loss shape that looks exactly like success.
 
 ---
 

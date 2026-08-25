@@ -1,0 +1,21 @@
+{
+  "name": "@zeddev/storage",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./testing": "./testing.ts"
+  },
+  "dependencies": {
+    "@zeddev/config": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/logging": "*",
+    "@zeddev/secrets": "*",
+    "@zeddev/tenancy": "*",
+    "@zeddev/time": "*"
+  },
+  "devDependencies": {
+    "@zeddev/testing": "*"
+  }
+}

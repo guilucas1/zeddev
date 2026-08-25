@@ -56,7 +56,8 @@
  * application code. That is tracked in IMPLEMENTATION_PLAN.md.
  */
 
-import { TenantAccessError, ValidationError } from '@zeddev/errors';
+import { TenantAccessError } from '@zeddev/errors';
+import { assertTenantId } from '@zeddev/tenancy';
 import type { Connection } from './connection.ts';
 import type { Pool } from './pool.ts';
 
@@ -71,23 +72,6 @@ export const IDENTITY_SCOPE_SETTING = 'app.identity_scope';
 
 /** Session setting that, when `on`, admits the queue routing tables a worker must read before a tenant is known. */
 export const DISPATCH_SCOPE_SETTING = 'app.dispatch_scope';
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Reject anything that is not a UUID before it reaches the database.
- *
- * Defence in depth rather than injection protection — the value is already a
- * bound parameter. The real purpose is that `set_config` accepts any text, so a
- * malformed tenant id would be stored happily and only fail later at the
- * `::uuid` cast inside the policy, where the error is attributed to whichever
- * query happened to run next rather than to the caller that supplied the bad id.
- */
-export function assertTenantId(tenantId: string): void {
-  if (!UUID_PATTERN.test(tenantId)) {
-    throw new ValidationError([{ key: 'tenantId', reason: 'must be a UUID' }]);
-  }
-}
 
 /**
  * Run `fn` with every query scoped to one tenant.

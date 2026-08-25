@@ -47,7 +47,6 @@ export {
 } from './migrate.ts';
 export {
   assertBelongsToTenant,
-  assertTenantId,
   bindTenantContext,
   DISPATCH_SCOPE_SETTING,
   IDENTITY_SCOPE_SETTING,

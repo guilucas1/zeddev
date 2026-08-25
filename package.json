@@ -13,11 +13,14 @@
     "test": "node --env-file-if-exists=.env.test --test \"src/**/*.test.ts\"",
     "test:coverage": "node --env-file-if-exists=.env.test --test --experimental-test-coverage \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "check": "npm run typecheck && node scripts/require-db.ts && npm test",
+    "check": "npm run typecheck && node scripts/require-services.ts && npm test",
     "spec-coverage": "node scripts/spec-coverage.ts",
     "db:up": "bash scripts/db.sh up",
     "db:down": "bash scripts/db.sh down",
-    "check:offline": "npm run typecheck && npm test"
+    "check:offline": "npm run typecheck && npm test",
+    "storage:up": "bash scripts/storage.sh up",
+    "storage:down": "bash scripts/storage.sh down",
+    "config-reference": "node scripts/config-reference.ts"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

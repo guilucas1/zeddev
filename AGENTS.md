@@ -19,11 +19,14 @@ Run from the repo root.
 | `npm install` | Links workspaces. Required after adding a package under `src/lib/*` or `src/services/*`. |
 | `npm test` | Runs the full suite with `--env-file-if-exists=.env.test`, so database settings are picked up automatically. |
 | `npm run typecheck` | `tsc --noEmit`. Type errors do **not** fail `npm test` — type stripping ignores types — so this must be run separately. |
-| `npm run db:up` | Starts a disposable PostgreSQL 17 container (`zeddev-pg`) on `127.0.0.1:55432` and writes `.env.test`. Required before `npm run check`. |
-| `npm run db:down` | Removes the `zeddev-pg` container and `.env.test`. |
-| `npm run check` | `typecheck`, then requires a database, then `test`. Use this as the gate before committing. |
-| `npm run check:offline` | `typecheck` + `test` without a database. Does not cover `@zeddev/db` or `@zeddev/schema`. Only use when Docker is unavailable. |
+| `npm run db:up` | Starts a disposable PostgreSQL 17 container (`zeddev-pg`) on `127.0.0.1:55432` and adds its settings to `.env.test`. Required before `npm run check`. |
+| `npm run db:down` | Removes the `zeddev-pg` container and its `.env.test` entries. |
+| `npm run storage:up` | Starts a disposable MinIO container (`zeddev-minio`) on `127.0.0.1:59000` and adds its settings to `.env.test`. Required before `npm run check`. |
+| `npm run storage:down` | Removes the `zeddev-minio` container and its `.env.test` entries. |
+| `npm run check` | `typecheck`, then requires both PostgreSQL and object storage, then `test`. Use this as the gate before committing. Calls `scripts/require-services.ts`. |
+| `npm run check:offline` | `typecheck` + `test` without a database. Does not cover `@zeddev/db`, `@zeddev/schema`, or `@zeddev/storage`. Only use when Docker is unavailable. |
 | `npm run spec-coverage` | Prints which `specs/*.md` have covering tests and which have none. |
+| `npm run config-reference` | Regenerates `docs/configuration.md` from the config schemas. A test fails the build if the committed file is stale. |
 
 Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 
@@ -46,6 +49,16 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   `runQueueConformance(harness)` from `@zeddev/queue/testing` is the single definition of the
   port's semantics and runs against both the PostgreSQL adapter and the in-memory fake. Import
   `InMemoryQueue` only from `@zeddev/queue/testing`, never from `@zeddev/queue`.
+- **A new `ObjectStore` implementation must pass the shared conformance suite.**
+  `runStorageConformance(harness)` from `@zeddev/storage/testing` is the single definition of
+  the port's semantics and runs against both the S3 adapter and the in-memory fake. Import
+  `InMemoryObjectStore` only from `@zeddev/storage/testing`, never from `@zeddev/storage`.
+- **A tenant id is validated in exactly one place**: `assertTenantId`/`normalizeTenantId` from
+  `@zeddev/tenancy`. Do not re-derive the rule — in object storage a tenant id is a key path
+  segment, so a value containing `/` silently relocates one tenant's object under another's prefix.
+- **Adding a `*_CONFIG_SCHEMA` to a package means registering it** in `PLATFORM_CONFIG_SCHEMAS`
+  in `src/lib/deployment/index.ts` and running `npm run config-reference`. A test scans
+  `src/lib` and fails the build otherwise.
 
 ### Database-backed tests
 
@@ -63,6 +76,17 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - Migrations live at `src/lib/schema/migrations/NNNN_snake_case_name.sql`, are
   forward-only, gapless from `0001`, and are checksummed after they are applied
   (editing an applied one fails the run).
+
+### Object-storage-backed tests
+
+- Tests for `@zeddev/storage` run against a real S3-compatible server (MinIO); there is
+  no fake server in the package, on purpose — a fake would have to implement SigV4
+  verification in order to test SigV4 signing.
+- Each fixture creates and drops its own bucket via `createTestBucket()` from
+  `@zeddev/storage/testing`.
+- The fixture pins `listPageSize` to 2 so every listing crosses a continuation-token boundary.
+- What *is* faked, via the injectable `transport` option on `S3ObjectStore`, is only what a
+  real server will not produce on demand: throttling, corruption at rest, a truncated listing.
 
 ## Gotchas
 
@@ -87,3 +111,13 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - A test asserting that content did not leak into a log must use a needle that cannot occur in
   a fixture identifier. Test tenant UUIDs contain long runs of repeated digits, so short numeric
   markers produce false positives.
+- An HTTP `HEAD` response carries no body, so S3's `<Error><Code>` is unavailable on it. Any
+  check that must distinguish "no such bucket" from "bad credential" has to use a method that
+  returns a body — `verifyAccess()` lists one key for this reason.
+- `URLSearchParams` is not the encoder SigV4 requires (it renders a space as `+`, not `%20`).
+  Build query strings with `canonicalQuery` from `@zeddev/storage`, or the signature will not
+  match for values containing the offending characters.
+- `scripts/db.sh` and `scripts/storage.sh` each upsert only their own `ZEDDEV_TEST_*` block in
+  `.env.test` and can be run in either order. Do not make either one truncate the file.
+- A new log field name is silently redacted unless it is added to `OPERATIONAL_FIELDS` in
+  `src/lib/logging/index.ts`.

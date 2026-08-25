@@ -1,6 +1,7 @@
 /**
  * Tests that need no database: the conformance suite against the in-memory
- * adapter, the backoff curve, and the consumer loop.
+ * adapter and the consumer loop. The backoff curve moved to `@zeddev/time` with
+ * the function itself.
  *
  * The consumer is tested here rather than against PostgreSQL on purpose. What it
  * does — route by kind, complete on success, fail on throw, dead-letter what
@@ -16,7 +17,7 @@ import { TransientTransportError } from '@zeddev/errors';
 import { Logger, MemorySink } from '@zeddev/logging';
 import { FakeClock } from '@zeddev/time';
 import { specTest, unitTest } from '@zeddev/testing';
-import { exponentialBackoff, runConsumer, type ClaimedJob } from './index.ts';
+import { runConsumer, type ClaimedJob } from './index.ts';
 import { InMemoryQueue, runQueueConformance, type QueueHarness } from './testing.ts';
 
 const TENANTS = [
@@ -44,41 +45,6 @@ const memoryHarness: QueueHarness = {
 };
 
 runQueueConformance(memoryHarness);
-
-// ---------------------------------------------------------------------------
-// Backoff
-// ---------------------------------------------------------------------------
-
-describe('backoff', () => {
-  unitTest('doubles per attempt and stops at the ceiling', () => {
-    // Jitter off, so the curve itself is what is under test. The jittered path is
-    // exercised separately below.
-    const backoff = exponentialBackoff({ baseMs: 1000, maxMs: 8000, jitter: 0 });
-    assert.deepEqual([1, 2, 3, 4, 5, 6].map(backoff), [1000, 2000, 4000, 8000, 8000, 8000]);
-  });
-
-  unitTest('never overflows on an implausibly high attempt number', () => {
-    // A lease that expires repeatedly could in principle drive the attempt count
-    // high; `2 ** attempt` without a clamp becomes Infinity, and an interval of
-    // Infinity is a job that is never retried and never dead-lettered.
-    const backoff = exponentialBackoff({ baseMs: 1000, maxMs: 60_000, jitter: 0 });
-    assert.equal(backoff(1000), 60_000);
-  });
-
-  unitTest('full jitter draws from zero up to the computed delay', () => {
-    const lowest = exponentialBackoff({ baseMs: 1000, maxMs: 8000, random: () => 0 });
-    const highest = exponentialBackoff({ baseMs: 1000, maxMs: 8000, random: () => 1 });
-    assert.equal(lowest(3), 0);
-    assert.equal(highest(3), 4000);
-  });
-
-  unitTest('partial jitter keeps a fixed floor', () => {
-    // The property that matters: with jitter below 1 there is always a minimum
-    // wait, so a retry storm cannot collapse into an immediate hot loop.
-    const backoff = exponentialBackoff({ baseMs: 1000, maxMs: 8000, jitter: 0.5, random: () => 0 });
-    assert.equal(backoff(2), 1000);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Consumer
