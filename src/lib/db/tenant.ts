@@ -69,6 +69,9 @@ export const PLATFORM_SCOPE_SETTING = 'app.platform_scope';
 /** Session setting that, when `on`, admits the tables authentication must read before a tenant is known. */
 export const IDENTITY_SCOPE_SETTING = 'app.identity_scope';
 
+/** Session setting that, when `on`, admits the queue routing tables a worker must read before a tenant is known. */
+export const DISPATCH_SCOPE_SETTING = 'app.dispatch_scope';
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -159,6 +162,55 @@ export async function withIdentityScope<T>(
     await connection.query('SELECT set_config($1, $2, true)', [IDENTITY_SCOPE_SETTING, 'on']);
     return fn(connection);
   });
+}
+
+/**
+ * Run `fn` with access to the queue routing tables, before a tenant is known.
+ *
+ * The fourth scope, and it exists for an ordering constraint with exactly the
+ * same shape as the identity scope's. A worker must choose the next job *before*
+ * it can know which tenant that job belongs to — the tenant is derived from the
+ * job, just as at login it is derived from the account. A dispatch that already
+ * knew its tenant would be a dispatch that could only ever serve one tenant, and
+ * `cost-efficient-operation.md` forbids per-tenant workers.
+ *
+ * What limits the blast radius is that the reachable set is fixed in migrations
+ * and holds only routing metadata: queue name, state, attempt counts, timestamps,
+ * and digests. Job payloads live in `queue_job_payloads`, which carries no
+ * dispatch policy at all, so no amount of querying from this scope reaches
+ * message content. Reading a payload requires `bindTenantContext` with the
+ * tenant the claimed job named, which is what `@zeddev/queue` does.
+ */
+export async function withDispatchScope<T>(
+  pool: Pool,
+  fn: (connection: Connection) => Promise<T>,
+): Promise<T> {
+  return pool.transaction(async (connection) => {
+    await connection.query('SELECT set_config($1, $2, true)', [DISPATCH_SCOPE_SETTING, 'on']);
+    return fn(connection);
+  });
+}
+
+/**
+ * Bind a tenant to a transaction that is already open.
+ *
+ * `withTenant` is the way to do this and should be used everywhere it fits. This
+ * lower-level primitive exists for the one case it cannot express: a queue
+ * consumer discovers the tenant partway through a transaction it has already
+ * begun under the dispatch scope, and the claim and the payload read must commit
+ * together or not at all. Splitting them into two transactions would leave a
+ * window in which a job is claimed but its payload was never read, which is
+ * recoverable — the lease expires — but wastes an attempt on every occurrence.
+ *
+ * The binding is still `SET LOCAL`, so it still dies with the transaction and
+ * still cannot leak to the next borrower of the connection. What the caller gives
+ * up is the guarantee that the transaction was *opened* for one tenant, which is
+ * why this is not the default.
+ */
+export async function bindTenantContext(connection: Connection, tenantId: string): Promise<void> {
+  assertTenantId(tenantId);
+  await connection.query('SELECT set_config($1, $2, true)', [TENANT_SETTING, tenantId]);
+  connection.boundTenantId = tenantId;
 }
 
 /**

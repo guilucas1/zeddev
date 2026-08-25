@@ -55,6 +55,9 @@ export const TENANT_SCOPED_TABLES = [
   'account_tokens',
   'client_sessions',
   'tenant_secrets',
+  'queue_jobs',
+  'queue_job_payloads',
+  'queue_dispatch_cursors',
 ] as const;
 
 /**
@@ -72,3 +75,18 @@ export const PLATFORM_READABLE_TABLES = [
   'access_records',
   'secret_access_records',
 ] as const;
+
+/**
+ * Tables reachable under the dispatch scope — the cross-tenant context a queue
+ * consumer runs in while choosing which job to run next.
+ *
+ * Enumerated for the same reason as `PLATFORM_READABLE_TABLES`: so the
+ * *complement* is enforceable. The dispatch scope exists because a worker cannot
+ * bind a tenant it has not yet discovered, and the price of that is a context
+ * that sees across tenants. What keeps that price bounded is that the reachable
+ * set is fixed in migrations and contains only routing metadata — never a job
+ * payload, which lives in `queue_job_payloads` and carries no dispatch policy at
+ * all. A test asserting this list is complete turns "someone added a dispatch
+ * policy to a table holding content" into a build failure.
+ */
+export const DISPATCH_READABLE_TABLES = ['queue_jobs', 'queue_dispatch_cursors'] as const;

@@ -1,11 +1,12 @@
 # Implementation Plan
 
-**Status as of 2026-08-25:** P0 foundation mostly landed. `src/` now contains eight dependency-free
+**Status as of 2026-08-25:** P0 foundation mostly landed. `src/` now contains nine dependency-free
 workspace packages (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`, `@zeddev/logging`,
-`@zeddev/config`, `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`) and 143 passing tests, of which
-37 run against a real PostgreSQL. Persistence, migrations, and database-enforced tenant isolation are
-in place and proven by cross-tenant negative tests. The remaining P0 items are `queue`, `storage`, and
-container definitions.
+`@zeddev/config`, `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`) and 208 passing
+tests, of which 37 run against a real PostgreSQL. Persistence, migrations, and database-enforced tenant
+isolation are in place and proven by cross-tenant negative tests. A durable, tenant-fair job queue is in
+place, with per-partition FIFO ordering, lease-based at-least-once delivery, and a dead-letter path. The
+remaining P0 items are `storage` and container definitions.
 
 Run `npm run db:up` then `npm run check` before assuming any of the above still holds. `npm run check`
 now *refuses* to pass without a database, because the database-backed suites are where every tenant
@@ -127,6 +128,20 @@ These are load-bearing — most items below assume them. Recorded here so they a
   names in `OPERATIONAL_FIELDS`; everything else is replaced with `[redacted]`. A denylist fails open
   the first time a field is named `body` or `pw`. Log calls also take a dotted event name rather than
   a message string, so there is no free-text channel to interpolate content into.
+- **[DECISION] A fourth row-level-security scope, `app.dispatch_scope`, for queue dispatch.** It exists for
+  an ordering constraint with the same shape as the identity scope's: a worker must select the next job
+  *before* it can know which tenant that job belongs to, because the tenant is derived from the job. The
+  scope's reach is fixed in migrations and holds routing metadata only.
+- **[DECISION] Job payloads live in a separate table from job routing metadata.** Row-level security is
+  row-level, not column-level, so "dispatch may read the row but not the payload" is not expressible as a
+  policy. `queue_jobs` carries a dispatch policy; `queue_job_payloads` carries none, so a payload can only
+  be read inside a transaction bound to its own tenant. This makes `tenant-data-isolation.md` AC2 survive a
+  bug in the dispatch loop rather than depend on there being none.
+- **[DECISION] Queue dispatch is round-robin across tenants via a per-(queue, tenant) cursor**, never a
+  global FIFO. `message-delivery-reliability.md` AC16 forbids one tenant's backlog delaying another's, and
+  `cost-efficient-operation.md` forbids the other obvious answer, a queue per tenant. Fair scheduling
+  inside shared capacity is what is left. An optional per-tenant in-flight cap covers the case round-robin
+  cannot: a tenant whose handler hangs occupying every worker.
 
 ### Component map (the units `component-independence.md` requires be independently deployable)
 
@@ -179,8 +194,10 @@ call must never be able to cause Meta to redeliver.
 - **[DONE]** `src/lib/secrets` — sealing and unsealing of recoverable secrets, one-way transformation for account
   credentials, and redaction helpers, per `credential-and-secret-handling.md`.
 - **[DONE]** `src/lib/time` — clock port with a controllable fake.
-- `src/lib/queue` — job enqueue/consume port over Postgres, with at-least-once delivery, backoff, and a
-  dead-letter path.
+- **[DONE]** `src/lib/queue` — job enqueue/consume port over Postgres. At-least-once via leases, exponential
+  backoff with full jitter, a dead-letter path, per-partition FIFO ordering, round-robin tenant fairness, and
+  a `LISTEN`/`NOTIFY` consumer that sleeps rather than polls. Ships a real adapter, an in-memory fake, and a
+  shared conformance suite that runs against both. See §4d.
 - `src/lib/storage` — S3-compatible object storage port.
 - **[DONE]** `src/lib/testing` — in-memory fakes for every port, plus a spec-traceability helper so each test can
   declare which spec file and acceptance criterion it covers.
@@ -194,10 +211,9 @@ call must never be able to cause Meta to redeliver.
   `client_sessions`, `account_tokens`, `operators`, `operator_sessions`, `access_records`,
   `tenant_secrets`, `secret_access_records`.
 
-> **P0 remaining scope.** `queue`, `storage`, and container definitions. The queue is unblocked now —
-> it is built on `@zeddev/db`, and `LISTEN`/`NOTIFY` support is already in the client so a worker can
-> wait for work rather than poll (idle cost near zero, per `cost-efficient-operation.md`). §4c records
-> the fairness constraint the queue must satisfy, which is not obvious from the schema.
+> **P0 remaining scope.** `storage` and container definitions. The queue is done; §4d records what was
+> learned building it, including two follow-ups the P2 services must pick up (setting
+> `maxInFlightPerTenant`, and calling `purgeSucceeded` from the scheduler).
 
 ### P1 — Control plane (a client can sign up, configure, and reach "ready")
 
@@ -305,10 +321,10 @@ call must never be able to cause Meta to redeliver.
 - **[DONE, ongoing] Acceptance-criteria traceability.** `specTest(spec, criterion, name, fn)` in
   `src/lib/testing` records the mapping and throws at definition time if the spec filename does not
   exist, so a spec rename breaks the build instead of silently orphaning the criterion. `npm run
-  spec-coverage` reports per-spec coverage. Current state: 12 of 27 specs have covering tests, 63
-  spec-linked assertions; `tenant-data-isolation.md` is at 9 of 10 criteria and
-  `credential-and-secret-handling.md` at 14 of 15. The 15 uncovered specs are all P1-P4 features not
-  yet built.
+  spec-coverage` reports per-spec coverage. Current state: 12 of 27 specs have covering tests, 84
+  spec-linked assertions; `tenant-data-isolation.md` is at 10 of 10 criteria,
+  `credential-and-secret-handling.md` at 14 of 15, and `message-delivery-reliability.md` at 11 of 17.
+  The 15 uncovered specs are all P1-P4 features not yet built.
 
 ---
 
@@ -450,6 +466,61 @@ to a single transaction, and unable to reach conversation content no matter who 
 reachable set is fixed in migrations. But it is weaker than a second PostgreSQL role that simply lacks
 the grant. The schema is built so that introducing one later changes no application code. Worth doing
 before the operator dashboard ships in P3.
+
+---
+
+## 4d. Findings from the queue increment
+
+- **A cross-tenant read scope is unavoidable for dispatch, and row-level security cannot narrow it by
+  column.** A worker must select a job before it can know whose job it is. RLS is row-level, so "dispatch
+  may read the row but not the payload" cannot be written as a policy. Splitting the payload into its own
+  table is what makes it expressible — the same move `tenant_secrets` makes against the identity scope. Any
+  future table that a cross-tenant context must route around, without reading, needs the same treatment.
+- **The canonical PostgreSQL dequeue violates a spec outright.** `SELECT ... WHERE state = 'ready' ORDER BY
+  seq LIMIT 1 FOR UPDATE SKIP LOCKED` is what every article recommends, and it fails AC16 by construction:
+  ten thousand of one tenant's jobs sit in front of everyone else's next message. The fairness cursor costs
+  one table, one sequence, and one UPDATE per claim. Recorded because the naive form will look like a
+  simplification to anyone reading the dispatch query cold.
+- **`SKIP LOCKED` over a single candidate row is a throughput trap.** Fairness selection naturally produces
+  one best row, and if every concurrent worker locks that same row, all but one return empty while work is
+  ready. Dispatch shortlists instead (default 8), ordered breadth-first across tenants, and locks the first
+  available.
+- **Retryability belongs to the error type, not to the attempt count.** A `TerminalTransportError` or a
+  `DefectError` fails identically on every attempt, so spending the full allowance to rediscover that only
+  delays AC8's failure record. `fail()` reads `toDiagnostic(error).retryable` and dead-letters immediately
+  when it is false. This is the §4c taxonomy invariant paying off a second time.
+- **A lease that expires under a still-running handler is a duplicate reply.** Raising the visibility
+  timeout is not the fix — it also raises how long a genuinely dead worker's job sits stuck. The consumer
+  heartbeats at a third of the lease instead, and `complete`, `fail`, and `heartbeat` all match on
+  `(id, state, attempt)` so a worker that lost its lease cannot overwrite the state of the worker that now
+  holds it.
+- **A fake queue is the easiest place in this system to prove nothing.** If the fake dispatches FIFO while
+  the real one dispatches fairly, every test above the port is evidence about a system nobody deploys, and
+  nothing fails to reveal it. `conformance.ts` runs one suite against both adapters. The only intended
+  difference is the time source: the real adapter takes time from the database server, because a worker
+  with a fast clock must not be able to expire its own lease early; the fake takes it from an injected
+  clock so a lease expiry can be driven rather than waited for.
+- **A content-leak assertion needs a needle that cannot occur in a fixture identifier.** The first version
+  of the redaction test searched logs for `4111` and matched the `4111` inside the fixture's own tenant
+  UUID, reporting a leak that did not exist. Same shape as the §4b finding about quote-aware guards: a test
+  that can fire for the wrong reason is as bad as one that never fires.
+- **Dispatch cost is proportional to active tenants, not to queue depth, and that is deliberate.** The
+  tenant shortlist is intentionally uncapped: capping it can stall a tenant whose jobs are all
+  partition-blocked while other tenants hold the top of the list. Worth revisiting only if the platform ever
+  has thousands of concurrently active tenants, and that is a change to one query.
+
+### Follow-ups the queue leaves open
+
+- `maxInFlightPerTenant` is deliberately not defaulted — the right value depends on total worker count,
+  which the library cannot know, and a wrong default silently throttles a single-tenant deployment. The P2
+  conversation worker must set it, or AC16 holds for dispatch frequency but not for worker occupancy.
+- `purgeSucceeded` has no caller yet. The P2 scheduler owns it. Until then, succeeded jobs accumulate; the
+  retention window it is given is really the enqueue-idempotency window, so it must exceed the upstream's
+  redelivery interval.
+- `queue_jobs` carries no platform-scope policy, so P3's operator queue-depth metrics need a forward
+  migration. It is safe to add — the table holds routing metadata only — but it should be a deliberate act.
+- `dedupeKey` is enqueue idempotency, **not** the AC4 inbound-redelivery suppression. That record must
+  outlive the queue row and belongs to the gateway with its own retention.
 
 ---
 

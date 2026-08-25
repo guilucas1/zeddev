@@ -48,9 +48,12 @@ export {
 export {
   assertBelongsToTenant,
   assertTenantId,
+  bindTenantContext,
+  DISPATCH_SCOPE_SETTING,
   IDENTITY_SCOPE_SETTING,
   PLATFORM_SCOPE_SETTING,
   TENANT_SETTING,
+  withDispatchScope,
   withIdentityScope,
   withPlatformScope,
   withTenant,

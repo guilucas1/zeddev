@@ -30,7 +30,12 @@ import {
   type TestDatabase,
 } from '@zeddev/db/testing';
 import { specTest, unitTest } from '@zeddev/testing';
-import { migrateToLatest, PLATFORM_READABLE_TABLES, TENANT_SCOPED_TABLES } from './index.ts';
+import {
+  DISPATCH_READABLE_TABLES,
+  migrateToLatest,
+  PLATFORM_READABLE_TABLES,
+  TENANT_SCOPED_TABLES,
+} from './index.ts';
 
 describe('baseline schema', { skip: testDatabaseConfigured() ? false : SKIP_REASON }, () => {
   let db: TestDatabase;
@@ -144,6 +149,34 @@ describe('baseline schema', { skip: testDatabaseConfigured() ? false : SKIP_REAS
         assert.ok(
           readable.has(row.table_name),
           `${row.table_name} grants the platform scope but is not in PLATFORM_READABLE_TABLES`,
+        );
+      }
+    },
+  );
+
+  specTest(
+    'tenant-data-isolation.md',
+    'AC2 no data from one tenant conversation appears in another tenant context',
+    'no tenant-scoped table outside the declared dispatch-readable list is visible under the dispatch scope',
+    async () => {
+      if (!testDatabaseConfigured()) return;
+      // The same shape of assertion as the platform-scope one above, and for the
+      // same reason. The dispatch scope exists because a queue consumer must pick
+      // a job before it can know whose job it is, and the argument that this is
+      // safe rests entirely on the reachable set being routing metadata only. A
+      // table holding content that quietly grew a dispatch policy would break
+      // that argument without breaking any behavioral test.
+      const readable = new Set<string>(DISPATCH_READABLE_TABLES);
+      const withDispatchPolicy = await pool.query<{ table_name: string }>(
+        `SELECT DISTINCT c.relname AS table_name
+           FROM pg_policy p
+           JOIN pg_class c ON c.oid = p.polrelid
+          WHERE pg_get_expr(p.polqual, p.polrelid) LIKE '%has_dispatch_scope%'`,
+      );
+      for (const row of withDispatchPolicy.rows) {
+        assert.ok(
+          readable.has(row.table_name),
+          `${row.table_name} grants the dispatch scope but is not in DISPATCH_READABLE_TABLES`,
         );
       }
     },

@@ -1,0 +1,20 @@
+{
+  "name": "@zeddev/queue",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./testing": "./testing.ts"
+  },
+  "dependencies": {
+    "@zeddev/db": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/logging": "*",
+    "@zeddev/time": "*"
+  },
+  "devDependencies": {
+    "@zeddev/schema": "*",
+    "@zeddev/testing": "*"
+  }
+}

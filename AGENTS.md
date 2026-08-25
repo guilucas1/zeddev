@@ -42,6 +42,10 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - `src/lib/testing/portability.test.ts` scans all non-test sources and fails the build on
   environment-tier branching, embedded hostnames/endpoints, or credential-shaped literals.
   Configuration is the only permitted way to vary behavior between deployments.
+- **A new `Queue` implementation must pass the shared conformance suite.**
+  `runQueueConformance(harness)` from `@zeddev/queue/testing` is the single definition of the
+  port's semantics and runs against both the PostgreSQL adapter and the in-memory fake. Import
+  `InMemoryQueue` only from `@zeddev/queue/testing`, never from `@zeddev/queue`.
 
 ### Database-backed tests
 
@@ -53,6 +57,9 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   SECURITY`, and a policy; new tenant-scoped tables must also be added to
   `TENANT_SCOPED_TABLES` in `src/lib/schema/index.ts` or the structural test will not
   check them.
+- Tables reachable from the queue's cross-tenant dispatch context must also be listed in
+  `DISPATCH_READABLE_TABLES` in `src/lib/schema/index.ts`; a structural test fails the build if a
+  table grants `app.has_dispatch_scope()` without being declared there.
 - Migrations live at `src/lib/schema/migrations/NNNN_snake_case_name.sql`, are
   forward-only, gapless from `0001`, and are checksummed after they are applied
   (editing an applied one fails the run).
@@ -74,3 +81,9 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - When a `before` hook fails in `node:test`, the child tests report only
   `cancelledByParent`; the real error appears solely on the parent suite's entry. Use
   `--test-reporter=tap` and look at the suite line to see it.
+- A `PostgresQueue` holds one pool connection permanently once `waitForWork` is first called
+  (it is the `LISTEN` session). Size `DATABASE_POOL_MAX` accordingly and call `close()` on
+  shutdown, or the pool will not drain.
+- A test asserting that content did not leak into a log must use a needle that cannot occur in
+  a fixture identifier. Test tenant UUIDs contain long runs of repeated digits, so short numeric
+  markers produce false positives.
