@@ -796,6 +796,133 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   );
 
   // -------------------------------------------------------------------------
+  // Bot configuration: behaviour rules
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'behavior-rules-configuration.md',
+    'AC15 the client sees every structured rule with its enabled state and the current freeform text',
+    'create, edit, disable, delete, and freeform text over HTTP, each visible on the next GET',
+    async () => {
+      const { cookie } = await onboard();
+      const empty = await call(served, 'GET', '/v1/bot/behavior-rules', { cookie });
+      assert.equal(empty.status, 200);
+      assert.deepEqual(empty.body.rules, []);
+      assert.equal(empty.body.freeformInstructions, null);
+      assert.deepEqual(empty.body.options.kinds, ['never', 'always', 'only_when', 'avoid_topic']);
+      assert.equal(empty.body.limits.maxRules, 100);
+
+      const created = await call(served, 'POST', '/v1/bot/behavior-rules', {
+        cookie,
+        json: { kind: 'avoid_topic', subject: 'competitors', action: 'fallback' },
+      });
+      assert.equal(created.status, 201);
+      const id = created.body.rule.id;
+      assert.equal(created.body.rule.enabled, true);
+      const second = await call(served, 'POST', '/v1/bot/behavior-rules', {
+        cookie,
+        json: { kind: 'never', subject: 'swear' },
+      });
+      assert.equal(second.status, 201);
+
+      const edited = await call(served, 'PUT', '/v1/bot/behavior-rules/rule', {
+        cookie,
+        json: { id, kind: 'only_when', subject: 'discuss returns', condition: 'an order number was given' },
+      });
+      assert.equal(edited.status, 200);
+      assert.equal(edited.body.rule.condition, 'an order number was given');
+
+      const disabled = await call(served, 'PUT', '/v1/bot/behavior-rules/rule/enabled', {
+        cookie,
+        json: { id, enabled: false },
+      });
+      assert.equal(disabled.status, 200);
+      assert.equal(disabled.body.rule.enabled, false);
+
+      const text = await call(served, 'PUT', '/v1/bot/behavior-rules/freeform-instructions', {
+        cookie,
+        json: { freeformInstructions: 'Never promise delivery dates.' },
+      });
+      assert.equal(text.status, 200);
+      assert.equal(text.body.freeformInstructions, 'Never promise delivery dates.');
+
+      const view = await call(served, 'GET', '/v1/bot/behavior-rules', { cookie });
+      assert.deepEqual(
+        view.body.rules.map((rule: { subject: string; enabled: boolean }) => [rule.subject, rule.enabled]),
+        [
+          ['discuss returns', false],
+          ['swear', true],
+        ],
+      );
+      assert.equal(view.body.freeformInstructions, 'Never promise delivery dates.');
+
+      const deleted = await call(served, 'POST', '/v1/bot/behavior-rules/rule/delete', { cookie, json: { id } });
+      assert.equal(deleted.status, 204);
+      const cleared = await call(served, 'DELETE', '/v1/bot/behavior-rules/freeform-instructions', { cookie });
+      assert.equal(cleared.status, 200);
+      assert.equal(cleared.body.freeformInstructions, null);
+      assert.deepEqual(
+        cleared.body.rules.map((rule: { subject: string }) => rule.subject),
+        ['swear'],
+      );
+    },
+  );
+
+  specTest(
+    'behavior-rules-configuration.md',
+    'AC14 each business’s bot follows only its own business’s rules',
+    'one client’s rule id is not found in another client’s session, for every rule operation',
+    async () => {
+      const alpha = await onboard();
+      const beta = await onboard();
+      const created = await call(served, 'POST', '/v1/bot/behavior-rules', {
+        cookie: alpha.cookie,
+        json: { kind: 'avoid_topic', subject: 'competitors' },
+      });
+      const id = created.body.rule.id;
+
+      const attempts = [
+        call(served, 'PUT', '/v1/bot/behavior-rules/rule', {
+          cookie: beta.cookie,
+          json: { id, kind: 'never', subject: 'hijacked' },
+        }),
+        call(served, 'PUT', '/v1/bot/behavior-rules/rule/enabled', { cookie: beta.cookie, json: { id, enabled: false } }),
+        call(served, 'POST', '/v1/bot/behavior-rules/rule/delete', { cookie: beta.cookie, json: { id } }),
+      ];
+      for (const answer of await Promise.all(attempts)) {
+        assert.equal(answer.status, 404);
+        assert.equal(answer.body.error.code, 'resource.not_found');
+      }
+      assert.deepEqual((await call(served, 'GET', '/v1/bot/behavior-rules', { cookie: beta.cookie })).body.rules, []);
+      const alphaView = await call(served, 'GET', '/v1/bot/behavior-rules', { cookie: alpha.cookie });
+      assert.equal(alphaView.body.rules[0].subject, 'competitors');
+      assert.equal(alphaView.body.rules[0].enabled, true);
+    },
+  );
+
+  unitTest('behaviour-rule routes refuse invalid input with every issue, and anonymous or cross-site callers', async () => {
+    const { cookie } = await onboard();
+    const invalid = await call(served, 'POST', '/v1/bot/behavior-rules', {
+      cookie,
+      json: { kind: 'only_when', subject: 'discuss refunds' },
+    });
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(invalid.body.error.issues, [{ key: 'condition', reason: 'is required when kind is only_when' }]);
+
+    const badId = await call(served, 'POST', '/v1/bot/behavior-rules/rule/delete', { cookie, json: { id: '1; DROP' } });
+    assert.equal(badId.status, 400);
+
+    assert.equal((await call(served, 'GET', '/v1/bot/behavior-rules')).status, 401);
+    const forged = await call(served, 'POST', '/v1/bot/behavior-rules', {
+      cookie,
+      headers: { origin: 'https://example.org' },
+      json: { kind: 'never', subject: 'forged' },
+    });
+    assert.equal(forged.status, 403);
+    assert.deepEqual((await call(served, 'GET', '/v1/bot/behavior-rules', { cookie })).body.rules, []);
+  });
+
+  // -------------------------------------------------------------------------
   // Readiness, the go-live toggle, and the connection state
   // -------------------------------------------------------------------------
 

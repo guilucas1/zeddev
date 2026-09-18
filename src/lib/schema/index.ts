@@ -63,6 +63,8 @@ export const TENANT_SCOPED_TABLES = [
   'whatsapp_connection_transitions',
   'bot_activation',
   'bot_activation_events',
+  'bot_behavior_rules',
+  'bot_behavior_instructions',
 ] as const;
 
 /**

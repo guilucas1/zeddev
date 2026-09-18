@@ -42,16 +42,25 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
+  clearBehaviorInstructions,
   clearFreeformInstructions,
+  createBehaviorRule,
+  deleteBehaviorRule,
+  describeBehaviorRule,
+  describeBehaviorRules,
   describeBotStatus,
   describePersona,
   listBotStatuses,
   parseActivationInput,
   readActivationHistory,
+  readBehaviorRules,
   readBotStatus,
   readPersona,
+  saveBehaviorInstructions,
   savePersona,
+  setBehaviorRuleEnabled,
   setBotActive,
+  updateBehaviorRule,
 } from '@zeddev/bot';
 import type { Connection, Pool } from '@zeddev/db';
 import { AuthenticationError, TransientTransportError, ValidationError } from '@zeddev/errors';
@@ -394,6 +403,94 @@ export function createApi(dependencies: ApiDependencies): Api {
           clearFreeformInstructions(tx),
         );
         return { status: 200, body: describePersona(persona) };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Behaviour rules — behavior-rules-configuration.md. Routing is by exact
+    // path only, so an individual rule is named by the `id` in the JSON body,
+    // never by a path segment. A rule id that is not the session's own tenant's
+    // is "not found", indistinguishable from one that never existed.
+    // -----------------------------------------------------------------------
+    {
+      method: 'GET',
+      path: '/v1/bot/behavior-rules',
+      handle: async (context) => {
+        const configuration = await asClient(context, 'tenant.configuration.read', 'bot.behavior_rules', (tx) =>
+          readBehaviorRules(tx),
+        );
+        return { status: 200, body: describeBehaviorRules(configuration) };
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v1/bot/behavior-rules',
+      handle: async (context) => {
+        const body = await context.body();
+        const rule = await asClient(context, 'tenant.configuration.write', 'bot.behavior_rules', (tx) =>
+          createBehaviorRule(tx, body),
+        );
+        return { status: 201, body: { rule: describeBehaviorRule(rule) } };
+      },
+    },
+    {
+      // PUT because an edit replaces the rule's whole definition.
+      method: 'PUT',
+      path: '/v1/bot/behavior-rules/rule',
+      handle: async (context) => {
+        const body = await context.body();
+        const rule = await asClient(context, 'tenant.configuration.write', 'bot.behavior_rules', (tx) =>
+          updateBehaviorRule(tx, body),
+        );
+        return { status: 200, body: { rule: describeBehaviorRule(rule) } };
+      },
+    },
+    {
+      // `{ "id", "enabled": true | false }`: the desired state, not a toggle, so a
+      // retried request cannot flip the rule back.
+      method: 'PUT',
+      path: '/v1/bot/behavior-rules/rule/enabled',
+      handle: async (context) => {
+        const body = await context.body();
+        const rule = await asClient(context, 'tenant.configuration.write', 'bot.behavior_rules', (tx) =>
+          setBehaviorRuleEnabled(tx, body),
+        );
+        return { status: 200, body: { rule: describeBehaviorRule(rule) } };
+      },
+    },
+    {
+      // POST rather than DELETE-with-a-body, which intermediaries may drop.
+      method: 'POST',
+      path: '/v1/bot/behavior-rules/rule/delete',
+      handle: async (context) => {
+        const body = await context.body();
+        await asClient(context, 'tenant.configuration.write', 'bot.behavior_rules', (tx) =>
+          deleteBehaviorRule(tx, body),
+        );
+        return { status: 204 };
+      },
+    },
+    {
+      method: 'PUT',
+      path: '/v1/bot/behavior-rules/freeform-instructions',
+      handle: async (context) => {
+        const body = await context.body();
+        const configuration = await asClient(context, 'tenant.configuration.write', 'bot.behavior_rules', async (tx) => {
+          await saveBehaviorInstructions(tx, body);
+          return readBehaviorRules(tx);
+        });
+        return { status: 200, body: describeBehaviorRules(configuration) };
+      },
+    },
+    {
+      method: 'DELETE',
+      path: '/v1/bot/behavior-rules/freeform-instructions',
+      handle: async (context) => {
+        const configuration = await asClient(context, 'tenant.configuration.write', 'bot.behavior_rules', async (tx) => {
+          await clearBehaviorInstructions(tx);
+          return readBehaviorRules(tx);
+        });
+        return { status: 200, body: describeBehaviorRules(configuration) };
       },
     },
 

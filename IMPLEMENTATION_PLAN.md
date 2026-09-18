@@ -43,8 +43,15 @@ library, `@zeddev/whatsapp`, migrations `0006_whatsapp_connection` and `0007_bot
 API routes. That makes seventeen workspace packages and 595 passing tests, zero skipped. 15 of 27 specs now
 have covering tests, 261 spec-linked assertions. See §4j.
 
-The next increment: language configuration is still blocked on the §4 decision about the supported language
-list, so the next unblocked P1 item is business knowledge configuration (or behavior rules configuration).
+Behavior rules configuration (`behavior-rules-configuration.md`) is done too: structured rules plus
+freeform instructions, both rendered into the prompt by `behaviorDirectives`, migration
+`0008_bot_behavior_rules`, and seven new API routes. See §4k. That brings the totals to 626 passing tests,
+zero skipped, 16 of 27 specs with covering tests, 278 spec-linked assertions.
+
+The next unblocked P1 items are fallback message configuration, the bot disclosure setting, and human
+handoff enable/disable plus trigger configuration. Language configuration is still blocked on the §4
+supported-language-list decision; business knowledge configuration is blocked on the §4
+accepted-document-formats decision, though its freeform-entries half does not depend on it.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -374,14 +381,18 @@ call must never be able to cause Meta to redeliver.
   change, and the on/off event log are all enforced in the database (CHECK + triggers), so no path that
   loses readiness can leave a bot live. All 14 acceptance criteria covered against a real PostgreSQL,
   including a go-live-versus-connection-failure race. See §4j.
+- **[DONE]** Behavior rules configuration: individually addressable structured rules
+  (never/always/only_when/avoid_topic, with a required or spec-shaped-optional condition and a
+  respond/handoff/fallback action) with enable/disable/edit/delete lifecycles, plus freeform instructions,
+  both binding simultaneously. `@zeddev/bot` (`behavior.ts`) plus migration `0008_bot_behavior_rules` and
+  seven routes in `services/api`. 15 of 16 acceptance criteria covered at the instruction layer; AC16
+  (preview) is not implemented. See §4k.
 > **P1 remaining scope.** Everything below this line — language configuration through conversation
 > memory reset policy.
 
 - Language configuration with a platform default, per `language-configuration.md`.
 - Business knowledge configuration: freeform entries plus document upload, with upload failures surfaced
   rather than silently dropped, and a combined listing view.
-- Behavior rules configuration: individually addressable structured rules with enable/disable/edit/delete
-  lifecycles, plus freeform instructions, both binding simultaneously.
 - Fallback message configuration with per-trigger variants, a platform default, and preview.
 - Bot disclosure setting.
 - Human handoff enable/disable and trigger configuration.
@@ -476,7 +487,8 @@ call must never be able to cause Meta to redeliver.
   `environment-portability.md` at 20, `tenant-data-isolation.md` at 18, `component-independence.md` at 3.
   The remaining uncovered specs are all P1–P4 features not yet built. (After the readiness increment: 15 of
   27 specs, 261 assertions; `bot-activation-control.md` covers all 14 of its criteria and
-  `whatsapp-number-connection.md` 8 of 12.)
+  `whatsapp-number-connection.md` 8 of 12.) (After the behaviour-rules increment: 16 of 27 specs, 278
+  assertions; `behavior-rules-configuration.md` covers 15 of 16, AC16 preview pending the AI port.)
 
 ---
 
@@ -1017,6 +1029,63 @@ SMTP).
   behavior rules ever gate readiness, that is a new clause in `app.bot_readiness_unmet`, a new trigger, and
   a new entry in `READINESS_CONDITIONS` (a test asserts the TS list equals the SQL function's output).
 - The web screens for status/toggle/connection do not exist (`services/web`).
+
+---
+
+## 4k. Findings from the behaviour rules increment
+
+- **A rule's shape follows from what "structured" has to mean to be enforceable.** **[DECISION]** A rule is
+  a `kind` from a fixed list (`never` / `always` / `only_when` / `avoid_topic`) plus one or two
+  plain-language phrases plus an `action` from a fixed list (`respond` / `handoff` / `fallback`). The
+  condition is required for `only_when`, optional for `always` ("before Y"), and refused for `never` and
+  `avoid_topic` — those two kinds are the condition. `always` rules may only take `respond`: "always hand
+  off" is a handoff *trigger*, and that vocabulary is owned by `human-handoff.md`'s configuration, not this
+  one. CHECK constraints in migration `0008_bot_behavior_rules` mirror all of this, and a test asserts the
+  library and the database agree for every kind×action combination — the same double-bookkeeping discipline
+  §4i used for option lists.
+- **Limits exist because of what gets sent on every reply, not as arbitrary hygiene.** **[DECISION]** Phrases
+  ≤300 characters, freeform text ≤4000 characters, ≤100 rules per tenant. The spec leaves limits to
+  implementation; these ones exist because every *enabled* rule is rendered into every reply's prompt, and
+  prompt tokens are the direct cost driver on a free-tier AI provider. The 100-rule cap is enforced under a
+  per-tenant `pg_advisory_xact_lock`, tested with five concurrent creates racing for the last slot: exactly
+  one wins, the rest get `ConflictError` → HTTP 409.
+- **Directives are absent, not empty, when nothing applies.** `behaviorDirectives(configuration)` renders
+  only enabled rules plus the freeform text, JSON-quoting client-authored phrases so a phrase cannot break
+  out of the prompt structure, and returns `undefined` when there is nothing to say — AC1 requires the
+  section be *absent*, not present-and-empty. The handoff and fallback actions render as the literal strings
+  `"handoff"`/`"fallback"`; P2's reply output protocol must define what those two action names mean on the
+  wire, and must resolve a `handoff` action against `human-handoff.md`'s availability (including the case
+  where handoff is disabled, which presumably falls back to `fallback` — that routing is P2's decision, not
+  this increment's).
+- **A rule is named by `id` in the JSON body, not a path segment.** The router matches exact paths only, by
+  design (see `AGENTS.md`), so `PUT /v1/bot/behavior-rules/rule` and `PUT
+  /v1/bot/behavior-rules/rule/enabled` both take `{ id, ... }` in the body rather than `/rule/:id`. Deletion
+  is `POST /v1/bot/behavior-rules/rule/delete` rather than `DELETE` with a body, because an intermediary
+  (proxy, gateway, some HTTP client) may silently drop a body on a `DELETE`, which would turn "delete this
+  rule" into "delete nothing" with no error.
+- **Another tenant's rule id is indistinguishable from one that never existed.** Both produce a 404
+  `resource.not_found`. Row-level security simply hides the row rather than the route checking ownership
+  explicitly, so there is nothing for a client to enumerate — the same "even if guessed" property §1 already
+  requires of tenant ids generally.
+- **Coverage here is at the instruction layer only.** 15 of `behavior-rules-configuration.md`'s 16
+  acceptance criteria are covered by what the reply path *would* read and render, because P2's reply path
+  and the AI port do not exist yet. AC2–AC8 need to be re-verified against actual bot output once they do;
+  passing today proves the configuration and rendering are correct, not that a reply obeys a rule.
+
+### Follow-ups the behaviour rules increment leaves open
+
+- AC16 (preview against a sample message) is not implemented — it needs the AI port. When built, the
+  preview must go through the *same* prompt-assembly path as a live reply, not a separate one, or the
+  preview can pass while the live path disagrees.
+- P2's reply output protocol must define the `"handoff"`/`"fallback"` action names `behaviorDirectives` emits
+  and resolve a `handoff` action against `human-handoff.md`'s enabled/disabled state at reply time.
+- AC2–AC8 need output-level tests once P2's reply path exists; today's tests only prove the instruction layer
+  is correct.
+- The web screen for rules does not exist (`services/web`).
+- The spec leaves structured-rules-versus-freeform-instructions precedence open — both are binding
+  simultaneously, with no precedence between them — and `behaviorDirectives` renders them accordingly
+  (both sections present, neither overriding the other). Revisit only if a real conflict between the two
+  surfaces in practice.
 
 ---
 

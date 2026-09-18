@@ -97,6 +97,9 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   application code except through `setBotActive`.
 - **An operator data route goes through `identity.withOperatorAction(token, action, resource, fn)`**, the
   operator counterpart of `asClient`.
+- **The API router matches exact paths only** — no path parameters. An operation on one item of a
+  collection names it by an `id` in the JSON body (e.g. `PUT /v1/bot/behavior-rules/rule`), and a delete
+  that needs an id is a `POST …/delete`, not a DELETE with a body.
 
 ### Database-backed tests
 
@@ -192,3 +195,5 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - Row-level security applies to migrations: the migration role is not exempt. A data backfill must bind
   each tenant with `set_config('app.tenant_id', …, true)` (see the `DO` block at the end of
   `0007_bot_activation.sql`) or it silently touches no rows.
+- In the Bash tool (Git Bash on Windows), `node` does not understand `/tmp/...` paths. Pass files to
+  `node -e` scripts via `$(cygpath -w /tmp/file)`.
