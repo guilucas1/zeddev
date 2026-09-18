@@ -27,6 +27,7 @@
 
 import type { Connection } from '@zeddev/db';
 import { ConflictError, DefectError, ValidationError } from '@zeddev/errors';
+import { requireTenant } from './shared.ts';
 
 /**
  * The readiness conditions, in the order they are reported. Mirrored by
@@ -97,13 +98,6 @@ function fromRow(row: StatusRow): BotStatus {
   };
 }
 
-function requireTenant(connection: Connection, operation: string): void {
-  if (connection.boundTenantId === undefined) {
-    throw new DefectError(`${operation} requires a tenant-bound connection`, {
-      code: 'bot.tenant_unbound',
-    });
-  }
-}
 
 /** The tenant's readiness and activation state (AC3, AC10, AC11). */
 export async function readBotStatus(connection: Connection): Promise<BotStatus> {

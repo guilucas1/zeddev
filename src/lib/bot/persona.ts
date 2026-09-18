@@ -36,7 +36,8 @@
  */
 
 import type { Connection } from '@zeddev/db';
-import { DefectError, ValidationError, type ConfigIssue } from '@zeddev/errors';
+import { ValidationError, type ConfigIssue } from '@zeddev/errors';
+import { characters, CONTROL, parseMultilineText, requireTenant } from './shared.ts';
 
 /** The formal-to-casual scale. Mirrored by a CHECK constraint in migration 0005. */
 export const FORMALITY_LEVELS = ['formal', 'neutral', 'casual'] as const;
@@ -106,21 +107,6 @@ export interface PersonaReadiness {
 // Validation
 // ---------------------------------------------------------------------------
 
-/** Characters in Unicode code points — what PostgreSQL's `length()` counts for UTF-8 text. */
-function characters(value: string): number {
-  let count = 0;
-  for (const _ of value) count += 1;
-  return count;
-}
-
-/**
- * Control characters. A bot name containing a line break would let the name
- * field carry a second instruction into the prompt, so the name is one line; the
- * freeform text may use line breaks and tabs, but nothing else from this class.
- */
-const CONTROL = /\p{Cc}/u;
-const CONTROL_EXCEPT_LINE_BREAK_AND_TAB = /[^\P{Cc}\n\t]/u;
-
 /**
  * Validate and normalise a persona submission, reporting every problem at once.
  *
@@ -186,25 +172,12 @@ export function parsePersonaInput(body: Readonly<Record<string, unknown>>): Pers
 
   // freeformInstructions — optional (the spec forbids requiring it), bounded (AC9).
   // Blank is the same as absent: there is one representation of "cleared".
-  let freeformInstructions: string | null = null;
-  const rawFreeform = body.freeformInstructions;
-  if (rawFreeform !== undefined && rawFreeform !== null) {
-    if (typeof rawFreeform !== 'string') {
-      issues.push({ key: 'freeformInstructions', reason: 'must be a string' });
-    } else {
-      const text = rawFreeform.replace(/\r\n?/g, '\n').normalize('NFC').trim();
-      if (CONTROL_EXCEPT_LINE_BREAK_AND_TAB.test(text)) {
-        issues.push({ key: 'freeformInstructions', reason: 'must not contain control characters' });
-      } else if (characters(text) > PERSONA_LIMITS.freeformInstructionsMaxLength) {
-        issues.push({
-          key: 'freeformInstructions',
-          reason: `must be at most ${PERSONA_LIMITS.freeformInstructionsMaxLength} characters`,
-        });
-      } else if (text !== '') {
-        freeformInstructions = text;
-      }
-    }
-  }
+  const freeformInstructions = parseMultilineText(
+    body.freeformInstructions,
+    'freeformInstructions',
+    PERSONA_LIMITS.freeformInstructionsMaxLength,
+    issues,
+  );
 
   if (issues.length > 0) throw new ValidationError(issues);
   return { botName, formality, styleTraits, freeformInstructions };
@@ -234,21 +207,6 @@ function fromRow(row: PersonaRow): Persona {
   };
 }
 
-/**
- * Refuse a connection with no tenant bound.
- *
- * Row-level security already fails closed on one — every query sees an empty
- * table — but for a read that failure is indistinguishable from "this tenant has
- * not configured a persona", which would report a configured bot as not ready.
- * A missing binding is a programming error, and it should look like one.
- */
-function requireTenant(connection: Connection, operation: string): void {
-  if (connection.boundTenantId === undefined) {
-    throw new DefectError(`${operation} requires a tenant-bound connection`, {
-      code: 'bot.tenant_unbound',
-    });
-  }
-}
 
 /** The tenant's persona, or `undefined` if it has never saved one (AC1). */
 export async function readPersona(connection: Connection): Promise<Persona | undefined> {

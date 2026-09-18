@@ -48,10 +48,17 @@ freeform instructions, both rendered into the prompt by `behaviorDirectives`, mi
 `0008_bot_behavior_rules`, and seven new API routes. See §4k. That brings the totals to 626 passing tests,
 zero skipped, 16 of 27 specs with covering tests, 278 spec-linked assertions.
 
-The next unblocked P1 items are fallback message configuration, the bot disclosure setting, and human
-handoff enable/disable plus trigger configuration. Language configuration is still blocked on the §4
-supported-language-list decision; business knowledge configuration is blocked on the §4
-accepted-document-formats decision, though its freeform-entries half does not depend on it.
+Fallback message configuration (`fallback-response-behavior.md`) is done too: per-trigger and shared
+messages with a platform default per trigger, resolved by one function (`resolveFallbackMessage`) shared by
+the reply-path entry point and preview, migration `0009_bot_fallback_messages`, and three new API routes.
+See §4l. That brings the totals to 647 passing tests, zero skipped, 16 of 27 specs with covering tests, 288
+spec-linked assertions. (The pre-increment "16 of 27" figure recorded below was itself an overcount by one;
+16 of 27 is also the correct post-increment count.)
+
+The next unblocked P1 items are the bot disclosure setting and human handoff enable/disable plus trigger
+configuration. Language configuration is still blocked on the §4 supported-language-list decision; business
+knowledge configuration is blocked on the §4 accepted-document-formats decision, though its freeform-entries
+half does not depend on it.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -387,13 +394,17 @@ call must never be able to cause Meta to redeliver.
   both binding simultaneously. `@zeddev/bot` (`behavior.ts`) plus migration `0008_bot_behavior_rules` and
   seven routes in `services/api`. 15 of 16 acceptance criteria covered at the instruction layer; AC16
   (preview) is not implemented. See §4k.
+- **[DONE]** Fallback message configuration: per-trigger and shared messages, each with a platform default
+  per trigger, resolved by one function (`resolveFallbackMessage`) shared by the reply-path entry point and
+  preview. `@zeddev/bot` (`fallback.ts`) plus migration `0009_bot_fallback_messages` and three routes in
+  `services/api`, including a preview route for an unsaved draft. 9 of 13 acceptance criteria covered at the
+  configuration layer; AC6, AC7, AC10, AC13 need P2's reply path. See §4l.
 > **P1 remaining scope.** Everything below this line — language configuration through conversation
 > memory reset policy.
 
 - Language configuration with a platform default, per `language-configuration.md`.
 - Business knowledge configuration: freeform entries plus document upload, with upload failures surfaced
   rather than silently dropped, and a combined listing view.
-- Fallback message configuration with per-trigger variants, a platform default, and preview.
 - Bot disclosure setting.
 - Human handoff enable/disable and trigger configuration.
 - Conversation memory reset policy configuration (inactivity window plus manual reset).
@@ -488,7 +499,9 @@ call must never be able to cause Meta to redeliver.
   The remaining uncovered specs are all P1–P4 features not yet built. (After the readiness increment: 15 of
   27 specs, 261 assertions; `bot-activation-control.md` covers all 14 of its criteria and
   `whatsapp-number-connection.md` 8 of 12.) (After the behaviour-rules increment: 16 of 27 specs, 278
-  assertions; `behavior-rules-configuration.md` covers 15 of 16, AC16 preview pending the AI port.)
+  assertions; `behavior-rules-configuration.md` covers 15 of 16, AC16 preview pending the AI port.) (After
+  the fallback increment: 16 of 27 specs, 288 assertions; `fallback-response-behavior.md` covers 9 of 13 at
+  the configuration layer.)
 
 ---
 
@@ -518,11 +531,10 @@ call must never be able to cause Meta to redeliver.
   `operator-proactive-alerting.md` requires push alerting without a dashboard open, and the aggregation,
   reset, and retention timers all require a running process. These are genuinely always-on. The tension is
   benign on a laptop and small on a VPS, but it should be acknowledged rather than discovered later.
-- **Fallback tone versus fallback availability.** `fallback-response-behavior.md` requires fallback
-  messages reflect configured persona and tone, *and* requires they be sendable when AI generation has
-  failed. Those are only compatible if the fallback text is stored as literal, client-authored text rather
-  than generated at send time. Worth stating explicitly in implementation so nobody "improves" it into an
-  AI-generated fallback.
+- **Fallback tone versus fallback availability.** **Resolved (2026-09-18):** fallback text is stored as
+  literal, client-authored text sent verbatim — never generated or rewritten by the AI provider. The spec
+  was amended accordingly, and P2's reply path must send the resolved text as-is rather than "improving" it
+  into an AI-generated fallback.
 
 ---
 
@@ -1086,6 +1098,67 @@ SMTP).
   simultaneously, with no precedence between them — and `behaviorDirectives` renders them accordingly
   (both sections present, neither overriding the other). Revisit only if a real conflict between the two
   surfaces in practice.
+
+---
+
+## 4l. Findings from the fallback messages increment
+
+- **Resolution is a fixed chain, not a fallback-to-fallback pun.** For each of the three triggers
+  (`ai_error`, `low_confidence`, `out_of_scope`), `resolveFallbackMessage` tries the trigger's own message,
+  then the tenant's shared message, then `PLATFORM_DEFAULT_FALLBACK_MESSAGES[trigger]` — neutral English
+  wording, one entry per trigger, so a client who has configured nothing still gets a trigger-appropriate
+  reply rather than one message stretched across three situations. `fallbackMessageFor(connection,
+  trigger)` is the one function the reply path may call; it and preview both go through
+  `resolveFallbackMessage`, so the two can never disagree about what a save actually produces.
+- **A row exists only once something is configured — the same invariant §4i gave personas.** Saving with
+  every message blank `DELETE`s the row rather than writing an all-NULL one; there is no separate
+  "configured" flag that could disagree with the data, and provisioning never seeds a default row, for the
+  same reason a default persona would make every new tenant look configured.
+- **Preview must cover a draft that was never saved, because a save is not observable until the next
+  message.** AC12 asks that an author see resolved text "before [changes] take effect." A save takes effect
+  on the *next* inbound message, so previewing only the saved configuration cannot show the effect of an
+  edit still sitting in the form. `POST /v1/bot/fallback-messages/preview` validates a draft exactly as a
+  save would and resolves it, storing nothing; `GET`/`PUT` also return the resolved preview of whatever is
+  currently saved, so saved and unsaved configurations are previewed through the same resolver.
+- **An unauthenticated echo endpoint is an open reflector.** The preview route reads no tenant data — it
+  only validates and resolves whatever the caller sent — which made "why require a session for it" a live
+  question. Without one, the route is a free service that reflects arbitrary text back at arbitrary volume,
+  an amplification/relay primitive wearing the platform's name. It requires a session
+  (`tenant.configuration.read`) even though the session's tenant binding is otherwise unused by this route.
+- **Persona/tone and behaviour-rule compliance are properties of the client's authored text, not of the
+  platform.** AC8 (tone) and AC9 (disclaimers) need no rendering step analogous to `personaDirectives` or
+  `behaviorDirectives` — fallback text is sent verbatim, so "reflects configured persona" and "includes a
+  required disclaimer" are satisfied, or not, by what the client typed. That is the same conclusion the §3
+  "fallback tone versus availability" conflict reaches from the availability side: literal text is what
+  makes both requirements simultaneously satisfiable, and it is why the spec was amended to say so.
+- **Three near-identical validators is a smell worth fixing before a fourth copy appears.** `persona.ts`,
+  `behavior.ts`, and `activation.ts` each carried their own `requireTenant` and their own code-point-counting
+  and multi-line-text rules; `fallback.ts` would have been a fourth copy of all of it. Extracted to
+  `src/lib/bot/shared.ts` (`characters`, `CONTROL`, `CONTROL_EXCEPT_LINE_BREAK_AND_TAB`,
+  `parseMultilineText`, `requireTenant`), not exported from the package — an internal seam, not new public
+  API — and the three existing modules were refactored onto it in the same increment rather than left to
+  drift.
+- **`ValidationError` sorts its issues by key.** A test written to expect issues in push order rather than
+  key order fails in a way that looks like a validation bug but is a test-authoring mistake; see the
+  `AGENTS.md` gotcha.
+
+### Follow-ups the fallback increment leaves open
+
+- P2's reply path must call `fallbackMessageFor` inside the sending transaction, alongside `mayAutoRespond`,
+  and send the resolved text verbatim — never through the AI provider.
+- Each fallback occurrence must be recorded with its triggering condition (AC10) in a tenant-scoped table
+  that does not exist yet.
+- Exactly one fallback per triggering message (AC13) ties into inbound dedup, which P2 also owns.
+- Handoff precedence (AC6/AC7) is resolved at reply time against human-handoff configuration, which does
+  not exist yet.
+- A behaviour rule with action `fallback` needs a trigger mapping — recommend `out_of_scope` — decided as
+  part of P2's reply output protocol (see §4k's open `"handoff"`/`"fallback"` action-name question).
+- Confidence detection and scope detection are both upstream of this increment and remain undefined.
+- `PLATFORM_DEFAULT_FALLBACK_MESSAGES` is English-only; when language configuration lands, defaults become
+  per-language, since `language-configuration.md` requires fallback text in the configured language.
+- The spec's own new open question: whether the fallback screen should show the client's active behaviour
+  rules and persona, to help the client author compliant text.
+- The web screen for fallback configuration does not exist (`services/web`).
 
 ---
 

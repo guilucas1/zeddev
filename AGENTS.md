@@ -90,6 +90,8 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - **Bot configuration rules live in `@zeddev/bot`** (validation, limits, option lists, readiness, prompt
   rendering). Its functions take an already tenant-bound `Connection` and write `app.current_tenant_id()`,
   never a tenant parameter. An option list or limit mirrored by a SQL CHECK needs a test asserting the two agree.
+  Shared validation helpers (code-point length counting, control-character rules, multi-line text parsing,
+  `requireTenant`) live in `src/lib/bot/shared.ts`; do not copy them into a new module.
 - **Readiness is defined once, in SQL**: `app.bot_readiness_unmet` in migration 0007. A new readiness
   condition needs a clause there, an AFTER trigger on its input table calling
   `app.reevaluate_bot_readiness_trigger()`, and an entry in `READINESS_CONDITIONS` in
@@ -197,3 +199,4 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   `0007_bot_activation.sql`) or it silently touches no rows.
 - In the Bash tool (Git Bash on Windows), `node` does not understand `/tmp/...` paths. Pass files to
   `node -e` scripts via `$(cygpath -w /tmp/file)`.
+- `ValidationError` sorts its issues by key; assert issue lists in key order.

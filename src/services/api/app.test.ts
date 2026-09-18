@@ -923,6 +923,93 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   });
 
   // -------------------------------------------------------------------------
+  // Bot configuration: fallback messages
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'fallback-response-behavior.md',
+    'AC12 a preview renders the same content the end-customer would receive',
+    'the draft preview, the saved view’s preview, and the stored configuration agree over HTTP',
+    async () => {
+      const { cookie } = await onboard();
+      const empty = await call(served, 'GET', '/v1/bot/fallback-messages', { cookie });
+      assert.equal(empty.status, 200);
+      assert.equal(empty.body.sharedMessage, null);
+      assert.deepEqual(empty.body.triggers, ['ai_error', 'low_confidence', 'out_of_scope']);
+      assert.equal(empty.body.limits.messageMaxLength, 1000);
+      assert.ok(
+        empty.body.preview.every(
+          (entry: { trigger: string; message: string; source: string }) =>
+            entry.source === 'platform_default' && entry.message === empty.body.platformDefaults[entry.trigger],
+        ),
+      );
+
+      const draft = { sharedMessage: 'Sorry! Call us on the shop line.', triggerMessages: { ai_error: 'We are having a hiccup.' } };
+      const preview = await call(served, 'POST', '/v1/bot/fallback-messages/preview', { cookie, json: draft });
+      assert.equal(preview.status, 200);
+      // Previewing stores nothing: the saved configuration is still empty.
+      assert.equal((await call(served, 'GET', '/v1/bot/fallback-messages', { cookie })).body.sharedMessage, null);
+
+      const saved = await call(served, 'PUT', '/v1/bot/fallback-messages', { cookie, json: draft });
+      assert.equal(saved.status, 200);
+      assert.deepEqual(saved.body.preview, preview.body.preview);
+      assert.deepEqual(
+        saved.body.preview.map((entry: { message: string; source: string }) => [entry.message, entry.source]),
+        [
+          ['We are having a hiccup.', 'trigger'],
+          ['Sorry! Call us on the shop line.', 'shared'],
+          ['Sorry! Call us on the shop line.', 'shared'],
+        ],
+      );
+      assert.deepEqual((await call(served, 'GET', '/v1/bot/fallback-messages', { cookie })).body.preview, preview.body.preview);
+
+      // Clearing everything returns every trigger to the platform default.
+      const cleared = await call(served, 'PUT', '/v1/bot/fallback-messages', { cookie, json: {} });
+      assert.equal(cleared.status, 200);
+      assert.equal(cleared.body.updatedAt, null);
+      assert.deepEqual(cleared.body.preview, empty.body.preview);
+    },
+  );
+
+  unitTest('fallback routes refuse invalid input with every issue, other tenants, and anonymous or cross-site callers', async () => {
+    const alpha = await onboard();
+    const beta = await onboard();
+    await call(served, 'PUT', '/v1/bot/fallback-messages', { cookie: alpha.cookie, json: { sharedMessage: 'Alpha only.' } });
+    assert.equal((await call(served, 'GET', '/v1/bot/fallback-messages', { cookie: beta.cookie })).body.sharedMessage, null);
+
+    for (const path of ['/v1/bot/fallback-messages', '/v1/bot/fallback-messages/preview']) {
+      const invalid = await call(served, path === '/v1/bot/fallback-messages' ? 'PUT' : 'POST', path, {
+        cookie: beta.cookie,
+        json: { sharedMessage: 'x'.repeat(1001), triggerMessages: { rude: 'no' } },
+      });
+      assert.equal(invalid.status, 400);
+      assert.deepEqual(invalid.body.error.issues, [
+        { key: 'sharedMessage', reason: 'must be at most 1000 characters' },
+        {
+          key: 'triggerMessages.rude',
+          reason: 'is not a recognised trigger (expected one of: ai_error, low_confidence, out_of_scope)',
+        },
+      ]);
+    }
+
+    assert.equal((await call(served, 'GET', '/v1/bot/fallback-messages')).status, 401);
+    assert.equal(
+      (await call(served, 'POST', '/v1/bot/fallback-messages/preview', { json: { sharedMessage: 'echo' } })).status,
+      401,
+    );
+    const forged = await call(served, 'PUT', '/v1/bot/fallback-messages', {
+      cookie: alpha.cookie,
+      headers: { origin: 'https://example.org' },
+      json: { sharedMessage: 'Forged.' },
+    });
+    assert.equal(forged.status, 403);
+    assert.equal(
+      (await call(served, 'GET', '/v1/bot/fallback-messages', { cookie: alpha.cookie })).body.sharedMessage,
+      'Alpha only.',
+    );
+  });
+
+  // -------------------------------------------------------------------------
   // Readiness, the go-live toggle, and the connection state
   // -------------------------------------------------------------------------
 

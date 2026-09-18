@@ -40,7 +40,8 @@
  */
 
 import type { Connection } from '@zeddev/db';
-import { ConflictError, DefectError, NotFoundError, ValidationError, type ConfigIssue } from '@zeddev/errors';
+import { ConflictError, NotFoundError, ValidationError, type ConfigIssue } from '@zeddev/errors';
+import { characters, CONTROL, parseMultilineText, requireTenant } from './shared.ts';
 
 /** Structured rule kinds. Mirrored by a CHECK constraint in migration 0008. */
 export const RULE_KINDS = ['never', 'always', 'only_when', 'avoid_topic'] as const;
@@ -116,15 +117,6 @@ export interface BehaviorConfiguration {
 // Validation
 // ---------------------------------------------------------------------------
 
-function characters(value: string): number {
-  let count = 0;
-  for (const _ of value) count += 1;
-  return count;
-}
-
-/** A phrase is one line: a line break would let it carry a second instruction. */
-const CONTROL = /\p{Cc}/u;
-const CONTROL_EXCEPT_LINE_BREAK_AND_TAB = /[^\P{Cc}\n\t]/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function refuseUnknown(body: Readonly<Record<string, unknown>>, fields: readonly string[], issues: ConfigIssue[]): void {
@@ -274,22 +266,8 @@ export function parseBehaviorInstructionsInput(body: Readonly<Record<string, unk
   const raw = body.freeformInstructions;
   if (raw === undefined) {
     issues.push({ key: 'freeformInstructions', reason: 'is required (send null or an empty string to clear it)' });
-  } else if (raw !== null) {
-    if (typeof raw !== 'string') {
-      issues.push({ key: 'freeformInstructions', reason: 'must be a string' });
-    } else {
-      const normalised = raw.replace(/\r\n?/g, '\n').normalize('NFC').trim();
-      if (CONTROL_EXCEPT_LINE_BREAK_AND_TAB.test(normalised)) {
-        issues.push({ key: 'freeformInstructions', reason: 'must not contain control characters' });
-      } else if (characters(normalised) > BEHAVIOR_LIMITS.freeformInstructionsMaxLength) {
-        issues.push({
-          key: 'freeformInstructions',
-          reason: `must be at most ${BEHAVIOR_LIMITS.freeformInstructionsMaxLength} characters`,
-        });
-      } else if (normalised !== '') {
-        text = normalised;
-      }
-    }
+  } else {
+    text = parseMultilineText(raw, 'freeformInstructions', BEHAVIOR_LIMITS.freeformInstructionsMaxLength, issues);
   }
   if (issues.length > 0) throw new ValidationError(issues);
   return text;
@@ -325,12 +303,6 @@ function fromRow(row: RuleRow): BehaviorRule {
   };
 }
 
-/** See `persona.ts`: an unbound read would look exactly like "nothing configured". */
-function requireTenant(connection: Connection, operation: string): void {
-  if (connection.boundTenantId === undefined) {
-    throw new DefectError(`${operation} requires a tenant-bound connection`, { code: 'bot.tenant_unbound' });
-  }
-}
 
 /**
  * Report a rule that is not this tenant's as absent. Identical for an id that

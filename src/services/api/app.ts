@@ -49,14 +49,18 @@ import {
   describeBehaviorRule,
   describeBehaviorRules,
   describeBotStatus,
+  describeFallbackMessages,
   describePersona,
   listBotStatuses,
   parseActivationInput,
+  previewFallbackDraft,
   readActivationHistory,
   readBehaviorRules,
   readBotStatus,
+  readFallbackMessages,
   readPersona,
   saveBehaviorInstructions,
+  saveFallbackMessages,
   savePersona,
   setBehaviorRuleEnabled,
   setBotActive,
@@ -491,6 +495,48 @@ export function createApi(dependencies: ApiDependencies): Api {
           return readBehaviorRules(tx);
         });
         return { status: 200, body: describeBehaviorRules(configuration) };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Fallback messages — fallback-response-behavior.md. Every view carries the
+    // resolved preview, computed by the same function the reply path uses.
+    // -----------------------------------------------------------------------
+    {
+      method: 'GET',
+      path: '/v1/bot/fallback-messages',
+      handle: async (context) => {
+        const configuration = await asClient(context, 'tenant.configuration.read', 'bot.fallback_messages', (tx) =>
+          readFallbackMessages(tx),
+        );
+        return { status: 200, body: describeFallbackMessages(configuration) };
+      },
+    },
+    {
+      // PUT because a save replaces the whole configuration: a message left out
+      // is cleared, and clearing every message returns to the platform defaults.
+      method: 'PUT',
+      path: '/v1/bot/fallback-messages',
+      handle: async (context) => {
+        const body = await context.body();
+        const configuration = await asClient(context, 'tenant.configuration.write', 'bot.fallback_messages', (tx) =>
+          saveFallbackMessages(tx, body),
+        );
+        return { status: 200, body: describeFallbackMessages(configuration) };
+      },
+    },
+    {
+      // A draft, previewed without saving (AC12, "before they take effect"). It
+      // reads no tenant data, but still requires the session: an unauthenticated
+      // endpoint that echoes submitted text back is an open reflector.
+      method: 'POST',
+      path: '/v1/bot/fallback-messages/preview',
+      handle: async (context) => {
+        const body = await context.body();
+        const preview = await asClient(context, 'tenant.configuration.read', 'bot.fallback_messages', async () =>
+          previewFallbackDraft(body),
+        );
+        return { status: 200, body: { preview } };
       },
     },
 

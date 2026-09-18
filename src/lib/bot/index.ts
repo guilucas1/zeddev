@@ -10,9 +10,9 @@
  *
  * Persona and tone is the first configuration here because it is the only one
  * that gates readiness (`bot-activation-control.md`). Readiness itself and the
- * go-live toggle are `activation.ts`; behaviour rules are `behavior.ts`.
- * Language, fallback messages, disclosure, handoff, and memory policy follow in
- * the same package.
+ * go-live toggle are `activation.ts`; behaviour rules are `behavior.ts`;
+ * fallback messages are `fallback.ts`. Language, disclosure, handoff, and memory
+ * policy follow in the same package.
  */
 
 export {
@@ -77,3 +77,23 @@ export {
   type RuleDefinition,
   type RuleKind,
 } from './behavior.ts';
+
+export {
+  describeFallbackMessages,
+  FALLBACK_FIELDS,
+  FALLBACK_LIMITS,
+  FALLBACK_TRIGGERS,
+  fallbackMessageFor,
+  parseFallbackInput,
+  PLATFORM_DEFAULT_FALLBACK_MESSAGES,
+  previewFallbackDraft,
+  previewFallbackMessages,
+  readFallbackMessages,
+  resolveFallbackMessage,
+  saveFallbackMessages,
+  type FallbackInput,
+  type FallbackMessages,
+  type FallbackSource,
+  type FallbackTrigger,
+  type ResolvedFallback,
+} from './fallback.ts';
