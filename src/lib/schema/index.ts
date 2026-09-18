@@ -58,6 +58,7 @@ export const TENANT_SCOPED_TABLES = [
   'queue_jobs',
   'queue_job_payloads',
   'queue_dispatch_cursors',
+  'bot_personas',
 ] as const;
 
 /**

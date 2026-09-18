@@ -626,6 +626,174 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   });
 
   // -------------------------------------------------------------------------
+  // Bot configuration: persona and tone
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'persona-and-tone-configuration.md',
+    'AC1 a never-configured client sees the structured fields empty and an empty freeform input',
+    'GET on a fresh tenant presents every field empty, with the options and the limits',
+    async () => {
+      const { cookie } = await onboard();
+      const answer = await call(served, 'GET', '/v1/bot/persona', { cookie });
+      assert.equal(answer.status, 200);
+      assert.deepEqual(answer.body.persona, {
+        botName: null,
+        formality: null,
+        styleTraits: [],
+        freeformInstructions: null,
+        updatedAt: null,
+      });
+      assert.equal(answer.body.complete, false);
+      assert.deepEqual(answer.body.missing, ['botName']);
+      assert.deepEqual(answer.body.options.formality, ['formal', 'neutral', 'casual']);
+      assert.ok(answer.body.options.styleTraits.includes('friendly'));
+      // The limits are communicated up front, not only on a refused save.
+      assert.deepEqual(answer.body.limits, { botNameMaxLength: 50, freeformInstructionsMaxLength: 2000 });
+    },
+  );
+
+  specTest(
+    'persona-and-tone-configuration.md',
+    'AC4 structured fields and freeform text are both kept and shown on reopening',
+    'a PUT with both mechanisms is reflected by the next GET',
+    async () => {
+      const { cookie } = await onboard();
+      const persona = {
+        botName: 'Sunny',
+        formality: 'casual',
+        styleTraits: ['playful', 'friendly'],
+        freeformInstructions: 'Recommend the croissant of the day.',
+      };
+      const saved = await call(served, 'PUT', '/v1/bot/persona', { cookie, json: persona });
+      assert.equal(saved.status, 200);
+      assert.equal(saved.body.complete, true);
+
+      const reopened = await call(served, 'GET', '/v1/bot/persona', { cookie });
+      assert.equal(reopened.body.persona.botName, 'Sunny');
+      assert.equal(reopened.body.persona.formality, 'casual');
+      assert.deepEqual(reopened.body.persona.styleTraits, ['friendly', 'playful']);
+      assert.equal(reopened.body.persona.freeformInstructions, 'Recommend the croissant of the day.');
+      assert.equal(typeof reopened.body.persona.updatedAt, 'string');
+      assert.deepEqual(reopened.body.missing, []);
+    },
+  );
+
+  specTest(
+    'persona-and-tone-configuration.md',
+    'AC3 freeform text without the required name is rejected, naming the missing field',
+    'a PUT without a bot name is a 400 naming botName, and nothing is saved',
+    async () => {
+      const { cookie } = await onboard();
+      const refused = await call(served, 'PUT', '/v1/bot/persona', {
+        cookie,
+        json: { freeformInstructions: 'Be brief.' },
+      });
+      assert.equal(refused.status, 400);
+      assert.deepEqual(refused.body.error.issues, [{ key: 'botName', reason: 'is required' }]);
+      assert.equal((await call(served, 'GET', '/v1/bot/persona', { cookie })).body.complete, false);
+    },
+  );
+
+  specTest(
+    'persona-and-tone-configuration.md',
+    'AC9 freeform text over the limit is rejected, communicating the limit',
+    'an oversized freeform text is a 400 whose reason states the limit and does not echo the text',
+    async () => {
+      const { cookie } = await onboard();
+      const text = 'Mention our sourdough. '.repeat(100);
+      const refused = await call(served, 'PUT', '/v1/bot/persona', {
+        cookie,
+        json: { botName: 'Sunny', freeformInstructions: text },
+      });
+      assert.equal(refused.status, 400);
+      assert.deepEqual(refused.body.error.issues, [
+        { key: 'freeformInstructions', reason: 'must be at most 2000 characters' },
+      ]);
+      assert.doesNotMatch(refused.text, /sourdough/);
+    },
+  );
+
+  specTest(
+    'persona-and-tone-configuration.md',
+    'AC6 clearing the freeform text keeps the configuration complete',
+    'DELETE on the freeform text clears it alone and the persona stays complete',
+    async () => {
+      const { cookie } = await onboard();
+      await call(served, 'PUT', '/v1/bot/persona', {
+        cookie,
+        json: { botName: 'Leo', formality: 'formal', freeformInstructions: 'Offer gift wrapping.' },
+      });
+      const cleared = await call(served, 'DELETE', '/v1/bot/persona/freeform-instructions', { cookie });
+      assert.equal(cleared.status, 200);
+      assert.equal(cleared.body.persona.freeformInstructions, null);
+      assert.equal(cleared.body.persona.botName, 'Leo');
+      assert.equal(cleared.body.persona.formality, 'formal');
+      assert.equal(cleared.body.complete, true);
+    },
+  );
+
+  specTest(
+    'persona-and-tone-configuration.md',
+    'AC8 each client’s end-customers only ever see that client’s own persona',
+    'two clients configuring different personas each read back only their own',
+    async () => {
+      const alpha = await onboard();
+      const beta = await onboard();
+      await call(served, 'PUT', '/v1/bot/persona', { cookie: alpha.cookie, json: { botName: 'Alpha Bot' } });
+      await call(served, 'PUT', '/v1/bot/persona', {
+        cookie: beta.cookie,
+        json: { botName: 'Beta Bot', formality: 'casual' },
+      });
+
+      const seenByAlpha = await call(served, 'GET', '/v1/bot/persona', { cookie: alpha.cookie });
+      const seenByBeta = await call(served, 'GET', '/v1/bot/persona', { cookie: beta.cookie });
+      assert.equal(seenByAlpha.body.persona.botName, 'Alpha Bot');
+      assert.equal(seenByAlpha.body.persona.formality, null);
+      assert.equal(seenByBeta.body.persona.botName, 'Beta Bot');
+      assert.doesNotMatch(seenByAlpha.text, /Beta Bot/);
+
+      // A caller-supplied tenant is inert (authentication-and-access.md AC4).
+      const smuggled = await call(served, 'PUT', `/v1/bot/persona?tenantId=${beta.tenantId}`, {
+        cookie: alpha.cookie,
+        json: { botName: 'Planted' },
+      });
+      assert.equal(smuggled.status, 200);
+      const betaAfter = await call(served, 'GET', '/v1/bot/persona', { cookie: beta.cookie });
+      assert.equal(betaAfter.body.persona.botName, 'Beta Bot');
+    },
+  );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC22 an operator credential is insufficient for client access',
+    'configuration routes refuse no session, an operator token in the client cookie, and a foreign origin',
+    async () => {
+      assert.equal((await call(served, 'GET', '/v1/bot/persona')).status, 401);
+      assert.equal((await call(served, 'PUT', '/v1/bot/persona', { json: { botName: 'Anon' } })).status, 401);
+
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const asClientCookie = `${CLIENT_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+      assert.equal((await call(served, 'GET', '/v1/bot/persona', { cookie: asClientCookie })).status, 401);
+      assert.equal(
+        (await call(served, 'PUT', '/v1/bot/persona', { cookie: asClientCookie, json: { botName: 'Ops' } })).status,
+        401,
+      );
+
+      const { cookie } = await onboard();
+      const forged = await call(served, 'PUT', '/v1/bot/persona', {
+        cookie,
+        headers: { origin: 'https://example.org' },
+        json: { botName: 'Forged' },
+      });
+      assert.equal(forged.status, 403);
+      assert.equal((await call(served, 'GET', '/v1/bot/persona', { cookie })).body.complete, false);
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // Transport defences
   // -------------------------------------------------------------------------
 

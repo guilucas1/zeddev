@@ -41,9 +41,10 @@
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { Pool } from '@zeddev/db';
+import { clearFreeformInstructions, describePersona, readPersona, savePersona } from '@zeddev/bot';
+import type { Connection, Pool } from '@zeddev/db';
 import { AuthenticationError, TransientTransportError, ValidationError } from '@zeddev/errors';
-import type { IdentityService } from '@zeddev/identity';
+import type { Action, ClientPrincipal, IdentityService } from '@zeddev/identity';
 import { Logger } from '@zeddev/logging';
 import type { Mailer } from '@zeddev/mail';
 import { SystemClock, type Clock } from '@zeddev/time';
@@ -90,7 +91,7 @@ interface RequestContext {
 }
 
 interface Route {
-  readonly method: 'GET' | 'POST' | 'DELETE';
+  readonly method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   readonly path: string;
   /** Counted against the per-source budget for unauthenticated credential and recovery requests. */
   readonly anonymous?: boolean;
@@ -135,6 +136,24 @@ export function createApi(dependencies: ApiDependencies): Api {
     const token = context.cookies.get(cookie);
     if (token === undefined || token === '') throw new AuthenticationError();
     return token;
+  }
+
+  /**
+   * Run tenant-scoped work for the session's client, as one named action.
+   *
+   * Every tenant-scoped route goes through here and therefore through
+   * `IdentityService.withClientAction`: the tenant comes from the session, the
+   * action is checked against `ACTION_PRINCIPALS` and recorded, and only then is
+   * a transaction bound to that tenant opened. An operator's token presented in the
+   * client cookie is refused at resolution (AC22) before any of that.
+   */
+  function asClient<T>(
+    context: RequestContext,
+    action: Action,
+    resource: string,
+    fn: (connection: Connection, principal: ClientPrincipal) => Promise<T>,
+  ): Promise<T> {
+    return identity.withClientAction(sessionToken(context, CLIENT_SESSION_COOKIE), action, resource, fn);
   }
 
   const routes: readonly Route[] = [
@@ -323,6 +342,46 @@ export function createApi(dependencies: ApiDependencies): Api {
         await identity.changePassword({ principal, ...input });
         // AC8: the change ended every session, this one included.
         return { status: 204, cookies: [clientCookie('', undefined)] };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Bot configuration — persona and tone (persona-and-tone-configuration.md).
+    // The rules live in @zeddev/bot; each route is one action on the session's
+    // own tenant, and none of them can name another.
+    // -----------------------------------------------------------------------
+    {
+      method: 'GET',
+      path: '/v1/bot/persona',
+      handle: async (context) => {
+        const persona = await asClient(context, 'tenant.configuration.read', 'bot.persona', (tx) => readPersona(tx));
+        return { status: 200, body: describePersona(persona) };
+      },
+    },
+    {
+      // PUT because a save replaces the whole persona: an optional field left out
+      // of the body is cleared, not kept. The body is read before the session is
+      // resolved so that a malformed request costs no database round trip.
+      method: 'PUT',
+      path: '/v1/bot/persona',
+      handle: async (context) => {
+        const body = await context.body();
+        const persona = await asClient(context, 'tenant.configuration.write', 'bot.persona', (tx) =>
+          savePersona(tx, body),
+        );
+        return { status: 200, body: describePersona(persona) };
+      },
+    },
+    {
+      // Clearing the freeform text on its own, without resubmitting the
+      // structured fields — the spec's "independently of the structured fields".
+      method: 'DELETE',
+      path: '/v1/bot/persona/freeform-instructions',
+      handle: async (context) => {
+        const persona = await asClient(context, 'tenant.configuration.write', 'bot.persona', (tx) =>
+          clearFreeformInstructions(tx),
+        );
+        return { status: 200, body: describePersona(persona) };
       },
     },
 

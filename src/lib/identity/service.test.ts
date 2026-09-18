@@ -34,7 +34,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe } from 'node:test';
 import { withIdentityScope, withPlatformScope, type Pool } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
-import { AuthenticationError, ConflictError, toDiagnostic, ValidationError } from '@zeddev/errors';
+import { AuthenticationError, AuthorizationError, ConflictError, toDiagnostic, ValidationError } from '@zeddev/errors';
 import { migrateToLatest } from '@zeddev/schema';
 import { specTest, unitTest } from '@zeddev/testing';
 import { IdentityService, type IdentityServiceOptions } from './service.ts';
@@ -1097,6 +1097,45 @@ describe('identity service', { skip: testDatabaseConfigured() ? false : SKIP_REA
         { action: 'tenant.offboard', outcome: 'denied', reason: 'forbidden_action' },
         { action: 'tenant.activation.change', outcome: 'denied', reason: 'forbidden_action' },
         { action: 'platform.health.read', outcome: 'allowed', reason: null },
+      ]);
+    },
+  );
+  specTest(
+    'authentication-and-access.md',
+    'AC18 an authorization event records who accessed what and when',
+    'withClientAction records the decision, and refuses a client an operator action before opening any tenant transaction',
+    async () => {
+      const onboarded = await onboard();
+      const session = await service.logIn({ email: onboarded.email, password: PASSWORD });
+      const token = session.token.expose();
+
+      const seen = await service.withClientAction(token, 'tenant.configuration.read', 'bot.persona', async (tx, principal) => {
+        const found = await tx.query<{ id: string }>('SELECT id FROM tenants');
+        return { principal: principal.tenantId, tenants: found.rows.map((row) => row.id) };
+      });
+      assert.deepEqual(seen, { principal: onboarded.tenantId, tenants: [onboarded.tenantId] });
+
+      let reached = false;
+      await assert.rejects(
+        () =>
+          service.withClientAction(token, 'platform.health.read', 'health', async () => {
+            reached = true;
+          }),
+        AuthorizationError,
+      );
+      assert.equal(reached, false, 'the work ran even though the action was refused');
+
+      const decisions = await withPlatformScope(pool, async (tx) => {
+        const found = await tx.query<{ action: string; resource: string; outcome: string }>(
+          `SELECT action, resource, outcome FROM access_records
+           WHERE principal_id = $1 AND resource IN ('bot.persona', 'health') ORDER BY id`,
+          [onboarded.accountId],
+        );
+        return found.rows;
+      });
+      assert.deepEqual(decisions, [
+        { action: 'tenant.configuration.read', resource: 'bot.persona', outcome: 'allowed' },
+        { action: 'platform.health.read', resource: 'health', outcome: 'denied' },
       ]);
     },
   );

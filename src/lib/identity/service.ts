@@ -99,9 +99,10 @@ import { hasTokenKind, hashToken, mintToken } from './tokens.ts';
  * transaction with the tenant already bound.
  *
  * The hook exists because provisioning is not finished as a concept: as later
- * phases land, a ready tenant will also need its default persona row, its
- * language setting, and its knowledge index. Those tables do not exist yet, so
- * the default hook does nothing — but the *failure semantics* around it are fully
+ * phases land, a ready tenant may also need its language setting and its
+ * knowledge index. (Not a persona row: a never-configured persona is the absence
+ * of one, which is what keeps readiness unmet until the client names their bot.)
+ * Nothing needs seeding yet, so the default hook does nothing — but the *failure semantics* around it are fully
  * implemented and tested, which is the part that is expensive to retrofit. A hook
  * that throws produces exactly the state AC7 describes, and there is a test that
  * drives it.
@@ -1413,6 +1414,31 @@ export class IdentityService {
     fn: (connection: Connection, principal: ClientPrincipal) => Promise<T>,
   ): Promise<T> {
     const principal = await this.resolveClientSession(rawToken);
+    return withTenant(this.#pool, principal.tenantId, (connection) => fn(connection, principal));
+  }
+
+  /**
+   * Perform one permission-checked action as the holder of a client session token.
+   *
+   * `withClientSession` plus `authorize`, in the only order that is safe: resolve
+   * the session, check the action against `ACTION_PRINCIPALS` and record the
+   * decision, and only then open the tenant-bound transaction. Every tenant-scoped
+   * route in `services/api` goes through this, so a route cannot reach tenant data
+   * without naming the action it performs — a route that forgot the check would
+   * have to bypass this function to do it, which is visible in review.
+   *
+   * The authorization record is written before the work, out of band, so a
+   * denial is recorded even though nothing else happens, and an allowed action is
+   * recorded even if its own transaction later fails.
+   */
+  async withClientAction<T>(
+    rawToken: string,
+    action: Action,
+    resource: string,
+    fn: (connection: Connection, principal: ClientPrincipal) => Promise<T>,
+  ): Promise<T> {
+    const principal = await this.resolveClientSession(rawToken);
+    await this.authorize(principal, action, resource);
     return withTenant(this.#pool, principal.tenantId, (connection) => fn(connection, principal));
   }
 

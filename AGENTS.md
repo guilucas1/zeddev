@@ -84,6 +84,12 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   enforces both. A service's own config schema lives in its `config.ts`, exported via a `./config`
   subpath, and is registered in `PLATFORM_CONFIG_SCHEMAS` like any library's.
 - **A process entrypoint that is also imported by tests uses `if (import.meta.main)`** to run.
+- **A tenant-scoped API route goes through `asClient(context, action, resource, fn)`** in
+  `src/services/api/app.ts` (→ `IdentityService.withClientAction`). It resolves the session, authorizes and
+  records the action, then binds the tenant. Do not open `withTenant` from a route directly.
+- **Bot configuration rules live in `@zeddev/bot`** (validation, limits, option lists, readiness, prompt
+  rendering). Its functions take an already tenant-bound `Connection` and write `app.current_tenant_id()`,
+  never a tenant parameter. An option list or limit mirrored by a SQL CHECK needs a test asserting the two agree.
 
 ### Database-backed tests
 

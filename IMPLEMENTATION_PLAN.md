@@ -33,8 +33,15 @@ and an SMTP server,
 because the database- and storage-backed suites are where every tenant isolation guarantee is verified
 and a green run without them proves considerably less than it looks.
 
-The next increment is the P1 configuration domain, starting with persona and tone — the only configuration
-that gates readiness — which will add the first tenant-scoped routes to `services/api`.
+The P1 configuration domain has started: persona and tone — the only configuration that gates readiness —
+is done as a new domain library, `@zeddev/bot`, with the first tenant-scoped routes in `services/api`
+(`GET`/`PUT /v1/bot/persona`, `DELETE /v1/bot/persona/freeform-instructions`). That makes sixteen workspace
+packages and 551 passing tests, zero skipped. See §4i.
+
+The next increment is readiness evaluation and the activation toggle (`bot-activation-control.md`). The
+readiness input it needs from persona already exists (`personaReadiness`); the WhatsApp-connection input
+does not, and until P2 builds the connection state machine it is honestly unmet for every tenant. Language
+configuration is still blocked on the §4 decision about the supported language list.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -354,12 +361,14 @@ call must never be able to cause Meta to redeliver.
   verification and resend, password reset request and completion, client and operator session
   issue/read/revoke, authenticated password change, the operator-bootstrap CLI, and startup preflights
   (config, tenant-isolation enforceability, mail reachability, migrations). See §4h.
-> **P1 remaining scope.** Everything below this line — persona/tone configuration through conversation
+- **[DONE]** Persona and tone configuration: `@zeddev/bot` (`persona.ts`) plus migration `0005_bot_persona`
+  and three routes in `services/api`. Bot name required (≤50 characters, one line), formality and style
+  traits optional, freeform text optional (≤2000 characters) and independently clearable, both mechanisms
+  rendered together by `personaDirectives`. All 11 acceptance criteria covered against a real PostgreSQL.
+  See §4i.
+> **P1 remaining scope.** Everything below this line — language configuration through conversation
 > memory reset policy.
 
-- Persona and tone configuration: structured fields (bot name required, formality, style traits) plus
-  optional freeform text, both applied together, with length limits and independent clearing of the
-  freeform field. This is the only configuration gating readiness.
 - Language configuration with a platform default, per `language-configuration.md`.
 - Readiness evaluation and the client-controlled activation toggle, including re-evaluation when a
   condition is later lost, and the record of first-ready and every on/off transition. Per
@@ -452,7 +461,8 @@ call must never be able to cause Meta to redeliver.
   `src/lib/testing` records the mapping and throws at definition time if the spec filename does not
   exist, so a spec rename breaks the build instead of silently orphaning the criterion. `npm run
   spec-coverage` reports per-spec coverage. Current state: 13 of 27 specs have covering tests, 211
-  spec-linked assertions. `authentication-and-access.md` is now at 45 and `client-signup-and-tenancy.md`
+  spec-linked assertions. (Superseded after the persona increment: 14 of 27 specs, 231 assertions;
+  `persona-and-tone-configuration.md` at 11, covering all 11 of its criteria.) `authentication-and-access.md` is now at 45 and `client-signup-and-tenancy.md`
   at 20 — the two best-covered specs in the set — appropriately, since every other spec's "identity is
   already established" assumption rests on them. `credential-and-secret-handling.md` is at 27,
   `environment-portability.md` at 20, `tenant-data-isolation.md` at 18, `component-independence.md` at 3.
@@ -517,8 +527,10 @@ can be defaulted safely.
   likely necessary control that was never confirmed in scope. Signup is now publicly reachable through
   `POST /v1/signup`; the per-source throttle (§1) bounds volume per address but does not stop a distributed
   signup flood, and the failed-attempt lockout defends *login*, not signup.
-- Whether formality and communication style are required for readiness or safely defaulted — currently
-  only the bot name is confirmed as required.
+- ~~Whether formality and communication style are required for readiness or safely defaulted.~~ **Decided
+  (persona increment, §4i):** neither is required, and neither is defaulted — an unset value is stored as
+  NULL / an empty list and the prompt says nothing about it. Only the bot name gates readiness. Making
+  either required later is a one-line validation change in `parsePersonaInput`, not a migration.
 - Accepted document formats and size limits for knowledge upload.
 - Whether the secret-protection boundary must defend against an attacker who has obtained the running
   host, or only against disclosure of stored data. This materially changes what P0's secrets work must do,
@@ -900,6 +912,46 @@ SMTP).
   to match it or the client-address derivation (§1) breaks. Object storage (MinIO) joins `compose.yaml`
   when the first service that holds a store lands.
 - The rate limiter is per process, not shared — see the decision in §1.
+
+---
+
+## 4i. Findings from the persona increment
+
+- **A persona row exists only once it is complete, so "is persona done?" is "does the row exist?".** The
+  save refuses a submission without a bot name and the column is `NOT NULL`, so there is no separate
+  `complete` flag that could disagree with the data. The same reason keeps provisioning from seeding a
+  default row: a default persona would make every new tenant look configured.
+- **Length limits must be counted the way the database counts them.** JavaScript's `length` counts UTF-16
+  units; PostgreSQL's `length()` counts characters. With a naive `length` check a 30-emoji name is refused
+  by the application and accepted by the database, and a limit enforced in only one of the two places turns
+  a boundary input into a 500. `@zeddev/bot` counts code points, the migration's CHECK uses the same
+  numbers, and a test saves a 50-emoji name through both.
+- **Option lists stored twice are asserted to agree.** `FORMALITY_LEVELS` and `STYLE_TRAITS` are mirrored as
+  CHECK constraints, the same way `secret_class` mirrors `SECRET_CLASSES`. A test saves every offered value
+  and confirms that a value outside the list is refused, so the two copies cannot drift without a failing test.
+- **A read on an unbound connection must fail loudly, not come back empty.** Row-level security fails
+  closed, but for a read that looks exactly like "never configured", which would report a configured bot
+  as not ready. `@zeddev/bot` checks `connection.boundTenantId` in-process (no extra round trip) and throws
+  `DefectError`.
+- **Tenant-scoped routes go through one function that names the action.**
+  `IdentityService.withClientAction(token, action, resource, fn)` resolves the session, checks the action
+  against `ACTION_PRINCIPALS`, records the decision out of band, and only then opens the tenant
+  transaction. `services/api`'s `asClient` is its only caller. Cost: every configuration read writes one
+  `access_records` row. That is acceptable at configuration-screen volume, but a high-frequency read route
+  (such as a polling transcript view) should decide deliberately whether it needs a per-call record.
+- **Nothing caches a persona, and nothing should without an invalidation plan.** AC5 and AC11 ("the next
+  reply reflects the change") hold because the reply path reads the persona inside the transaction that
+  assembles the reply. `personaDirectives` is the single renderer of the persona section, and P2's prompt
+  assembly must call it rather than render the fields itself.
+
+### Follow-ups the persona increment leaves open
+
+- `bot_personas` has no platform-scope policy, on purpose: freeform text is client-authored content.
+  `bot-activation-control.md` AC12 (the operator can *view* readiness and activation) therefore needs a
+  derived readiness/activation state the platform scope can read, such as columns on `tenants` or a small
+  table of its own. It must not add a platform policy to `bot_personas`. The readiness increment owns this.
+- The persona screen in `services/web` does not exist. `GET /v1/bot/persona` already returns the options
+  and limits the form needs, so the form has no reason to hard-code them.
 
 ---
 
