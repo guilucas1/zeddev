@@ -50,11 +50,21 @@ describe('the generated configuration reference', () => {
       );
       const found = new Set<string>();
 
-      for (const pkg of readdirSync(join(REPO_ROOT, 'src', 'lib'))) {
+      // Services are scanned as well as libraries: a service owns the keys that
+      // are properties of itself, and those are the ones a new service is most
+      // likely to add without thinking of the reference.
+      const packages = ['lib', 'services'].flatMap((area) => {
+        try {
+          return readdirSync(join(REPO_ROOT, 'src', area)).map((pkg) => join(REPO_ROOT, 'src', area, pkg));
+        } catch {
+          return [];
+        }
+      });
+      for (const pkg of packages) {
         for (const file of ['config.ts', 'index.ts']) {
           let source: string;
           try {
-            source = readFileSync(join(REPO_ROOT, 'src', 'lib', pkg, file), 'utf8');
+            source = readFileSync(join(pkg, file), 'utf8');
           } catch {
             continue;
           }
@@ -75,6 +85,39 @@ describe('the generated configuration reference', () => {
       );
     },
   );
+
+  specTest(
+    'component-independence.md',
+    'AC1 one component is redeployed without restarting any other',
+    'every service has its own image definition and its own entry in the Compose file',
+    () => {
+      // One image per service is what lets one be rebuilt and redeployed while the
+      // others keep running. A service added without both would either not be
+      // deployable at all or be deployed inside another's image, which couples
+      // their releases.
+      const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
+      const services = readdirSync(join(REPO_ROOT, 'src', 'services'));
+      assert.ok(services.length > 0, 'the scan must find a service, or it proves nothing');
+      for (const service of services) {
+        const dockerfile = join(REPO_ROOT, 'src', 'services', service, 'Dockerfile');
+        assert.ok(readFileSync(dockerfile, 'utf8').includes(`src/services/${service}/`), `${dockerfile} must run its own service`);
+        assert.ok(
+          compose.includes(`dockerfile: src/services/${service}/Dockerfile`),
+          `compose.yaml has no service built from src/services/${service}/Dockerfile`,
+        );
+      }
+    },
+  );
+
+  unitTest('an image can never contain a deployment’s values', () => {
+    // The image is the source tree, so the ignore file is the only thing between
+    // a developer's `.env` and a pushed image — credential-and-secret-handling.md
+    // AC1 forbids a secret in any build artifact.
+    const ignored = readFileSync(join(REPO_ROOT, '.dockerignore'), 'utf8').split('\n').map((line) => line.trim());
+    for (const entry of ['.env', '.env.*', 'deploy/secrets', '.git']) {
+      assert.ok(ignored.includes(entry), `.dockerignore must exclude ${entry}`);
+    }
+  });
 
   unitTest('every documented key appears in the reference and the template', () => {
     const reference = renderPlatformReference();

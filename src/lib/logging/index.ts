@@ -39,12 +39,34 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { ConfigSchema } from '@zeddev/config';
 import { isSecret } from '@zeddev/secrets';
 import { toDiagnostic, type Diagnostic } from '@zeddev/errors';
 import { SystemClock, type Clock } from '@zeddev/time';
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
+
+/**
+ * The one logging input every service reads.
+ *
+ * Shared rather than declared per service, so that "how verbose is this
+ * deployment" has one answer and one row in the generated reference. It is
+ * configuration rather than a constant because a laptop and a VPS legitimately
+ * want different verbosity, and `environment-portability.md` requires every such
+ * difference be explainable from the documented inputs. Note what it cannot do:
+ * raising verbosity never widens *what* a record may contain — the field
+ * allowlist below applies at every level.
+ */
+export const LOGGING_CONFIG_SCHEMA = {
+  LOG_LEVEL: {
+    type: 'enum',
+    values: LOG_LEVELS,
+    description:
+      'Least severe log level written. Records are newline-delimited JSON on standard output. Changing it changes how many records are written, never which fields they may carry — redaction is enforced at every level.',
+    default: 'info',
+  },
+} as const satisfies ConfigSchema;
 
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
@@ -76,6 +98,12 @@ export const OPERATIONAL_FIELDS = new Set<string>([
   'sessionId',
   'requestId',
   'traceId',
+  // HTTP. `route` is the matched route *pattern* from a service's own route
+  // table, never the raw request path — a raw path is caller-supplied and can
+  // carry a token pasted into a query string.
+  'route',
+  'method',
+  'port',
   'component',
   'service',
   'instanceId',

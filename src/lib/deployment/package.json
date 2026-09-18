@@ -7,9 +7,11 @@
     ".": "./index.ts"
   },
   "dependencies": {
+    "@zeddev/api": "*",
     "@zeddev/config": "*",
     "@zeddev/db": "*",
     "@zeddev/identity": "*",
+    "@zeddev/logging": "*",
     "@zeddev/mail": "*",
     "@zeddev/storage": "*"
   },

@@ -1,0 +1,98 @@
+# The platform on one host — a laptop or a low-cost VPS.
+#
+# Every platform setting comes from `.env` beside this file (gitignored). Its
+# complete list, with defaults and the reason each exists, is
+# docs/configuration.md; the template at the bottom of that file is a starting
+# point. Nothing here differs between a laptop and a VPS — the difference is in
+# `.env`, which is what environment-portability.md requires.
+#
+# One value lives outside `.env`: the PostgreSQL superuser password, in
+# deploy/secrets/postgres-superuser-password (also gitignored). It is needed only
+# to initialise the database, and keeping it out of `.env` keeps it out of the
+# service containers, which receive `.env` whole.
+#
+#     mkdir -p deploy/secrets
+#     head -c 32 /dev/urandom | base64 > deploy/secrets/postgres-superuser-password
+#     docker compose up -d                          # with a real SMTP relay in .env
+#     docker compose --profile local-mail up -d     # laptop: mail caught by Mailpit
+#     printf '%s\n' "$OPERATOR_PASSWORD" | docker compose run --rm -T api \
+#       node src/services/api/cli.ts create-operator --email ops@example.com
+#
+# On a managed cloud provider the same image runs against managed PostgreSQL and
+# a managed mail relay; only `.env` changes.
+
+name: zeddev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-superuser-password
+      # Read once, by deploy/postgres/10-application-role.sh, to create the
+      # unprivileged role and database the services connect as.
+      DATABASE_USER: ${DATABASE_USER:?set DATABASE_USER in .env}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}
+      DATABASE_NAME: ${DATABASE_NAME:?set DATABASE_NAME in .env}
+    secrets:
+      - postgres-superuser-password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d \"$${DATABASE_NAME}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # No published port: only the services reach the database.
+
+  api:
+    build:
+      context: .
+      dockerfile: src/services/api/Dockerfile
+    image: zeddev-api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      # The one value that is a property of this Compose file rather than of the
+      # deployment: the database is the `postgres` service on the internal network.
+      DATABASE_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Loopback by default. On a VPS a reverse proxy terminating TLS sits in
+      # front and forwards here — set API_TRUSTED_PROXY_HOPS=1 in .env to match.
+      - "${API_PUBLISHED_ADDRESS:-127.0.0.1}:${API_PUBLISHED_PORT:-8080}:${API_HTTP_PORT:-8080}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:' + (process.env.API_HTTP_PORT || 8080) + '/health/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    # Longer than API_SHUTDOWN_GRACE's default, so a stop drains rather than kills.
+    stop_grace_period: 15s
+
+  # Catches outbound mail on a laptop, where there is no relay to send through.
+  # Set MAIL_HOST=mailpit, MAIL_PORT=1025, MAIL_TLS=disable in .env; read the mail
+  # at http://127.0.0.1:8025.
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: ["local-mail"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+
+secrets:
+  postgres-superuser-password:
+    file: ./deploy/secrets/postgres-superuser-password
+
+volumes:
+  postgres-data:

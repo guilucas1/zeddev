@@ -29,6 +29,9 @@ Run from the repo root.
 | `npm run check:offline` | `typecheck` + `test` without any container. Does not cover `@zeddev/db`, `@zeddev/schema`, `@zeddev/storage`, or `@zeddev/mail`'s SMTP adapter. Only use when Docker is unavailable. |
 | `npm run spec-coverage` | Prints which `specs/*.md` have covering tests and which have none. |
 | `npm run config-reference` | Regenerates `docs/configuration.md` from the config schemas. A test fails the build if the committed file is stale. |
+| `node src/services/api/main.ts` | Runs the API service. Reads every setting from the environment and refuses to start, listing every missing key. |
+| `node src/services/api/cli.ts create-operator --email <addr>` | Creates the platform operator. Password is read from stdin. |
+| `docker compose up -d` (add `--profile local-mail` on a laptop) | Runs the platform from `compose.yaml`. Needs a `.env` and `deploy/secrets/postgres-superuser-password` — see the header of `compose.yaml`. |
 
 Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 
@@ -75,7 +78,12 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   `principals.test.ts` asserts over the whole table rather than over examples.
 - **Adding a `*_CONFIG_SCHEMA` to a package means registering it** in `PLATFORM_CONFIG_SCHEMAS`
   in `src/lib/deployment/index.ts` and running `npm run config-reference`. A test scans
-  `src/lib` and fails the build otherwise.
+  `src/lib` and `src/services` and fails the build otherwise.
+- **Services live in `src/services/<name>`**; each needs its own `Dockerfile` and a
+  `dockerfile: src/services/<name>/Dockerfile` entry in `compose.yaml` — a test in `@zeddev/deployment`
+  enforces both. A service's own config schema lives in its `config.ts`, exported via a `./config`
+  subpath, and is registered in `PLATFORM_CONFIG_SCHEMAS` like any library's.
+- **A process entrypoint that is also imported by tests uses `if (import.meta.main)`** to run.
 
 ### Database-backed tests
 
@@ -158,3 +166,13 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - A failed login must commit its failed-attempt counter, so `IdentityService` returns an outcome
   from the transaction and throws after it commits. Throwing from inside would roll the counter
   back and the lockout would silently never engage. Keep that shape when adding credential paths.
+- Leaving a `for await` loop over an `IncomingMessage` early (throw or break) destroys the socket along
+  with it, so an error reply written afterwards never arrives — the caller just sees a reset connection.
+  Read and discard to the end of the stream instead.
+- The portability guard exempts only bare `example.com`/`example.org` hosts in URL literals, not
+  subdomains. Use those bare hosts in schema examples and tests, not `app.example.com` or similar.
+- The repo root's `.env` is a developer file, not platform configuration. Do not overwrite it; verify
+  Compose changes in a temporary copy of the repo, under a separate project name
+  (`docker compose -p <other-name>`).
+- `core.autocrlf` is on for this checkout. `.gitattributes` keeps `*.sh`, `Dockerfile`, and `*.yaml` as LF
+  regardless, because those files run inside Linux containers.

@@ -1,33 +1,40 @@
 # Implementation Plan
 
-**Status as of 2026-09-17:** P0 foundation landed except container definitions; the P1 control plane has
-started with its identity layer and the mail port. `src/` now contains fourteen dependency-free workspace packages
-(`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`, `@zeddev/logging`, `@zeddev/config`,
-`@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`, `@zeddev/tenancy`, `@zeddev/storage`,
-`@zeddev/identity`, `@zeddev/mail`, `@zeddev/deployment`) and 458 passing tests, zero skipped, of which a
-growing share run against a real PostgreSQL, a real S3-compatible object storage server (MinIO), and a real
-SMTP server (Mailpit). Persistence,
-migrations, and database-enforced tenant isolation are in place and proven by cross-tenant negative tests.
-A durable, tenant-fair job queue is in place, with per-partition FIFO ordering, lease-based at-least-once
-delivery, and a dead-letter path. Object storage is done: an S3-compatible port, a hand-written SigV4
-signer, a real adapter, and an in-memory fake proven against the real one by a shared conformance suite.
-`@zeddev/identity` now covers signup, transactional tenant provisioning, email verification, client and
-operator authentication as two non-overlapping identity spaces, sessions with both expiry bounds, logout,
-password change, self-service reset, failed-attempt lockout, the audit trail, and the action→principal
-permission table — all tested against a real PostgreSQL. See §4f. `@zeddev/mail` is a hand-written SMTP
-adapter behind a single-recipient, plain-text port, so the verification and reset links identity mints now
-have a transport; composing and sending them is `services/api`'s job. See §4g.
+**Status as of 2026-09-17:** P0 is complete, including container definitions. The P1 control plane now has
+identity, mail, and `services/api`: identity is reachable over HTTP, verification and reset mail is
+actually delivered, and the platform operator can be bootstrapped. `src/` now contains fifteen workspace
+packages — fourteen dependency-free libraries (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`,
+`@zeddev/logging`, `@zeddev/config`, `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`,
+`@zeddev/tenancy`, `@zeddev/storage`, `@zeddev/identity`, `@zeddev/mail`, `@zeddev/deployment`) plus the
+first deployable service, `@zeddev/api` (`src/services/api`) — and 522 passing tests, zero skipped, of
+which a growing share run against a real PostgreSQL, a real S3-compatible object storage server (MinIO),
+and a real SMTP server (Mailpit). Persistence, migrations, and database-enforced tenant isolation are in
+place and proven by cross-tenant negative tests. A durable, tenant-fair job queue is in place, with
+per-partition FIFO ordering, lease-based at-least-once delivery, and a dead-letter path. Object storage is
+done: an S3-compatible port, a hand-written SigV4 signer, a real adapter, and an in-memory fake proven
+against the real one by a shared conformance suite. `@zeddev/identity` covers signup, transactional tenant
+provisioning, email verification, client and operator authentication as two non-overlapping identity
+spaces, sessions with both expiry bounds, logout, password change, self-service reset, failed-attempt
+lockout, the audit trail, and the action→principal permission table — all tested against a real
+PostgreSQL. See §4f. `@zeddev/mail` is a hand-written SMTP adapter behind a single-recipient, plain-text
+port. See §4g. `services/api` is a hand-written HTTP service over `node:http` that wires both of them
+together: signup, email verification (and resend), password reset, and client and operator sessions —
+plus startup preflights, migrations at startup, and a `create-operator` CLI that reads the password from
+stdin. See §4h.
 
-The remaining P0 item is container definitions, and it is only half unblocked — the generated
-environment-variable reference has landed as `docs/configuration.md`, but the Dockerfiles cannot be
-written yet because `src/services/*` is still empty; there is nothing to containerize. The identity
-domain is deliberately transport-free, so the next increment that unblocks it is `services/api`.
+Container definitions are done: a Dockerfile per service, `compose.yaml` for laptop and VPS, and the
+generated environment-variable reference at `docs/configuration.md`. The whole stack — Postgres, the API
+service, and optionally Mailpit — was verified by actually running it in a temporary Compose project: see
+§4h.
 
 Run `npm run db:up`, `npm run storage:up`, and `npm run mail:up`, then `npm run check`, before assuming any
 of the above still holds. `npm run check` now *refuses* to pass without a database, an object storage server,
 and an SMTP server,
 because the database- and storage-backed suites are where every tenant isolation guarantee is verified
 and a green run without them proves considerably less than it looks.
+
+The next increment is the P1 configuration domain, starting with persona and tone — the only configuration
+that gates readiness — which will add the first tenant-scoped routes to `services/api`.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -218,6 +225,36 @@ These are load-bearing — most items below assume them. Recorded here so they a
   reference stops being complete on the second key anyone adds — silently. `@zeddev/deployment` renders
   `docs/configuration.md` from the schemas that actually parse the environment, and a test fails the build
   when the committed file drifts or when a package grows a `*_CONFIG_SCHEMA` that no registry knows about.
+- **[DECISION] Sessions travel in HttpOnly cookies, not bearer headers; one origin serves dashboard and
+  API.** `zd_session` (Path=/) and `zd_operator_session` (Path=/v1/operator), both HttpOnly + SameSite=Strict,
+  Secure iff `API_PUBLIC_BASE_URL` is https. No CORS support at all. Rationale: a token a script can read is
+  a token an XSS can steal; same-origin removes a whole CORS surface. CSRF needs three independent
+  failures: SameSite=Strict, JSON-only request bodies (a cross-site form cannot send `application/json`
+  without a preflight nobody answers), and a refused foreign `Origin` on every non-GET.
+- **[DECISION] Verification and reset mail is sent after the response, from an in-process outbox, not the
+  durable queue.** After-the-response because otherwise a registered address answers an SMTP round-trip
+  slower, undoing AC9's indistinguishable body with timing. In-process because a queue payload would store
+  the raw token in the database, defeating hash-only token storage; a lost message costs one "send again"
+  click. Shutdown drains the outbox within `API_SHUTDOWN_GRACE`.
+- **[DECISION] Tokens travel in the URL fragment** (`<base>/verify-email#token=…`,
+  `<base>/reset-password#token=…`): browsers never send fragments to servers, so tokens stay out of access
+  logs, proxy logs, and Referer headers.
+- **[DECISION] Public base URL and trusted proxy hops are configured, never inferred**
+  (`API_PUBLIC_BASE_URL`, `API_TRUSTED_PROXY_HOPS`): a link built from the Host header is host-header
+  poisoning of reset links; trusting X-Forwarded-For blindly lets a caller forge the address the throttle
+  counts by. The client address is the entry `hops` back from the TCP peer.
+- **[DECISION] The per-source throttle is in-process** (`API_ANONYMOUS_RATE_LIMIT` per
+  `API_ANONYMOUS_RATE_WINDOW`, default 30/10m) — the "from a single source" half of
+  `authentication-and-access.md` AC12; the per-account half stays the database lockout. N instances admit
+  N× the limit; a shared counter would need a write per anonymous request or another always-on service.
+- **[DECISION] The API service runs migrations at startup** (advisory-locked, idempotent), after refusing a
+  role that bypasses RLS and before verifying mail and listening.
+- **[DECISION] The operator is created by a CLI reading the password from standard input**
+  (`node src/services/api/cli.ts create-operator --email …`), never by a route, an argument (visible in the
+  process list), or an env var (ends up committed in a Compose file).
+- **[DECISION] The Postgres superuser password lives in a Compose secret file**
+  (`deploy/secrets/postgres-superuser-password`), not `.env`, because `.env` is passed whole to the service
+  containers.
 
 ### Component map (the units `component-independence.md` requires be independently deployable)
 
@@ -278,22 +315,21 @@ call must never be able to cause Meta to redeliver.
   adapter, an in-memory fake, and a shared conformance suite that runs both. See §4e.
 - **[DONE]** `src/lib/testing` — in-memory fakes for every port, plus a spec-traceability helper so each test can
   declare which spec file and acceptance criterion it covers.
-- Container definitions: one Dockerfile per service, a Compose file for laptop and VPS, and a documented
-  environment-variable reference. `environment-portability.md` requires the config input list be complete
-  enough to explain every behavioral difference between tiers. The reference is now *generated* from the
-  config schemas — `@zeddev/deployment` renders it as `docs/configuration.md`, so it cannot drift. What
-  remains is the Dockerfiles and the Compose file themselves, and that half is blocked: `src/services/*`
-  is still empty, so there is no service to write a Dockerfile for.
+- **[DONE]** Container definitions: one Dockerfile per service, `compose.yaml` for laptop and VPS, and the
+  generated environment-variable reference (`docs/configuration.md`). Verified by building the API image and
+  running the whole Compose stack end to end in a temporary copy under a separate project name: isolation
+  preflight passed, migrations applied, signup → link read from Mailpit → verify → login → session all
+  worked, `create-operator` worked inside the container, and `docker compose stop` exited 0 after a logged
+  drain.
 - **[DONE]** Baseline database schema and migrations for tenants, users, and the audit/event records that
   several specs require. Delivered as `@zeddev/schema`: `tenants`, `tenant_lifecycle_events`, `accounts`,
   `client_sessions`, `account_tokens`, `operators`, `operator_sessions`, `access_records`,
   `tenant_secrets`, `secret_access_records`.
 
-> **P0 remaining scope.** Container definitions — specifically the Dockerfiles and Compose file, blocked
-> on `src/services/*` existing. The queue and object storage are both done; §4d and §4e record what was
-> learned building them, including follow-ups later phases must pick up: setting `maxInFlightPerTenant`
-> and calling `purgeSucceeded` from the scheduler (queue), and calling `verifyAccess()` from every
-> service's startup path (storage).
+> **P0 is complete.** Still-open follow-ups, carried forward rather than blocking anything: setting
+> `maxInFlightPerTenant` and calling `purgeSucceeded` from the scheduler (queue, §4d), and calling
+> `verifyAccess()` from any service that holds an object store (storage, §4e) — none does yet, which is
+> also why object storage (MinIO) is not in `compose.yaml`: there is nothing in it to run against.
 
 ### P1 — Control plane (a client can sign up, configure, and reach "ready")
 
@@ -314,9 +350,12 @@ call must never be able to cause Meta to redeliver.
   admits the read.
 - **[DONE]** Mail port: `@zeddev/mail`, an SMTP adapter plus an in-memory fake under one conformance suite.
   See §4g.
-> **P1 remaining scope.** Everything below this line, plus `services/api`, which is what turns
-> `@zeddev/identity` into something a browser can reach, composes and sends the verification and reset mail
-> through `@zeddev/mail` (it owns the public base URL the links need), and unblocks P0's Dockerfiles.
+- **[DONE]** `services/api`: the HTTP surface over `@zeddev/identity` and `@zeddev/mail` — signup, email
+  verification and resend, password reset request and completion, client and operator session
+  issue/read/revoke, authenticated password change, the operator-bootstrap CLI, and startup preflights
+  (config, tenant-isolation enforceability, mail reachability, migrations). See §4h.
+> **P1 remaining scope.** Everything below this line — persona/tone configuration through conversation
+> memory reset policy.
 
 - Persona and tone configuration: structured fields (bot name required, formality, style traits) plus
   optional freeform text, both applied together, with length limits and independent clearing of the
@@ -412,13 +451,12 @@ call must never be able to cause Meta to redeliver.
 - **[DONE, ongoing] Acceptance-criteria traceability.** `specTest(spec, criterion, name, fn)` in
   `src/lib/testing` records the mapping and throws at definition time if the spec filename does not
   exist, so a spec rename breaks the build instead of silently orphaning the criterion. `npm run
-  spec-coverage` reports per-spec coverage. Current state: 13 of 27 specs have covering tests, 177
-  spec-linked assertions. `authentication-and-access.md` jumped from 2 to 32 and
-  `client-signup-and-tenancy.md` from 1 to 12 in the identity increment, which are now the two
-  best-covered specs in the set — appropriately, since every other spec's "identity is already
-  established" assumption rests on them. `credential-and-secret-handling.md` is at 21,
-  `environment-portability.md` at 16, `tenant-data-isolation.md` at 16, `message-delivery-reliability.md`
-  at 13. The 14 remaining uncovered specs are all P1–P4 features not yet built.
+  spec-coverage` reports per-spec coverage. Current state: 13 of 27 specs have covering tests, 211
+  spec-linked assertions. `authentication-and-access.md` is now at 45 and `client-signup-and-tenancy.md`
+  at 20 — the two best-covered specs in the set — appropriately, since every other spec's "identity is
+  already established" assumption rests on them. `credential-and-secret-handling.md` is at 27,
+  `environment-portability.md` at 20, `tenant-data-isolation.md` at 18, `component-independence.md` at 3.
+  The remaining uncovered specs are all P1–P4 features not yet built.
 
 ---
 
@@ -476,9 +514,9 @@ can be defaulted safely.
   without it, and because the operator login path is deliberately separate from the client one, adding a
   second factor is a change to one function. Still worth answering before launch.
 - Whether signup needs CAPTCHA or equivalent anti-abuse. `client-signup-and-tenancy.md` flags this as a
-  likely necessary control that was never confirmed in scope. Signup is now reachable in principle, so
-  this becomes live the moment `services/api` exposes it; the failed-attempt lockout defends *login* and
-  does nothing for signup volume.
+  likely necessary control that was never confirmed in scope. Signup is now publicly reachable through
+  `POST /v1/signup`; the per-source throttle (§1) bounds volume per address but does not stop a distributed
+  signup flood, and the failed-attempt lockout defends *login*, not signup.
 - Whether formality and communication style are required for readiness or safely defaulted — currently
   only the bot name is confirmed as required.
 - Accepted document formats and size limits for knowledge upload.
@@ -749,24 +787,21 @@ leaves only one of the two required expiry rules in force.
 
 ### Follow-ups the identity increment leaves open
 
-- **The mail port now exists (§4g), but nothing sends through it yet.** `signUp` and `requestPasswordReset`
-  still return the token, deliberately — the caller composes the link. Until `services/api` does that,
-  `client-signup-and-tenancy.md` AC6 is only provable in a test.
 - **The common-password blocklist is a few hundred stems carried in source, not a breach corpus.** It
   covers the top of the frequency table, which is where the mass is, but a real deployment should check
   against a breached-credential list. That needs either a dependency or a data file, and both deserve a
   deliberate decision rather than being smuggled in here.
-- **The operator is created by `createOperator`, and nothing calls it yet.** There is no operator signup
-  surface and there should not be. A deployment bootstrap must call it; that belongs with `services/api`.
 - **Multi-factor authentication for the operator is still open** (§4). Nothing in this increment forecloses
   it — the operator login path is separate, so a second factor lands in one function.
 - **`resolveClientSession` records only denials, not successful resolutions.** Recording every request
   would put one row per request into an append-only table on a platform whose premise is near-zero fixed
   cost, and it would say nothing the login record does not. If an audit requirement later demands
   per-request records, that is a deliberate change with a retention policy attached, not a default.
-- **Nothing calls `assertTenantIsolationEnforceable()` or `verifyAccess()` yet.** Still true, and now more
-  pressing: `@zeddev/identity` is the first package whose correctness depends entirely on row-level
-  security being enforced. Every service's startup path must call both.
+
+Resolved by the API increment (§4h): the mail port now has a caller (`services/api` composes and sends),
+`createOperator` now has a caller (`cli.ts create-operator`), and `assertTenantIsolationEnforceable()` now
+has a caller (the database preflight in `start.ts`). `verifyAccess()` for a held object store is still
+uncalled — no service holds a store yet.
 
 ---
 
@@ -800,11 +835,71 @@ leaves only one of the two required expiry rules in force.
 
 ### Follow-ups the mail increment leaves open
 
-- `services/api` must compose the verification and reset messages and call `send`. Every service holding a
-  `Mailer` must call its `verifyAccess()` at startup, alongside the database and storage preflights.
-- A send that fails after identity has committed the token leaves a valid token nobody received. The fix
-  is to resend, not to open a transaction spanning SMTP: `requestEmailVerification` and
-  `requestPasswordReset` already mint fresh tokens, so `services/api` only has to expose a resend action.
+Both resolved by the API increment: see §4h. `services/api` now composes and sends through `@zeddev/mail`,
+and a failed send is recoverable through `POST /v1/email-verification/requests` (resend) or a fresh
+`POST /v1/password-resets/requests` (each mints a new token rather than needing a transaction spanning
+SMTP).
+
+---
+
+## 4h. Findings from the API increment
+
+- **Leaving a `for await` loop over an `IncomingMessage` early destroys the socket, not just the loop.** A
+  `throw` or `break` out of the loop abandons the request stream, and Node tears down the underlying socket
+  with it — so the 413 reply for an oversized *chunked* body was never delivered; the caller just saw a
+  reset connection. The declared-`Content-Length` check hid this in the first round of tests, because that
+  path rejects before the body is ever read. Fixed by reading and discarding to the end of the stream
+  instead of bailing out early; a regression test sends a chunked oversized body specifically, since a
+  declared-length one would not have caught the original bug either.
+- **The portability guard exempts only bare `example.com`/`example.org` hosts in URL literals** — not
+  subdomains. `https://app.example.com` inside a schema's `example:` field was flagged as an embedded
+  endpoint. That is the guard working correctly, not a false positive: the fix was to change the example to
+  a bare exempted host, not to loosen a guard whose whole point is to have no exceptions worth remembering.
+- **The official PostgreSQL image's `POSTGRES_USER` is a superuser.** A Compose file that simply pointed
+  the service at it would have started with no tenant isolation at all, silently — the §4c finding arriving
+  a second time, now against the platform's own container image rather than a test fixture. The service
+  itself refuses this now (the preflight in `start.ts`), so the failure mode changed from "silent" to
+  "startup fails loudly." `deploy/postgres/10-application-role.sh` creates a `NOSUPERUSER NOBYPASSRLS` role
+  that owns the database on first container start, with values passed as psql variables rather than
+  interpolated into SQL text, so a quote inside a password cannot alter the statement.
+- **`core.autocrlf=true` on the Windows checkout means shell scripts mounted into Linux containers can
+  arrive with CRLF line endings**, which makes the shell fail with a "missing interpreter" error that has
+  nothing obviously to do with line endings. `.gitattributes` now pins LF for `*.sh`, `Dockerfile`, and
+  `*.yaml` — the files that actually run inside a Linux container — regardless of the checkout platform.
+- **The repo root's `.env` is a developer convenience file, not the platform's configuration.** Compose
+  verification for this increment was done in a temporary copy of the repo, under a separate Compose
+  project name, specifically so nothing in that process could overwrite it. That file must never be
+  overwritten by tooling.
+- **Startup reports every missing configuration key across every package's schema in one error, not the
+  first one it finds.** `loadAll` in `start.ts` collects every package's schema failures into a single
+  `ConfigurationError`, emitted both as one JSON log record per key (`configKey`, `reason`) and as plain
+  text on stderr — because a log pipeline that is not set up yet (the common case for a first deploy)
+  identifies nothing, and stopping at the first missing key would turn configuring the service into a
+  fix-one-restart-repeat loop.
+- **Logging carries the matched route *pattern*, never the raw request path.** The `route` operational
+  field is always something like `/v1/email-verification`, never the literal path a caller sent, because
+  the raw path is caller-supplied and a caller can paste a token into a query string — which would put a
+  credential-shaped value into every access log line for that request.
+
+### Follow-ups the API increment leaves open
+
+- `services/web` must implement `/verify-email` and `/reset-password` pages that read the token from the
+  URL fragment and POST it to the API as JSON. Until that exists, the links `services/api` mails land on
+  nothing.
+- The API image copies the whole `src/` tree, including other services' sources once they exist. Harmless
+  today with one service, but worth narrowing to the service's own workspace closure once a second service
+  lands, so a change to an unrelated service does not change this image's bytes.
+- No per-recipient mail cooldown: repeated reset requests for one address are bounded only by the
+  per-source throttle, so a distributed caller can still mail a victim repeatedly — each request invalidates
+  the previous link. A cooldown belongs in `@zeddev/identity`, not `services/api`, because it must hold
+  across instances; keyed on the latest token's `created_at`.
+- No operator password recovery: `create-operator` refuses a duplicate address, and there is no reset path
+  for a locked-out or forgotten operator credential. When needed, this should be a deliberate CLI command,
+  not a route.
+- Compose does not terminate TLS. On a VPS a reverse proxy must, and `API_TRUSTED_PROXY_HOPS=1` must be set
+  to match it or the client-address derivation (§1) breaks. Object storage (MinIO) joins `compose.yaml`
+  when the first service that holds a store lands.
+- The rate limiter is per process, not shared — see the decision in §1.
 
 ---
 

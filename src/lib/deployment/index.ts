@@ -30,9 +30,11 @@
  * register one is the only way this could still drift, and it is closed.
  */
 
+import { API_CONFIG_SCHEMA } from '@zeddev/api/config';
 import { renderEnvTemplate, renderReference, type ConfigSchema } from '@zeddev/config';
 import { DATABASE_CONFIG_SCHEMA } from '@zeddev/db';
 import { IDENTITY_CONFIG_SCHEMA } from '@zeddev/identity';
+import { LOGGING_CONFIG_SCHEMA } from '@zeddev/logging';
 import { MAIL_CONFIG_SCHEMA } from '@zeddev/mail';
 import { STORAGE_CONFIG_SCHEMA } from '@zeddev/storage';
 
@@ -75,6 +77,18 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       'Carries the email-verification and password-reset links that client-signup-and-tenancy.md and authentication-and-access.md require. Any SMTP server: a container on a laptop, a relay on a VPS, a provider in a managed cloud — one adapter reached through different values, for the same reason object storage has one S3 adapter. MAIL_TLS is stated rather than inferred from the port, because "465 means implicit and 587 means STARTTLS" is environment detection wearing a disguise; and there is deliberately no opportunistic mode, because a silent fallback to cleartext is a downgrade nothing observes until the credentials are already on the wire.',
     schema: MAIL_CONFIG_SCHEMA,
+  },
+  {
+    title: 'Logging',
+    rationale:
+      'Read by every service. Verbosity is the only thing that varies; what a record may contain does not, because redaction is an allowlist of field names enforced at the logger boundary and applies at every level.',
+    schema: LOGGING_CONFIG_SCHEMA,
+  },
+  {
+    title: 'API service',
+    rationale:
+      'The client and operator HTTP API. API_PUBLIC_BASE_URL and API_TRUSTED_PROXY_HOPS are the two values most likely to differ between a laptop, a VPS, and a managed cloud, and both are stated rather than inferred from the request: a link built from a caller-supplied Host header lets the caller choose where a password-reset link points, and trusting X-Forwarded-For without knowing how many proxies wrote it lets a caller forge the source address the login throttle counts by.',
+    schema: API_CONFIG_SCHEMA,
   },
 ];
 

@@ -1,0 +1,868 @@
+/**
+ * The API end to end: a real HTTP listener, a real PostgreSQL, and the mail that
+ * carries each link.
+ *
+ * `@zeddev/identity`'s own suite already proves the rules — lockout, expiry,
+ * single-use tokens, the tenant binding. What it cannot prove is that they
+ * survive the trip through a transport, and that is where each of the following
+ * would silently stop holding:
+ *
+ * - **AC3/AC9 indistinguishability** holds in the domain by construction and can
+ *   be undone here by a status code, a header, or a body that differs.
+ * - **"Controlled by the signer"** (`client-signup-and-tenancy.md`) is only true if
+ *   the verification token reaches the mailbox and *not* the response. So every
+ *   token these tests redeem is read out of a delivered message — never from a
+ *   return value, which would prove the API handed the link to the submitter.
+ * - **AC21/AC22** — each principal type's token refused at the other's surface —
+ *   is tested by presenting the real token in the other cookie, which is the
+ *   only form of the attack a browser can actually mount.
+ *
+ * One test at the end runs the signup loop through a real SMTP server, so the
+ * link a client clicks is the one an independent mail server delivered.
+ */
+
+import assert from 'node:assert/strict';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { after, before, describe } from 'node:test';
+import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
+import { IdentityService, TOKEN_PREFIXES, type IdentityPolicy, type TenantProvisioning } from '@zeddev/identity';
+import { Logger, MemorySink } from '@zeddev/logging';
+import { SmtpMailer, type Mailer } from '@zeddev/mail';
+import {
+  createTestMailbox,
+  decodeMail,
+  InMemoryMailer,
+  mailTestConfigured,
+  SKIP_REASON as MAIL_SKIP_REASON,
+} from '@zeddev/mail/testing';
+import { migrateToLatest } from '@zeddev/schema';
+import { specTest, unitTest } from '@zeddev/testing';
+import { CLIENT_SESSION_COOKIE, createApi, OPERATOR_SESSION_COOKIE, type Api } from './app.ts';
+import { loadServerSettings, type ApiSettings } from './config.ts';
+
+const FAST_SCRYPT = { N: 1024, r: 8, p: 1 } as const;
+const PUBLIC_BASE = 'https://app.example.com';
+
+const POLICY: IdentityPolicy = {
+  sessionInactivityMs: 60_000,
+  sessionAbsoluteLifetimeMs: 120_000,
+  maxFailedAttempts: 5,
+  lockoutMs: 30_000,
+  emailVerificationTtlMs: 60_000,
+  passwordResetTtlMs: 60_000,
+  minPasswordLength: 12,
+};
+
+const PASSWORD = 'meadow-granite-vessel-8';
+const NEW_PASSWORD = 'harbour-thistle-copper-4';
+
+function settingsWith(overrides: Partial<ApiSettings> = {}): ApiSettings {
+  return {
+    ...loadServerSettings({ API_PUBLIC_BASE_URL: PUBLIC_BASE }),
+    // High enough that only the throttle's own test ever meets it.
+    anonymousRateLimit: 100_000,
+    ...overrides,
+  };
+}
+
+interface Served {
+  readonly url: string;
+  readonly server: Server;
+  close(): Promise<void>;
+}
+
+async function serve(api: Api): Promise<Served> {
+  const server = createServer(api.handler);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    server,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }),
+  };
+}
+
+interface Answer {
+  readonly status: number;
+  readonly headers: Headers;
+  readonly body: any;
+  readonly text: string;
+  readonly cookies: readonly string[];
+}
+
+async function call(
+  served: Served,
+  method: string,
+  path: string,
+  options: {
+    readonly json?: unknown;
+    readonly cookie?: string | undefined;
+    readonly headers?: Record<string, string>;
+    readonly rawBody?: string;
+  } = {},
+): Promise<Answer> {
+  const headers: Record<string, string> = { ...(options.headers ?? {}) };
+  let body: string | undefined;
+  if (options.json !== undefined) {
+    headers['content-type'] ??= 'application/json';
+    body = JSON.stringify(options.json);
+  } else if (options.rawBody !== undefined) {
+    body = options.rawBody;
+  }
+  if (options.cookie !== undefined) headers.cookie = options.cookie;
+  const response = await fetch(`${served.url}${path}`, { method, headers, ...(body === undefined ? {} : { body }) });
+  const text = await response.text();
+  return {
+    status: response.status,
+    headers: response.headers,
+    body: text === '' ? undefined : JSON.parse(text),
+    text,
+    cookies: response.headers.getSetCookie(),
+  };
+}
+
+/** The value of `name` among a response's Set-Cookie headers. */
+function cookieValue(answer: Answer, name: string): string | undefined {
+  for (const header of answer.cookies) {
+    const match = new RegExp(`^${name}=([^;]*)`).exec(header);
+    if (match !== null) return match[1];
+  }
+  return undefined;
+}
+
+/** A reply with its per-request identifier removed, for comparing two replies byte for byte. */
+function withoutRequestId(answer: Answer): unknown {
+  const headers = Object.fromEntries(
+    [...answer.headers.entries()].filter(([name]) => !['x-request-id', 'date', 'content-length'].includes(name)),
+  );
+  const body = answer.body?.error === undefined ? answer.body : { error: { ...answer.body.error, requestId: 'x' } };
+  return { status: answer.status, headers, body };
+}
+
+/** The token in the most recent link delivered to `to`. */
+function tokenFromMailbox(mailer: InMemoryMailer, to: string): string {
+  const messages = mailer.delivered.map((delivered) => decodeMail(delivered.raw)).filter((mail) => mail.to === to);
+  const latest = messages.at(-1);
+  assert.ok(latest !== undefined, `no mail was delivered to ${to}`);
+  const match = /#token=(\S+)/.exec(latest.body);
+  assert.ok(match !== null, 'the delivered message carries no link');
+  return decodeURIComponent(match[1]!);
+}
+
+describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }, () => {
+  let db: TestDatabase;
+  let identity: IdentityService;
+  let mailer: InMemoryMailer;
+  let sink: MemorySink;
+  let api: Api;
+  let served: Served;
+  let counter = 0;
+  const extra: Served[] = [];
+
+  function nextEmail(): string {
+    counter += 1;
+    return `owner-${counter}-api@example.com`;
+  }
+
+  function apiWith(options: {
+    readonly settings?: Partial<ApiSettings>;
+    readonly identity?: IdentityService;
+    readonly mailer?: Mailer;
+  } = {}): Api {
+    return createApi({
+      identity: options.identity ?? identity,
+      mailer: options.mailer ?? mailer,
+      pool: db.pool,
+      settings: settingsWith(options.settings),
+      logger: new Logger({ sink }),
+    });
+  }
+
+  async function signUp(email: string, target: Served = served, targetApi: Api = api): Promise<Answer> {
+    const answer = await call(target, 'POST', '/v1/signup', {
+      json: { businessName: `Bakery ${email}`, email, password: PASSWORD },
+    });
+    await targetApi.outbox.drain();
+    return answer;
+  }
+
+  /** Sign up, verify through the mailed link, log in. Returns the session cookie header value. */
+  async function onboard(email: string = nextEmail()): Promise<{ email: string; cookie: string; tenantId: string }> {
+    assert.equal((await signUp(email)).status, 201);
+    const verified = await call(served, 'POST', '/v1/email-verification', {
+      json: { token: tokenFromMailbox(mailer, email) },
+    });
+    assert.equal(verified.status, 200);
+    const login = await call(served, 'POST', '/v1/session', { json: { email, password: PASSWORD } });
+    assert.equal(login.status, 200);
+    const cookie = `${CLIENT_SESSION_COOKIE}=${cookieValue(login, CLIENT_SESSION_COOKIE)}`;
+    const session = await call(served, 'GET', '/v1/session', { cookie });
+    return { email, cookie, tenantId: session.body.tenantId };
+  }
+
+  before(async () => {
+    db = await createTestDatabase('api');
+    await migrateToLatest(db.pool);
+    sink = new MemorySink();
+    mailer = new InMemoryMailer();
+    identity = new IdentityService({
+      pool: db.pool,
+      policy: POLICY,
+      credentialParams: FAST_SCRYPT,
+      logger: new Logger({ sink }),
+    });
+    api = apiWith();
+    served = await serve(api);
+  });
+
+  after(async () => {
+    for (const server of extra) await server.close();
+    await served?.close();
+    await db?.drop();
+  });
+
+  // -------------------------------------------------------------------------
+  // Signup and verification
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'client-signup-and-tenancy.md',
+    'AC6 the signup email is verified as controlled by the signer',
+    'the verification link goes to the mailbox and never into the response',
+    async () => {
+      const email = nextEmail();
+      const answer = await signUp(email);
+      assert.equal(answer.status, 201);
+      assert.deepEqual(answer.body, { status: 'verification_pending' });
+      for (const prefix of Object.values(TOKEN_PREFIXES)) {
+        assert.ok(!answer.text.includes(prefix), 'a token appeared in the signup response');
+      }
+      assert.deepEqual(answer.cookies, []);
+
+      const token = tokenFromMailbox(mailer, email);
+      const mail = decodeMail(mailer.delivered.at(-1)!.raw);
+      assert.match(mail.body, new RegExp(`^${PUBLIC_BASE}/verify-email#token=`, 'm'));
+      assert.equal(new URL(/(https:\S+)/.exec(mail.body)![1]!).search, '', 'the token must not travel in a query string');
+      assert.ok(token.length > 20);
+    },
+  );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC2 an unverified client is denied a usable tenant',
+    'logging in before redeeming the mailed link is refused, and succeeds after',
+    async () => {
+      const email = nextEmail();
+      await signUp(email);
+      const early = await call(served, 'POST', '/v1/session', { json: { email, password: PASSWORD } });
+      assert.equal(early.status, 401);
+      assert.deepEqual(early.cookies, []);
+
+      const verified = await call(served, 'POST', '/v1/email-verification', {
+        json: { token: tokenFromMailbox(mailer, email) },
+      });
+      assert.equal(verified.status, 200);
+      const later = await call(served, 'POST', '/v1/session', { json: { email, password: PASSWORD } });
+      assert.equal(later.status, 200);
+      assert.ok(cookieValue(later, CLIENT_SESSION_COOKIE)?.startsWith(TOKEN_PREFIXES.client_session));
+    },
+  );
+
+  specTest(
+    'client-signup-and-tenancy.md',
+    'AC3 duplicate email rejected with a clear reason',
+    'a second signup for the same address is a 409 naming the reason',
+    async () => {
+      const email = nextEmail();
+      assert.equal((await signUp(email)).status, 201);
+      const again = await signUp(email.toUpperCase());
+      assert.equal(again.status, 409);
+      assert.equal(again.body.error.code, 'identity.email_in_use');
+      assert.match(again.body.error.message, /already registered/);
+    },
+  );
+
+  specTest(
+    'client-signup-and-tenancy.md',
+    'AC4 credential below the strength standard is rejected',
+    'a weak password is a 400 that names the field and never echoes the value',
+    async () => {
+      const email = nextEmail();
+      const answer = await call(served, 'POST', '/v1/signup', {
+        json: { businessName: 'Weak Co', email, password: 'short' },
+      });
+      assert.equal(answer.status, 400);
+      assert.equal(answer.body.error.code, 'validation.failed');
+      assert.ok(answer.body.error.issues.some((issue: { key: string }) => issue.key === 'password'));
+      assert.doesNotMatch(answer.text, /short"/);
+      // Nothing was created, so the address is still free.
+      assert.equal((await signUp(email)).status, 201);
+    },
+  );
+
+  unitTest('every missing field is reported at once', async () => {
+    const answer = await call(served, 'POST', '/v1/signup', { json: { email: 7 } });
+    assert.equal(answer.status, 400);
+    assert.deepEqual(
+      answer.body.error.issues.map((issue: { key: string }) => issue.key),
+      ['businessName', 'email', 'password'],
+    );
+  });
+
+  specTest(
+    'authentication-and-access.md',
+    'AC10 a used recovery link is rejected',
+    'a verification link works once, and the second attempt says why',
+    async () => {
+      const email = nextEmail();
+      await signUp(email);
+      const token = tokenFromMailbox(mailer, email);
+      assert.equal((await call(served, 'POST', '/v1/email-verification', { json: { token } })).status, 200);
+      const reused = await call(served, 'POST', '/v1/email-verification', { json: { token } });
+      assert.equal(reused.status, 400);
+      assert.deepEqual(reused.body.error.issues, [{ key: 'token', reason: 'has already been used' }]);
+    },
+  );
+
+  specTest(
+    'client-signup-and-tenancy.md',
+    'AC6 the signup email is verified as controlled by the signer',
+    'a verification resend answers identically for a pending, a verified, and an unknown address',
+    async () => {
+      const pending = nextEmail();
+      await signUp(pending);
+      const { email: verified } = await onboard();
+      const unknown = nextEmail();
+      const before = mailer.delivered.length;
+
+      const answers = [];
+      for (const email of [pending, verified, unknown]) {
+        answers.push(await call(served, 'POST', '/v1/email-verification/requests', { json: { email } }));
+      }
+      await api.outbox.drain();
+
+      for (const answer of answers) assert.deepEqual(withoutRequestId(answer), withoutRequestId(answers[0]!));
+      assert.equal(answers[0]!.status, 202);
+      // Only the pending address had anything to send.
+      assert.equal(mailer.delivered.length, before + 1);
+      assert.equal(decodeMail(mailer.delivered.at(-1)!.raw).to, pending);
+    },
+  );
+
+  specTest(
+    'client-signup-and-tenancy.md',
+    'AC7 provisioning failure leaves a visible error state',
+    'a provisioning failure during verification is reported as such, and the same link can be retried',
+    async () => {
+      let fail = true;
+      const provisionTenant: TenantProvisioning = async () => {
+        if (fail) throw new Error('knowledge index unavailable');
+      };
+      const failing = new IdentityService({
+        pool: db.pool,
+        policy: POLICY,
+        credentialParams: FAST_SCRYPT,
+        provisionTenant,
+        logger: new Logger({ sink }),
+      });
+      const failingApi = apiWith({ identity: failing });
+      const failingServed = await serve(failingApi);
+      extra.push(failingServed);
+
+      const email = nextEmail();
+      await signUp(email, failingServed, failingApi);
+      const token = tokenFromMailbox(mailer, email);
+      const answer = await call(failingServed, 'POST', '/v1/email-verification', { json: { token } });
+      assert.equal(answer.status, 500);
+      assert.equal(answer.body.error.code, 'signup.provisioning_failed');
+      assert.doesNotMatch(answer.text, /knowledge index/);
+      assert.equal((await call(failingServed, 'POST', '/v1/session', { json: { email, password: PASSWORD } })).status, 401);
+
+      fail = false;
+      assert.equal((await call(failingServed, 'POST', '/v1/email-verification', { json: { token } })).status, 200);
+      assert.equal((await call(failingServed, 'POST', '/v1/session', { json: { email, password: PASSWORD } })).status, 200);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Client sessions
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'authentication-and-access.md',
+    'AC3 failed login indistinguishable for known and unknown email',
+    'a wrong password and an unknown address produce the same status, headers, and body',
+    async () => {
+      const { email } = await onboard();
+      const wrong = await call(served, 'POST', '/v1/session', { json: { email, password: 'not-the-password-1' } });
+      const unknown = await call(served, 'POST', '/v1/session', {
+        json: { email: nextEmail(), password: 'not-the-password-1' },
+      });
+      assert.equal(wrong.status, 401);
+      assert.deepEqual(withoutRequestId(wrong), withoutRequestId(unknown));
+    },
+  );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC4 the tenant is the one bound to the session',
+    'a tenant identifier supplied by the caller is ignored in favour of the session’s own',
+    async () => {
+      const a = await onboard();
+      const b = await onboard();
+      assert.notEqual(a.tenantId, b.tenantId);
+      const answer = await call(served, 'GET', `/v1/session?tenantId=${b.tenantId}`, {
+        cookie: a.cookie,
+        headers: { 'x-tenant-id': b.tenantId },
+      });
+      assert.equal(answer.status, 200);
+      assert.equal(answer.body.tenantId, a.tenantId);
+    },
+  );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC7 logout ends the session everywhere',
+    'after logout the same token is refused, and logout answers the same with or without a session',
+    async () => {
+      const { cookie } = await onboard();
+      const out = await call(served, 'DELETE', '/v1/session', { cookie });
+      assert.equal(out.status, 204);
+      assert.equal(cookieValue(out, CLIENT_SESSION_COOKIE), '');
+      assert.equal((await call(served, 'GET', '/v1/session', { cookie })).status, 401);
+
+      const again = await call(served, 'DELETE', '/v1/session', { cookie });
+      const none = await call(served, 'DELETE', '/v1/session');
+      assert.deepEqual(withoutRequestId(again), withoutRequestId(none));
+    },
+  );
+
+  unitTest('the session cookie is HttpOnly, SameSite=Strict, and Secure under an https public URL', async () => {
+    const email = nextEmail();
+    await signUp(email);
+    await call(served, 'POST', '/v1/email-verification', { json: { token: tokenFromMailbox(mailer, email) } });
+    const login = await call(served, 'POST', '/v1/session', { json: { email, password: PASSWORD } });
+    const header = login.cookies.find((cookie) => cookie.startsWith(`${CLIENT_SESSION_COOKIE}=`));
+    assert.ok(header !== undefined);
+    assert.match(header, /; Path=\/; HttpOnly; SameSite=Strict; Secure; Expires=/);
+    // The token is in the cookie, not in the body a script could read.
+    assert.doesNotMatch(login.text, new RegExp(cookieValue(login, CLIENT_SESSION_COOKIE)!));
+  });
+
+  specTest(
+    'authentication-and-access.md',
+    'AC8 a password change invalidates existing sessions',
+    'changing the password ends the current session, and only the new password logs in',
+    async () => {
+      const { email, cookie } = await onboard();
+      const changed = await call(served, 'POST', '/v1/account/password', {
+        cookie,
+        json: { currentPassword: PASSWORD, newPassword: NEW_PASSWORD },
+      });
+      assert.equal(changed.status, 204);
+      assert.equal((await call(served, 'GET', '/v1/session', { cookie })).status, 401);
+      assert.equal((await call(served, 'POST', '/v1/session', { json: { email, password: PASSWORD } })).status, 401);
+      assert.equal((await call(served, 'POST', '/v1/session', { json: { email, password: NEW_PASSWORD } })).status, 200);
+    },
+  );
+
+  unitTest('a password change without a session is refused before the body is read', async () => {
+    const answer = await call(served, 'POST', '/v1/account/password', {
+      json: { currentPassword: PASSWORD, newPassword: NEW_PASSWORD },
+    });
+    assert.equal(answer.status, 401);
+  });
+
+  // -------------------------------------------------------------------------
+  // Password recovery
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'authentication-and-access.md',
+    'AC9 recovery for an unregistered email does not reveal it',
+    'a reset request answers identically for a registered and an unregistered address',
+    async () => {
+      const { email } = await onboard();
+      const before = mailer.delivered.length;
+      const known = await call(served, 'POST', '/v1/password-resets/requests', { json: { email } });
+      const unknown = await call(served, 'POST', '/v1/password-resets/requests', { json: { email: nextEmail() } });
+      await api.outbox.drain();
+
+      assert.equal(known.status, 202);
+      assert.deepEqual(withoutRequestId(known), withoutRequestId(unknown));
+      assert.equal(mailer.delivered.length, before + 1, 'only the registered address receives mail');
+    },
+  );
+
+  specTest(
+    'client-signup-and-tenancy.md',
+    'AC11 recovery without operator involvement and without a second tenant',
+    'a mailed reset link restores access to the same tenant and ends the old sessions',
+    async () => {
+      const { email, cookie, tenantId } = await onboard();
+      await call(served, 'POST', '/v1/password-resets/requests', { json: { email } });
+      await api.outbox.drain();
+      const mail = decodeMail(mailer.delivered.at(-1)!.raw);
+      assert.match(mail.body, new RegExp(`^${PUBLIC_BASE}/reset-password#token=`, 'm'));
+
+      const token = tokenFromMailbox(mailer, email);
+      const reset = await call(served, 'POST', '/v1/password-resets', { json: { token, newPassword: NEW_PASSWORD } });
+      assert.equal(reset.status, 204);
+      assert.equal(cookieValue(reset, CLIENT_SESSION_COOKIE), '');
+
+      // AC8: the session held before the reset is gone.
+      assert.equal((await call(served, 'GET', '/v1/session', { cookie })).status, 401);
+
+      const login = await call(served, 'POST', '/v1/session', { json: { email, password: NEW_PASSWORD } });
+      assert.equal(login.status, 200);
+      const session = await call(served, 'GET', '/v1/session', {
+        cookie: `${CLIENT_SESSION_COOKIE}=${cookieValue(login, CLIENT_SESSION_COOKIE)}`,
+      });
+      assert.equal(session.body.tenantId, tenantId);
+
+      // AC10: the link worked once.
+      const reused = await call(served, 'POST', '/v1/password-resets', { json: { token, newPassword: PASSWORD } });
+      assert.equal(reused.status, 400);
+    },
+  );
+
+  unitTest('a mail server failure changes nothing the requester can see', async () => {
+    const { email } = await onboard();
+    mailer.failNext(new Error('connection reset'));
+    const failed = await call(served, 'POST', '/v1/password-resets/requests', { json: { email } });
+    await api.outbox.drain();
+    const unknown = await call(served, 'POST', '/v1/password-resets/requests', { json: { email: nextEmail() } });
+    assert.deepEqual(withoutRequestId(failed), withoutRequestId(unknown));
+    assert.match(sink.serialized(), /api\.mail\.failed/);
+  });
+
+  // -------------------------------------------------------------------------
+  // The operator, and the boundary between the two identity spaces
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'authentication-and-access.md',
+    'AC13 an unauthenticated caller is denied operator surfaces',
+    'the operator session surface refuses a caller with no credential',
+    async () => {
+      const answer = await call(served, 'GET', '/v1/operator/session');
+      assert.equal(answer.status, 401);
+      assert.deepEqual(Object.keys(answer.body), ['error']);
+    },
+  );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC21 a client credential is insufficient for operator access',
+    'a valid client session token presented as the operator cookie is refused',
+    async () => {
+      const { cookie } = await onboard();
+      const token = cookie.slice(cookie.indexOf('=') + 1);
+      const answer = await call(served, 'GET', '/v1/operator/session', {
+        cookie: `${OPERATOR_SESSION_COOKIE}=${token}`,
+      });
+      assert.equal(answer.status, 401);
+      // And the client cookie itself is not read by an operator surface at all.
+      assert.equal((await call(served, 'GET', '/v1/operator/session', { cookie })).status, 401);
+    },
+  );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC22 an operator credential is insufficient for client access',
+    'a valid operator session token presented as the client cookie is refused',
+    async () => {
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      assert.equal(login.status, 200);
+      const token = cookieValue(login, OPERATOR_SESSION_COOKIE)!;
+      const operatorCookie = `${OPERATOR_SESSION_COOKIE}=${token}`;
+      assert.equal((await call(served, 'GET', '/v1/operator/session', { cookie: operatorCookie })).status, 200);
+
+      assert.equal((await call(served, 'GET', '/v1/session', { cookie: `${CLIENT_SESSION_COOKIE}=${token}` })).status, 401);
+      assert.equal(
+        (
+          await call(served, 'POST', '/v1/account/password', {
+            cookie: `${CLIENT_SESSION_COOKIE}=${token}`,
+            json: { currentPassword: PASSWORD, newPassword: NEW_PASSWORD },
+          })
+        ).status,
+        401,
+      );
+    },
+  );
+
+  unitTest('the operator cookie is scoped to operator routes, and operator logout ends the session', async () => {
+    const email = `ops-${nextEmail()}`;
+    await identity.createOperator({ email, password: PASSWORD });
+    const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+    const header = login.cookies.find((cookie) => cookie.startsWith(`${OPERATOR_SESSION_COOKIE}=`));
+    assert.match(header ?? '', /; Path=\/v1\/operator; HttpOnly; SameSite=Strict; Secure;/);
+
+    const cookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+    const session = await call(served, 'GET', '/v1/operator/session', { cookie });
+    assert.equal(session.body.principalType, 'operator');
+    assert.equal((await call(served, 'DELETE', '/v1/operator/session', { cookie })).status, 204);
+    assert.equal((await call(served, 'GET', '/v1/operator/session', { cookie })).status, 401);
+  });
+
+  unitTest('an operator password change ends the operator session', async () => {
+    const email = `ops-${nextEmail()}`;
+    await identity.createOperator({ email, password: PASSWORD });
+    const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+    const cookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+    const changed = await call(served, 'POST', '/v1/operator/account/password', {
+      cookie,
+      json: { currentPassword: PASSWORD, newPassword: NEW_PASSWORD },
+    });
+    assert.equal(changed.status, 204);
+    assert.equal((await call(served, 'GET', '/v1/operator/session', { cookie })).status, 401);
+  });
+
+  // -------------------------------------------------------------------------
+  // Transport defences
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'authentication-and-access.md',
+    'AC12 throttling from a single source',
+    'one source past its budget is refused with a retry hint while another source is unaffected',
+    async () => {
+      const limited = apiWith({ settings: { anonymousRateLimit: 3, trustedProxyHops: 1 } });
+      const limitedServed = await serve(limited);
+      extra.push(limitedServed);
+      const attempt = (source: string): Promise<Answer> =>
+        call(limitedServed, 'POST', '/v1/session', {
+          json: { email: nextEmail(), password: 'not-the-password-1' },
+          headers: { 'x-forwarded-for': source },
+        });
+
+      for (let i = 0; i < 3; i += 1) assert.equal((await attempt('198.51.100.1')).status, 401);
+      const refused = await attempt('198.51.100.1');
+      assert.equal(refused.status, 429);
+      assert.equal(refused.body.error.code, 'request.rate_limited');
+      assert.ok(Number(refused.headers.get('retry-after')) > 0);
+
+      assert.equal((await attempt('198.51.100.2')).status, 401);
+      // Prepending a forged address does not buy a fresh budget: the trusted
+      // proxy's entry is still the rightmost one.
+      assert.equal(
+        (
+          await call(limitedServed, 'POST', '/v1/session', {
+            json: { email: nextEmail(), password: 'not-the-password-1' },
+            headers: { 'x-forwarded-for': '203.0.113.50, 198.51.100.1' },
+          })
+        ).status,
+        429,
+      );
+    },
+  );
+
+  unitTest('a state-changing request from another origin is refused; the configured origin is not', async () => {
+    const foreign = await call(served, 'POST', '/v1/session', {
+      json: { email: nextEmail(), password: PASSWORD },
+      headers: { origin: 'https://evil.example.org' },
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(foreign.body.error.code, 'request.cross_origin');
+
+    const own = await call(served, 'POST', '/v1/session', {
+      json: { email: nextEmail(), password: PASSWORD },
+      headers: { origin: PUBLIC_BASE },
+    });
+    assert.equal(own.status, 401);
+  });
+
+  unitTest('a body that is not JSON, too large, or malformed is refused before any handler runs', async () => {
+    const form = await call(served, 'POST', '/v1/session', {
+      rawBody: 'email=a%40example.com&password=x',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    assert.equal(form.status, 415);
+
+    const huge = await call(served, 'POST', '/v1/session', {
+      rawBody: JSON.stringify({ email: 'a@example.com', password: 'x'.repeat(40_000) }),
+      headers: { 'content-type': 'application/json' },
+    });
+    assert.equal(huge.status, 413);
+
+    const broken = await call(served, 'POST', '/v1/session', {
+      rawBody: '{"email":',
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+    assert.equal(broken.status, 400);
+    assert.equal(broken.body.error.code, 'request.malformed');
+
+    const array = await call(served, 'POST', '/v1/session', { json: [1, 2] });
+    assert.equal(array.status, 400);
+  });
+
+  unitTest('an oversized chunked body with no declared length still receives its 413', async () => {
+    // The declared-length check cannot see this one, and abandoning the read
+    // mid-stream would tear down the socket before the reply could be written —
+    // the caller would see a reset connection instead of a reason.
+    const { request } = await import('node:http');
+    const status = await new Promise<number>((resolve, reject) => {
+      const outgoing = request(
+        `${served.url}/v1/session`,
+        { method: 'POST', headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' } },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        },
+      );
+      outgoing.on('error', reject);
+      for (let i = 0; i < 40; i += 1) outgoing.write('x'.repeat(1024));
+      outgoing.end();
+    });
+    assert.equal(status, 413);
+  });
+
+  unitTest('unknown routes are 404 and a known route with the wrong method is 405 naming the allowed ones', async () => {
+    assert.equal((await call(served, 'GET', '/v1/nowhere')).status, 404);
+    const wrong = await call(served, 'PUT', '/v1/session');
+    assert.equal(wrong.status, 405);
+    assert.equal(wrong.headers.get('allow'), 'POST, GET, DELETE');
+  });
+
+  unitTest('every response carries the security headers and a request id', async () => {
+    const answer = await call(served, 'GET', '/health/live');
+    assert.equal(answer.status, 200);
+    assert.equal(answer.headers.get('cache-control'), 'no-store');
+    assert.equal(answer.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(answer.headers.get('content-security-policy') ?? '', /default-src 'none'/);
+    assert.match(answer.headers.get('x-request-id') ?? '', /^[0-9a-f-]{36}$/);
+  });
+
+  specTest(
+    'component-independence.md',
+    'AC9 the affected component is identifiable',
+    'readiness names the database as the failing component when it is unreachable',
+    async () => {
+      assert.deepEqual((await call(served, 'GET', '/health/ready')).body, { status: 'ready' });
+
+      const broken = createApi({
+        identity,
+        mailer,
+        pool: { query: async () => Promise.reject(new Error('connect ECONNREFUSED')) } as never,
+        settings: settingsWith(),
+        logger: new Logger({ sink }),
+      });
+      const brokenServed = await serve(broken);
+      extra.push(brokenServed);
+      const answer = await call(brokenServed, 'GET', '/health/ready');
+      assert.equal(answer.status, 503);
+      assert.deepEqual(answer.body, { status: 'unavailable', component: 'database' });
+      // Liveness is unaffected: restarting this process would not fix the database.
+      assert.equal((await call(brokenServed, 'GET', '/health/live')).status, 200);
+    },
+  );
+
+  specTest(
+    'credential-and-secret-handling.md',
+    'AC5 no secret in any log',
+    'after a full signup, login, and reset flow the logs hold no password, token, or email address',
+    async () => {
+      sink.clear();
+      const email = `needle-${nextEmail()}`;
+      await signUp(email);
+      const verification = tokenFromMailbox(mailer, email);
+      await call(served, 'POST', '/v1/email-verification', { json: { token: verification } });
+      const login = await call(served, 'POST', '/v1/session', { json: { email, password: PASSWORD } });
+      const session = cookieValue(login, CLIENT_SESSION_COOKIE)!;
+      await call(served, 'POST', '/v1/password-resets/requests', { json: { email } });
+      await api.outbox.drain();
+      const reset = tokenFromMailbox(mailer, email);
+      await call(served, 'POST', '/v1/password-resets', { json: { token: reset, newPassword: NEW_PASSWORD } });
+
+      const logged = sink.serialized();
+      // Non-empty first: a leak test over no records passes for the wrong reason.
+      assert.ok(sink.records.filter((record) => record.event === 'api.request').length >= 5);
+      assert.match(logged, /"route":"\/v1\/password-resets"/);
+      for (const needle of [PASSWORD, NEW_PASSWORD, verification, reset, session, 'needle-']) {
+        assert.ok(!logged.includes(needle), `the log contains ${needle.slice(0, 6)}…`);
+      }
+    },
+  );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC18 authentication events are recorded without content',
+    'logins through the API land in the access records with who, what, and outcome',
+    async () => {
+      const { email } = await onboard();
+      await call(served, 'POST', '/v1/session', { json: { email, password: 'not-the-password-1' } });
+      const { withPlatformScope } = await import('@zeddev/db');
+      const rows = await withPlatformScope(db.pool, async (tx) =>
+        (
+          await tx.query<{ action: string; outcome: string }>(
+            `SELECT action, outcome FROM access_records WHERE action = 'client.login' ORDER BY occurred_at`,
+          )
+        ).rows,
+      );
+      assert.ok(rows.some((row) => row.outcome === 'allowed'));
+      assert.ok(rows.some((row) => row.outcome === 'denied'));
+    },
+  );
+});
+
+describe('api service over real SMTP', {
+  skip: !testDatabaseConfigured() ? SKIP_REASON : !mailTestConfigured() ? MAIL_SKIP_REASON : false,
+}, () => {
+  let db: TestDatabase;
+  let served: Served;
+  let api: Api;
+  let mailer: SmtpMailer;
+
+  before(async () => {
+    db = await createTestDatabase('api_smtp');
+    await migrateToLatest(db.pool);
+  });
+
+  after(async () => {
+    await served?.close();
+    await mailer?.close();
+    await db?.drop();
+  });
+
+  specTest(
+    'client-signup-and-tenancy.md',
+    'AC6 the signup email is verified as controlled by the signer',
+    'the link an independent mail server delivered is the one that activates the account',
+    async () => {
+      const mailbox = createTestMailbox();
+      mailer = new SmtpMailer(mailbox.settings, { logger: new Logger({ sink: new MemorySink() }) });
+      const identity = new IdentityService({
+        pool: db.pool,
+        policy: POLICY,
+        credentialParams: FAST_SCRYPT,
+        logger: new Logger({ sink: new MemorySink() }),
+      });
+      api = createApi({ identity, mailer, pool: db.pool, settings: settingsWith(), logger: new Logger({ sink: new MemorySink() }) });
+      served = await serve(api);
+
+      const email = mailbox.recipient('owner');
+      const signed = await call(served, 'POST', '/v1/signup', {
+        json: { businessName: 'Harbour Café', email, password: PASSWORD },
+      });
+      assert.equal(signed.status, 201);
+      assert.equal(await api.outbox.drain(15_000), true);
+
+      const [delivered] = await mailbox.serverParsed();
+      assert.ok(delivered !== undefined, 'the mail server received nothing');
+      assert.deepEqual(delivered.to, [email]);
+      const link = /(https:\/\/\S+)/.exec(delivered.text)?.[1];
+      assert.ok(link !== undefined);
+      const token = decodeURIComponent(new URL(link).hash.replace(/^#token=/, ''));
+
+      assert.equal((await call(served, 'POST', '/v1/email-verification', { json: { token } })).status, 200);
+      assert.equal((await call(served, 'POST', '/v1/session', { json: { email, password: PASSWORD } })).status, 200);
+    },
+  );
+});

@@ -1,0 +1,6 @@
+# Scripts and container definitions run inside Linux containers, where a CRLF
+# line ending turns `#!/bin/sh` into a missing interpreter. core.autocrlf on a
+# Windows checkout would otherwise convert them silently.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yaml      text eol=lf

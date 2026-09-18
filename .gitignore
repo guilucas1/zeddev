@@ -231,3 +231,6 @@ npm-debug.log*
 coverage/
 .tmp/
 .env.test
+
+# Deployment secrets referenced by compose.yaml. Never committed.
+/deploy/secrets/

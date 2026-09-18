@@ -1,0 +1,18 @@
+# The image is the source tree — there is no build step — so this file is what
+# keeps the image down to the source tree. Tests are excluded because nothing in
+# a running service imports them; configuration files are excluded because a
+# committed image must never carry a deployment's values (credential-and-secret-
+# handling.md AC1).
+**/node_modules
+.git
+.env
+.env.*
+deploy/secrets
+**/*.test.ts
+tsconfig.tsbuildinfo
+docs
+specs
+scripts
+*.md
+loop.sh
+parse_stream.cjs

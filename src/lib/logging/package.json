@@ -7,6 +7,7 @@
     ".": "./index.ts"
   },
   "dependencies": {
+    "@zeddev/config": "*",
     "@zeddev/errors": "*",
     "@zeddev/secrets": "*",
     "@zeddev/time": "*"

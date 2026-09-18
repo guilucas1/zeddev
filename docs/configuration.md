@@ -97,9 +97,68 @@ Carries the email-verification and password-reset links that client-signup-and-t
 | `MAIL_TLS` | enum(disable\|starttls\|implicit) | no | `starttls` | How TLS is reached: "starttls" upgrades an established cleartext connection and fails if the server does not offer it, "implicit" speaks TLS from the first byte, "disable" does not encrypt at all and is appropriate only over a trusted local network such as a container network on a single host. There is deliberately no opportunistic mode — a silent fallback to cleartext is a downgrade nothing observes. |
 | `MAIL_USERNAME` | string | no | `` | Account to authenticate as. Empty means do not authenticate, which is correct for a local relay that accepts mail from its own host and for nothing else. |
 
+## Logging
+
+Read by every service. Verbosity is the only thing that varies; what a record may contain does not, because redaction is an allowlist of field names enforced at the logger boundary and applies at every level.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `LOG_LEVEL` | enum(debug\|info\|warn\|error) | no | `info` | Least severe log level written. Records are newline-delimited JSON on standard output. Changing it changes how many records are written, never which fields they may carry — redaction is enforced at every level. |
+
+## API service
+
+The client and operator HTTP API. API_PUBLIC_BASE_URL and API_TRUSTED_PROXY_HOPS are the two values most likely to differ between a laptop, a VPS, and a managed cloud, and both are stated rather than inferred from the request: a link built from a caller-supplied Host header lets the caller choose where a password-reset link points, and trusting X-Forwarded-For without knowing how many proxies wrote it lets a caller forge the source address the login throttle counts by.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `API_ANONYMOUS_RATE_LIMIT` | integer | no | `30` | Unauthenticated requests one source may make to the credential and recovery endpoints (signup, login, verification, password reset) per API_ANONYMOUS_RATE_WINDOW. The per-source half of the login throttle authentication-and-access.md AC12 requires; the per-account half is IDENTITY_LOGIN_MAX_FAILED_ATTEMPTS. Counted per process, so N instances admit up to N times this. |
+| `API_ANONYMOUS_RATE_WINDOW` | duration | no | `600000` | Window over which API_ANONYMOUS_RATE_LIMIT is counted. |
+| `API_HTTP_HOST` | string | no | `0.0.0.0` | Address the HTTP listener binds to. The default listens on every interface, which is what a container needs; set it to a loopback address to keep a process on a shared host reachable only through a local reverse proxy. |
+| `API_HTTP_PORT` | integer | no | `8080` | TCP port the HTTP listener binds to. 0 asks the operating system for any free port, which is only useful to a test harness. |
+| `API_MAX_BODY_BYTES` | integer | no | `16384` | Largest request body accepted, in bytes. Every request this service takes is a small JSON document, and the bound is what stops a caller making the password hasher chew on megabytes. |
+| `API_PUBLIC_BASE_URL` | url | yes | — | Public URL at which clients reach the platform, with the dashboard and the API served from one origin. Verification and password-reset links are built from it; an https URL marks session cookies Secure; and its origin is the only Origin a state-changing request is accepted from. Never derived from the request, because a link built from a caller-supplied Host header lets the caller choose where a password-reset link points. |
+| `API_REQUEST_TIMEOUT` | duration | no | `30000` | How long one request may take to arrive in full and be answered before the connection is dropped. Bounds how long a slow client can hold a connection open. |
+| `API_SHUTDOWN_GRACE` | duration | no | `10000` | On a stop signal, how long in-flight requests and queued outbound mail are given to finish before connections are closed. Should be shorter than the orchestrator's own kill timeout, or the process is killed mid-drain. |
+| `API_TRUSTED_PROXY_HOPS` | integer | no | `0` | Number of reverse proxies in front of this service whose X-Forwarded-For entries are trusted. 0 means the TCP peer is the client. Too high lets a caller forge their own source address and escape the per-source throttle; too low makes every client share the proxy's address and one noisy client throttles them all. |
+
 ## Template
 
 ```sh
+# Unauthenticated requests one source may make to the credential and recovery endpoints (signup, login, verification, password reset) per API_ANONYMOUS_RATE_WINDOW. The per-source half of the login throttle authentication-and-access.md AC12 requires; the per-account half is IDENTITY_LOGIN_MAX_FAILED_ATTEMPTS. Counted per process, so N instances admit up to N times this.
+# default: 30
+API_ANONYMOUS_RATE_LIMIT=30
+
+# Window over which API_ANONYMOUS_RATE_LIMIT is counted.
+# default: 600000
+API_ANONYMOUS_RATE_WINDOW=600000
+
+# Address the HTTP listener binds to. The default listens on every interface, which is what a container needs; set it to a loopback address to keep a process on a shared host reachable only through a local reverse proxy.
+# default: 0.0.0.0
+API_HTTP_HOST=0.0.0.0
+
+# TCP port the HTTP listener binds to. 0 asks the operating system for any free port, which is only useful to a test harness.
+# default: 8080
+API_HTTP_PORT=8080
+
+# Largest request body accepted, in bytes. Every request this service takes is a small JSON document, and the bound is what stops a caller making the password hasher chew on megabytes.
+# default: 16384
+API_MAX_BODY_BYTES=16384
+
+# Public URL at which clients reach the platform, with the dashboard and the API served from one origin. Verification and password-reset links are built from it; an https URL marks session cookies Secure; and its origin is the only Origin a state-changing request is accepted from. Never derived from the request, because a link built from a caller-supplied Host header lets the caller choose where a password-reset link points.
+API_PUBLIC_BASE_URL=https://example.com
+
+# How long one request may take to arrive in full and be answered before the connection is dropped. Bounds how long a slow client can hold a connection open.
+# default: 30000
+API_REQUEST_TIMEOUT=30000
+
+# On a stop signal, how long in-flight requests and queued outbound mail are given to finish before connections are closed. Should be shorter than the orchestrator's own kill timeout, or the process is killed mid-drain.
+# default: 10000
+API_SHUTDOWN_GRACE=10000
+
+# Number of reverse proxies in front of this service whose X-Forwarded-For entries are trusted. 0 means the TCP peer is the client. Too high lets a caller forge their own source address and escape the per-source throttle; too low makes every client share the proxy's address and one noisy client throttles them all.
+# default: 0
+API_TRUSTED_PROXY_HOPS=0
+
 # How long a request waits for a free connection before failing.
 # default: 10000
 DATABASE_ACQUIRE_TIMEOUT=10000
@@ -172,6 +231,11 @@ IDENTITY_SESSION_ABSOLUTE_LIFETIME=604800000
 # How long a client or operator session survives without use. Measured from the last request the session made, and refreshed on each one. Required by authentication-and-access.md AC5, which mandates an inactivity bound but leaves the value to implementation.
 # default: 43200000
 IDENTITY_SESSION_INACTIVITY_TIMEOUT=43200000
+
+# Least severe log level written. Records are newline-delimited JSON on standard output. Changing it changes how many records are written, never which fields they may carry — redaction is enforced at every level.
+# one of: debug, info, warn, error
+# default: info
+LOG_LEVEL=info
 
 # Permit authentication over an unencrypted connection. False by default because AUTH PLAIN over cleartext puts the password on the wire in base64, which is encoding rather than encryption. True is correct only when the server is reached over a trusted local network.
 # default: false
