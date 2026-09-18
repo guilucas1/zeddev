@@ -10,6 +10,7 @@
     "@zeddev/config": "*",
     "@zeddev/db": "*",
     "@zeddev/identity": "*",
+    "@zeddev/mail": "*",
     "@zeddev/storage": "*"
   },
   "devDependencies": {

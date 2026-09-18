@@ -20,6 +20,8 @@
     "check:offline": "npm run typecheck && npm test",
     "storage:up": "bash scripts/storage.sh up",
     "storage:down": "bash scripts/storage.sh down",
+    "mail:up": "bash scripts/mail.sh up",
+    "mail:down": "bash scripts/mail.sh down",
     "config-reference": "node scripts/config-reference.ts"
   },
   "devDependencies": {

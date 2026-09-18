@@ -1,11 +1,12 @@
 # Implementation Plan
 
-**Status as of 2026-08-25:** P0 foundation landed except container definitions; the P1 control plane has
-started with its identity layer. `src/` now contains thirteen dependency-free workspace packages
+**Status as of 2026-09-17:** P0 foundation landed except container definitions; the P1 control plane has
+started with its identity layer and the mail port. `src/` now contains fourteen dependency-free workspace packages
 (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`, `@zeddev/logging`, `@zeddev/config`,
 `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`, `@zeddev/tenancy`, `@zeddev/storage`,
-`@zeddev/identity`, `@zeddev/deployment`) and 376 passing tests, zero skipped, of which a growing share run
-against both a real PostgreSQL and a real S3-compatible object storage server (MinIO). Persistence,
+`@zeddev/identity`, `@zeddev/mail`, `@zeddev/deployment`) and 458 passing tests, zero skipped, of which a
+growing share run against a real PostgreSQL, a real S3-compatible object storage server (MinIO), and a real
+SMTP server (Mailpit). Persistence,
 migrations, and database-enforced tenant isolation are in place and proven by cross-tenant negative tests.
 A durable, tenant-fair job queue is in place, with per-partition FIFO ordering, lease-based at-least-once
 delivery, and a dead-letter path. Object storage is done: an S3-compatible port, a hand-written SigV4
@@ -13,15 +14,18 @@ signer, a real adapter, and an in-memory fake proven against the real one by a s
 `@zeddev/identity` now covers signup, transactional tenant provisioning, email verification, client and
 operator authentication as two non-overlapping identity spaces, sessions with both expiry bounds, logout,
 password change, self-service reset, failed-attempt lockout, the audit trail, and the action→principal
-permission table — all tested against a real PostgreSQL. See §4f.
+permission table — all tested against a real PostgreSQL. See §4f. `@zeddev/mail` is a hand-written SMTP
+adapter behind a single-recipient, plain-text port, so the verification and reset links identity mints now
+have a transport; composing and sending them is `services/api`'s job. See §4g.
 
 The remaining P0 item is container definitions, and it is only half unblocked — the generated
 environment-variable reference has landed as `docs/configuration.md`, but the Dockerfiles cannot be
 written yet because `src/services/*` is still empty; there is nothing to containerize. The identity
 domain is deliberately transport-free, so the next increment that unblocks it is `services/api`.
 
-Run `npm run db:up` and `npm run storage:up`, then `npm run check`, before assuming any of the above
-still holds. `npm run check` now *refuses* to pass without both a database and an object storage server,
+Run `npm run db:up`, `npm run storage:up`, and `npm run mail:up`, then `npm run check`, before assuming any
+of the above still holds. `npm run check` now *refuses* to pass without a database, an object storage server,
+and an SMTP server,
 because the database- and storage-backed suites are where every tenant isolation guarantee is verified
 and a green run without them proves considerably less than it looks.
 
@@ -73,7 +77,7 @@ These are load-bearing — most items below assume them. Recorded here so they a
 
 - **[DECISION] TypeScript on Node.js, single language across all services.** Rationale: one toolchain for
   API, workers, and dashboards; first-class Meta Graph API and AI provider SDK coverage; the widest set of
-  free-tier hosts; and the operator's existing tooling in this repo (`parse_stream.js`) is already Node.
+  free-tier hosts; and the operator's existing tooling in this repo (`parse_stream.cjs`) is already Node.
 - **[DECISION] Monorepo with workspaces.** `src/lib/*` is the project's standard library — shared
   utilities, ports, and components live there and nowhere else. `src/services/*` holds the independently
   deployable units. Ad-hoc copies of a utility in a service are a defect, not a shortcut.
@@ -308,10 +312,11 @@ call must never be able to cause Meta to redeliver.
   prefixes, separate code paths, and `withOperatorSession` opening the *platform* scope rather than a
   tenant scope — so even a defective operator route cannot reach a tenant-private table, because no policy
   admits the read.
-> **P1 remaining scope.** Everything below this line, plus the two things the identity increment
-> deliberately did not build: a **mail port** (signup returns the verification token instead of sending it,
-> so the loop is not closable end to end without one) and `services/api`, which is what turns
-> `@zeddev/identity` into something a browser can reach — and which also unblocks P0's Dockerfiles.
+- **[DONE]** Mail port: `@zeddev/mail`, an SMTP adapter plus an in-memory fake under one conformance suite.
+  See §4g.
+> **P1 remaining scope.** Everything below this line, plus `services/api`, which is what turns
+> `@zeddev/identity` into something a browser can reach, composes and sends the verification and reset mail
+> through `@zeddev/mail` (it owns the public base URL the links need), and unblocks P0's Dockerfiles.
 
 - Persona and tone configuration: structured fields (bot name required, formality, style traits) plus
   optional freeform text, both applied together, with length limits and independent clearing of the
@@ -407,7 +412,7 @@ call must never be able to cause Meta to redeliver.
 - **[DONE, ongoing] Acceptance-criteria traceability.** `specTest(spec, criterion, name, fn)` in
   `src/lib/testing` records the mapping and throws at definition time if the spec filename does not
   exist, so a spec rename breaks the build instead of silently orphaning the criterion. `npm run
-  spec-coverage` reports per-spec coverage. Current state: 13 of 27 specs have covering tests, 162
+  spec-coverage` reports per-spec coverage. Current state: 13 of 27 specs have covering tests, 177
   spec-linked assertions. `authentication-and-access.md` jumped from 2 to 32 and
   `client-signup-and-tenancy.md` from 1 to 12 in the identity increment, which are now the two
   best-covered specs in the set — appropriately, since every other spec's "identity is already
@@ -744,11 +749,9 @@ leaves only one of the two required expiry rules in force.
 
 ### Follow-ups the identity increment leaves open
 
-- **A mail port does not exist.** `signUp` and `requestPasswordReset` return the token rather than sending
-  it, on the same separation that keeps the WhatsApp transport out of the conversation domain. Until a
-  `@zeddev/mail` port lands, email verification cannot complete without the caller doing the delivery, and
-  `client-signup-and-tenancy.md` AC6 is only provable in a test. This is the first thing `services/api`
-  needs.
+- **The mail port now exists (§4g), but nothing sends through it yet.** `signUp` and `requestPasswordReset`
+  still return the token, deliberately — the caller composes the link. Until `services/api` does that,
+  `client-signup-and-tenancy.md` AC6 is only provable in a test.
 - **The common-password blocklist is a few hundred stems carried in source, not a breach corpus.** It
   covers the top of the frequency table, which is where the mass is, but a real deployment should check
   against a breached-credential list. That needs either a dependency or a data file, and both deserve a
@@ -764,6 +767,44 @@ leaves only one of the two required expiry rules in force.
 - **Nothing calls `assertTenantIsolationEnforceable()` or `verifyAccess()` yet.** Still true, and now more
   pressing: `@zeddev/identity` is the first package whose correctness depends entirely on row-level
   security being enforced. Every service's startup path must call both.
+
+---
+
+## 4g. Findings from the mail increment
+
+- **The port cannot express more than one recipient, HTML, or attachments.** A recipient list is where a
+  verification link addressed to one account reaches another, through a loop bug or header injection, and
+  it is how a sending surface becomes an open relay. It is the same move as the storage port refusing keys:
+  the dangerous operation is absent rather than guarded. `buildMessage` validates every caller-supplied
+  field before a byte is written, because a business name or address containing CR/LF is a header injection.
+- **Message bytes are built in exactly one place, and both adapters call it.** A fake that encoded its own
+  way would accept what the real server rejects. But a fake still cannot disagree with an encoder it
+  shares, so Mailpit's HTTP read-back is the external oracle: tests assert on what arrived, not on what we
+  believe we sent.
+- **There is no opportunistic STARTTLS.** `MAIL_TLS` is `disable`, `starttls` (required, and fails if not
+  offered), or `implicit`, and it is never inferred from the port. Opportunistic TLS silently downgrades
+  credentials to cleartext when a server stops advertising it, and nothing observable changes. AUTH over
+  cleartext also needs `MAIL_ALLOW_INSECURE_AUTH`, which only the test container sets.
+- **A preflight must name the value to fix.** `verifyAccess()` maps the failing SMTP phase (connect,
+  greeting, EHLO, STARTTLS, AUTH, transaction) to the `MAIL_*` keys that govern it. This applies the §4e
+  lesson about collapsed 403s before it could recur.
+- **SMTP's `<CRLF>.<CRLF>` terminator owns the body's final line break.** `buildMessage` never ends with one
+  and strips trailing newlines. Otherwise 7bit and base64 bodies would round-trip differently depending on
+  whether the text happened to be ASCII.
+- **Parallel test files share one mail server, so no fixture may clear it.** Each fixture owns a unique
+  recipient domain. The first draft of `scripts/mail.sh` claimed tests cleared the mailbox, which was wrong
+  and has been corrected.
+- **One connection per message, no pooling.** At signup-and-reset volume a pool buys nothing, and a
+  silently dropped idle connection is a failure that only appears in production. Revisit if operator
+  alerting starts sending in bulk.
+
+### Follow-ups the mail increment leaves open
+
+- `services/api` must compose the verification and reset messages and call `send`. Every service holding a
+  `Mailer` must call its `verifyAccess()` at startup, alongside the database and storage preflights.
+- A send that fails after identity has committed the token leaves a valid token nobody received. The fix
+  is to resend, not to open a transaction spanning SMTP: `requestEmailVerification` and
+  `requestPasswordReset` already mint fresh tokens, so `services/api` only has to expose a resend action.
 
 ---
 

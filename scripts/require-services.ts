@@ -46,6 +46,13 @@ const SERVICES: readonly Service[] = [
     command: 'npm run storage:up',
     covers: '@zeddev/storage — request signing, listing pagination, per-tenant object isolation',
   },
+  {
+    label: 'SMTP',
+    variable: 'ZEDDEV_TEST_MAIL_HOST',
+    command: 'npm run mail:up',
+    covers:
+      '@zeddev/mail — the SMTP conversation, message encoding, and dot-stuffing. Skipping it leaves only the fake, which cannot disagree with the encoder it shares',
+  },
 ];
 
 const missing = SERVICES.filter(

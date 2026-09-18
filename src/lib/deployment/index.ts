@@ -33,6 +33,7 @@
 import { renderEnvTemplate, renderReference, type ConfigSchema } from '@zeddev/config';
 import { DATABASE_CONFIG_SCHEMA } from '@zeddev/db';
 import { IDENTITY_CONFIG_SCHEMA } from '@zeddev/identity';
+import { MAIL_CONFIG_SCHEMA } from '@zeddev/mail';
 import { STORAGE_CONFIG_SCHEMA } from '@zeddev/storage';
 
 export interface ConfigSection {
@@ -68,6 +69,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       'The session, lockout, and recovery-link bounds that authentication-and-access.md requires be defined but deliberately leaves unspecified. They are configuration rather than constants because a laptop, a VPS, and a managed cloud deployment can legitimately want different values — a demo instance with a short absolute session lifetime, a production one with a longer inactivity window — and environment-portability.md requires every such behavioural difference be explainable from this list. Startup additionally rejects an absolute lifetime shorter than the inactivity timeout, which is individually valid on both keys and jointly leaves only one of the two required expiry rules in force.',
     schema: IDENTITY_CONFIG_SCHEMA,
+  },
+  {
+    title: 'Outbound mail',
+    rationale:
+      'Carries the email-verification and password-reset links that client-signup-and-tenancy.md and authentication-and-access.md require. Any SMTP server: a container on a laptop, a relay on a VPS, a provider in a managed cloud — one adapter reached through different values, for the same reason object storage has one S3 adapter. MAIL_TLS is stated rather than inferred from the port, because "465 means implicit and 587 means STARTTLS" is environment detection wearing a disguise; and there is deliberately no opportunistic mode, because a silent fallback to cleartext is a downgrade nothing observes until the credentials are already on the wire.',
+    schema: MAIL_CONFIG_SCHEMA,
   },
 ];
 

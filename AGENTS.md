@@ -23,8 +23,10 @@ Run from the repo root.
 | `npm run db:down` | Removes the `zeddev-pg` container and its `.env.test` entries. |
 | `npm run storage:up` | Starts a disposable MinIO container (`zeddev-minio`) on `127.0.0.1:59000` and adds its settings to `.env.test`. Required before `npm run check`. |
 | `npm run storage:down` | Removes the `zeddev-minio` container and its `.env.test` entries. |
-| `npm run check` | `typecheck`, then requires both PostgreSQL and object storage, then `test`. Use this as the gate before committing. Calls `scripts/require-services.ts`. |
-| `npm run check:offline` | `typecheck` + `test` without a database. Does not cover `@zeddev/db`, `@zeddev/schema`, or `@zeddev/storage`. Only use when Docker is unavailable. |
+| `npm run mail:up` | Starts a disposable Mailpit container (`zeddev-mailpit`) with SMTP on `127.0.0.1:51025` and its message API on `127.0.0.1:58025`, and adds its settings to `.env.test`. Required before `npm run check`. |
+| `npm run mail:down` | Removes the `zeddev-mailpit` container and its `.env.test` entries. |
+| `npm run check` | `typecheck`, then requires PostgreSQL, object storage, and SMTP, then `test`. Use this as the gate before committing. Calls `scripts/require-services.ts`. |
+| `npm run check:offline` | `typecheck` + `test` without any container. Does not cover `@zeddev/db`, `@zeddev/schema`, `@zeddev/storage`, or `@zeddev/mail`'s SMTP adapter. Only use when Docker is unavailable. |
 | `npm run spec-coverage` | Prints which `specs/*.md` have covering tests and which have none. |
 | `npm run config-reference` | Regenerates `docs/configuration.md` from the config schemas. A test fails the build if the committed file is stale. |
 
@@ -53,6 +55,13 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   `runStorageConformance(harness)` from `@zeddev/storage/testing` is the single definition of
   the port's semantics and runs against both the S3 adapter and the in-memory fake. Import
   `InMemoryObjectStore` only from `@zeddev/storage/testing`, never from `@zeddev/storage`.
+- **A new `Mailer` implementation must pass the shared conformance suite.**
+  `runMailConformance(harness)` from `@zeddev/mail/testing` is the single definition of the
+  port's semantics and runs against both the SMTP adapter and the in-memory fake. Import
+  `InMemoryMailer` only from `@zeddev/mail/testing`, never from `@zeddev/mail`.
+- **Message bytes are built in exactly one place**: `buildMessage` in `src/lib/mail/message.ts`.
+  Both adapters call it, which is what makes the fake's validation and encoding identical to the
+  real one's. Do not let an adapter assemble headers itself.
 - **A tenant id is validated in exactly one place**: `assertTenantId`/`normalizeTenantId` from
   `@zeddev/tenancy`. Do not re-derive the rule — in object storage a tenant id is a key path
   segment, so a value containing `/` silently relocates one tenant's object under another's prefix.
@@ -121,6 +130,15 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - A `PostgresQueue` holds one pool connection permanently once `waitForWork` is first called
   (it is the `LISTEN` session). Size `DATABASE_POOL_MAX` accordingly and call `close()` on
   shutdown, or the pool will not drain.
+- SMTP frames a message body with `<CRLF>.<CRLF>`, and that leading CRLF **is** the line break
+  ending the body's last line. `buildMessage` therefore produces a message that never ends with a
+  line break, and `dataTerminator` supplies the framing CRLF only when it is missing. A body's
+  trailing newlines are stripped for the same reason: 7bit cannot represent one and base64 can, so
+  without stripping, `send` would preserve or drop it depending on whether the text happened to be
+  ASCII.
+- Mail tests share one Mailpit container across parallel test files, so each fixture owns a unique
+  recipient domain and only ever reads its own messages. Do not add a "clear the mailbox" step —
+  it would delete another file's mail between its send and its assertion.
 - A test asserting that content did not leak into a log must use a needle that cannot occur in
   a fixture identifier. Test tenant UUIDs contain long runs of repeated digits, so short numeric
   markers produce false positives.

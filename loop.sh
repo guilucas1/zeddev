@@ -58,7 +58,7 @@ while true; do
     # --dangerously-skip-permissions: Auto-approve all tool calls (YOLO mode)
     # --model opus: Primary agent uses Opus for complex reasoning
     # --verbose: Detailed execution logging
-    # --output-format stream-json: Structured output piped to parse_stream.js
+    # --output-format stream-json: Structured output piped to parse_stream.cjs
     # --include-partial-messages: Stream partial tool results for live feedback
 
     FULL_PROMPT="$(cat "$PROMPT_FILE")
@@ -75,7 +75,7 @@ Execute the instructions above."
         --model opus \
         --verbose \
         --output-format stream-json \
-        --include-partial-messages | node "$SCRIPT_DIR/parse_stream.js"
+        --include-partial-messages | node "$SCRIPT_DIR/parse_stream.cjs"
 
     echo ""
     echo "✅ Claude iteration complete"
