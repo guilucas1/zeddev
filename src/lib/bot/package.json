@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@zeddev/schema": "*",
-    "@zeddev/testing": "*"
+    "@zeddev/testing": "*",
+    "@zeddev/whatsapp": "*"
   }
 }

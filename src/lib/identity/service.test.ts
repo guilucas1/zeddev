@@ -1139,4 +1139,54 @@ describe('identity service', { skip: testDatabaseConfigured() ? false : SKIP_REA
       ]);
     },
   );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC16/AC17 an operator is denied activation changes and offboarding, and the denial is recorded',
+    'withOperatorAction runs an operator action under the platform scope and refuses a client action before any work',
+    async () => {
+      counter += 1;
+      const email = `operator-${counter}@example.com`;
+      const { operatorId } = await service.createOperator({ email, password: PASSWORD });
+      const token = (await service.operatorLogIn({ email, password: PASSWORD })).token.expose();
+      const onboarded = await onboard();
+
+      // Allowed: the platform scope, so every tenant row is visible.
+      const seen = await service.withOperatorAction(token, 'platform.health.read', 'bot.status', async (tx) => {
+        const found = await tx.query<{ id: string }>('SELECT id FROM tenants WHERE id = $1', [onboarded.tenantId]);
+        return found.rows.length;
+      });
+      assert.equal(seen, 1);
+
+      let reached = false;
+      await assert.rejects(
+        () =>
+          service.withOperatorAction(token, 'tenant.activation.change', 'bot.activation', async () => {
+            reached = true;
+          }),
+        AuthorizationError,
+      );
+      assert.equal(reached, false, 'the work ran even though the action was refused');
+
+      // A client token is not an operator credential, whatever action it names.
+      const clientToken = (await service.logIn({ email: onboarded.email, password: PASSWORD })).token.expose();
+      await assert.rejects(
+        () => service.withOperatorAction(clientToken, 'platform.health.read', 'bot.status', async () => 'reached'),
+        AuthenticationError,
+      );
+
+      const decisions = await withPlatformScope(pool, async (tx) => {
+        const found = await tx.query<{ action: string; outcome: string }>(
+          `SELECT action, outcome FROM access_records
+           WHERE principal_id = $1 AND resource IN ('bot.status', 'bot.activation') ORDER BY id`,
+          [operatorId],
+        );
+        return found.rows;
+      });
+      assert.deepEqual(decisions, [
+        { action: 'platform.health.read', outcome: 'allowed' },
+        { action: 'tenant.activation.change', outcome: 'denied' },
+      ]);
+    },
+  );
 });

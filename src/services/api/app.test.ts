@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe } from 'node:test';
+import { withTenant } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { IdentityService, TOKEN_PREFIXES, type IdentityPolicy, type TenantProvisioning } from '@zeddev/identity';
 import { Logger, MemorySink } from '@zeddev/logging';
@@ -38,6 +39,7 @@ import {
 } from '@zeddev/mail/testing';
 import { migrateToLatest } from '@zeddev/schema';
 import { specTest, unitTest } from '@zeddev/testing';
+import { transitionConnection, type ConnectionState } from '@zeddev/whatsapp';
 import { CLIENT_SESSION_COOKIE, createApi, OPERATOR_SESSION_COOKIE, type Api } from './app.ts';
 import { loadServerSettings, type ApiSettings } from './config.ts';
 
@@ -790,6 +792,151 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
       });
       assert.equal(forged.status, 403);
       assert.equal((await call(served, 'GET', '/v1/bot/persona', { cookie })).body.complete, false);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Readiness, the go-live toggle, and the connection state
+  // -------------------------------------------------------------------------
+
+  /**
+   * Drive the tenant's connection the way the WhatsApp gateway will. There is no
+   * client route that marks a number connected, on purpose: that state has to be
+   * earned by verification (whatsapp-number-connection.md).
+   */
+  async function gatewayMoves(tenantId: string, ...states: ConnectionState[]): Promise<void> {
+    for (const state of states) {
+      await withTenant(db.pool, tenantId, (tx) =>
+        transitionConnection(tx, state, { reason: state === 'error' ? 'authorization_revoked' : undefined }),
+      );
+    }
+  }
+
+  specTest(
+    'bot-activation-control.md',
+    'AC10 a not-ready client is told which conditions are unmet',
+    'GET /v1/bot/status names each unmet condition, and go-live is refused with 409 until both are met',
+    async () => {
+      const { cookie, tenantId } = await onboard();
+      const fresh = await call(served, 'GET', '/v1/bot/status', { cookie });
+      assert.equal(fresh.status, 200);
+      assert.equal(fresh.body.ready, false);
+      assert.equal(fresh.body.active, false);
+      assert.deepEqual(
+        fresh.body.unmetConditions.map((entry: { condition: string }) => entry.condition),
+        ['whatsapp_connection', 'persona'],
+      );
+
+      const refused = await call(served, 'PUT', '/v1/bot/activation', { cookie, json: { active: true } });
+      assert.equal(refused.status, 409);
+      assert.equal(refused.body.error.code, 'bot.not_ready');
+
+      await call(served, 'PUT', '/v1/bot/persona', { cookie, json: { botName: 'Juno' } });
+      await gatewayMoves(tenantId, 'connecting', 'connected');
+      const ready = await call(served, 'GET', '/v1/bot/status', { cookie });
+      assert.equal(ready.body.ready, true);
+      assert.equal(ready.body.canGoLive, true);
+      assert.equal(ready.body.active, false);
+    },
+  );
+
+  specTest(
+    'bot-activation-control.md',
+    'AC8 losing readiness while active turns the bot off without client action',
+    'go live over HTTP, lose the connection, and the status shows the bot off and not ready',
+    async () => {
+      const { cookie, tenantId } = await onboard();
+      await call(served, 'PUT', '/v1/bot/persona', { cookie, json: { botName: 'Juno' } });
+      await gatewayMoves(tenantId, 'connecting', 'connected');
+
+      const live = await call(served, 'PUT', '/v1/bot/activation', { cookie, json: { active: true } });
+      assert.equal(live.status, 200);
+      assert.equal(live.body.active, true);
+
+      await gatewayMoves(tenantId, 'error');
+      const lost = await call(served, 'GET', '/v1/bot/status', { cookie });
+      assert.equal(lost.body.active, false);
+      assert.equal(lost.body.ready, false);
+      assert.equal(lost.body.activeChangeCause, 'readiness_lost');
+
+      const history = await call(served, 'GET', '/v1/bot/activation/history', { cookie });
+      assert.deepEqual(
+        history.body.events.map((event: { active: boolean; cause: string }) => [event.active, event.cause]),
+        [
+          [false, 'readiness_lost'],
+          [true, 'client'],
+        ],
+      );
+    },
+  );
+
+  specTest(
+    'whatsapp-number-connection.md',
+    'AC7 manual disconnect from connected, error, or reconnecting',
+    'the client sees the connection state and can disconnect it, which also takes an active bot off',
+    async () => {
+      const { cookie, tenantId } = await onboard();
+      await call(served, 'PUT', '/v1/bot/persona', { cookie, json: { botName: 'Juno' } });
+      await gatewayMoves(tenantId, 'connecting', 'connected');
+      await call(served, 'PUT', '/v1/bot/activation', { cookie, json: { active: true } });
+
+      const seen = await call(served, 'GET', '/v1/whatsapp/connection', { cookie });
+      assert.equal(seen.status, 200);
+      assert.equal(seen.body.state, 'connected');
+      assert.equal(typeof seen.body.lastKnownGoodAt, 'string');
+
+      const done = await call(served, 'POST', '/v1/whatsapp/connection/disconnect', { cookie });
+      assert.equal(done.status, 200);
+      assert.equal(done.body.state, 'disconnected');
+      assert.deepEqual(
+        done.body.history.map((entry: { from: string; to: string }) => `${entry.from}->${entry.to}`),
+        ['connected->disconnected', 'connecting->connected', 'disconnected->connecting'],
+      );
+      assert.equal((await call(served, 'GET', '/v1/bot/status', { cookie })).body.active, false);
+    },
+  );
+
+  unitTest('the activation toggle refuses a body that is not exactly { active: boolean }', async () => {
+    const { cookie } = await onboard();
+    const answer = await call(served, 'PUT', '/v1/bot/activation', { cookie, json: { active: 'on' } });
+    assert.equal(answer.status, 400);
+  });
+
+  specTest(
+    'bot-activation-control.md',
+    'AC12 the operator can view readiness and activation but cannot change activation',
+    'the operator lists every tenant’s state, and an operator token cannot reach the client toggle',
+    async () => {
+      const { cookie, tenantId } = await onboard();
+      await call(served, 'PUT', '/v1/bot/persona', { cookie, json: { botName: 'Juno' } });
+      await gatewayMoves(tenantId, 'connecting', 'connected');
+      await call(served, 'PUT', '/v1/bot/activation', { cookie, json: { active: true } });
+
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const operatorToken = cookieValue(login, OPERATOR_SESSION_COOKIE);
+      const operatorCookie = `${OPERATOR_SESSION_COOKIE}=${operatorToken}`;
+
+      const listed = await call(served, 'GET', '/v1/operator/bot-statuses', { cookie: operatorCookie });
+      assert.equal(listed.status, 200);
+      const mine = listed.body.tenants.find((entry: { tenantId: string }) => entry.tenantId === tenantId);
+      assert.equal(mine.active, true);
+      assert.equal(mine.ready, true);
+
+      // The operator's token presented to the client toggle is not a client session.
+      const forced = await call(served, 'PUT', '/v1/bot/activation', {
+        cookie: `${CLIENT_SESSION_COOKIE}=${operatorToken}`,
+        json: { active: false },
+      });
+      assert.equal(forced.status, 401);
+      // And a client session is not an operator one.
+      const clientToken = cookie.split('=')[1];
+      const peeked = await call(served, 'GET', '/v1/operator/bot-statuses', {
+        cookie: `${OPERATOR_SESSION_COOKIE}=${clientToken}`,
+      });
+      assert.equal(peeked.status, 401);
+      assert.equal((await call(served, 'GET', '/v1/bot/status', { cookie })).body.active, true);
     },
   );
 

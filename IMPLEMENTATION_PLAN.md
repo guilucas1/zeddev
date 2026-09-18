@@ -1,9 +1,9 @@
 # Implementation Plan
 
-**Status as of 2026-09-17:** P0 is complete, including container definitions. The P1 control plane now has
+**Status as of 2026-09-18:** P0 is complete, including container definitions. The P1 control plane now has
 identity, mail, and `services/api`: identity is reachable over HTTP, verification and reset mail is
-actually delivered, and the platform operator can be bootstrapped. `src/` now contains fifteen workspace
-packages — fourteen dependency-free libraries (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`,
+actually delivered, and the platform operator can be bootstrapped. At the API increment, `src/` held fifteen
+workspace packages — fourteen dependency-free libraries (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`,
 `@zeddev/logging`, `@zeddev/config`, `@zeddev/testing`, `@zeddev/db`, `@zeddev/schema`, `@zeddev/queue`,
 `@zeddev/tenancy`, `@zeddev/storage`, `@zeddev/identity`, `@zeddev/mail`, `@zeddev/deployment`) plus the
 first deployable service, `@zeddev/api` (`src/services/api`) — and 522 passing tests, zero skipped, of
@@ -33,15 +33,18 @@ and an SMTP server,
 because the database- and storage-backed suites are where every tenant isolation guarantee is verified
 and a green run without them proves considerably less than it looks.
 
-The P1 configuration domain has started: persona and tone — the only configuration that gates readiness —
-is done as a new domain library, `@zeddev/bot`, with the first tenant-scoped routes in `services/api`
-(`GET`/`PUT /v1/bot/persona`, `DELETE /v1/bot/persona/freeform-instructions`). That makes sixteen workspace
-packages and 551 passing tests, zero skipped. See §4i.
+Persona and tone — the only configuration that gates readiness besides connectivity — is done as a new
+domain library, `@zeddev/bot`, with the first tenant-scoped routes in `services/api` (`GET`/`PUT
+/v1/bot/persona`, `DELETE /v1/bot/persona/freeform-instructions`). See §4i.
 
-The next increment is readiness evaluation and the activation toggle (`bot-activation-control.md`). The
-readiness input it needs from persona already exists (`personaReadiness`); the WhatsApp-connection input
-does not, and until P2 builds the connection state machine it is honestly unmet for every tenant. Language
-configuration is still blocked on the §4 decision about the supported language list.
+Readiness evaluation and the go-live toggle (`bot-activation-control.md`) are now done too, together with
+the WhatsApp connection *state machine* — not the Meta connection flow, which is still P2 — as a new
+library, `@zeddev/whatsapp`, migrations `0006_whatsapp_connection` and `0007_bot_activation`, and six new
+API routes. That makes seventeen workspace packages and 595 passing tests, zero skipped. 15 of 27 specs now
+have covering tests, 261 spec-linked assertions. See §4j.
+
+The next increment: language configuration is still blocked on the §4 decision about the supported language
+list, so the next unblocked P1 item is business knowledge configuration (or behavior rules configuration).
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -366,13 +369,15 @@ call must never be able to cause Meta to redeliver.
   traits optional, freeform text optional (≤2000 characters) and independently clearable, both mechanisms
   rendered together by `personaDirectives`. All 11 acceptance criteria covered against a real PostgreSQL.
   See §4i.
+- **[DONE]** Readiness evaluation and the go-live toggle: `@zeddev/bot` (`activation.ts`) plus migration
+  `0007_bot_activation`. Readiness, the "active implies ready" invariant, re-evaluation on every input
+  change, and the on/off event log are all enforced in the database (CHECK + triggers), so no path that
+  loses readiness can leave a bot live. All 14 acceptance criteria covered against a real PostgreSQL,
+  including a go-live-versus-connection-failure race. See §4j.
 > **P1 remaining scope.** Everything below this line — language configuration through conversation
 > memory reset policy.
 
 - Language configuration with a platform default, per `language-configuration.md`.
-- Readiness evaluation and the client-controlled activation toggle, including re-evaluation when a
-  condition is later lost, and the record of first-ready and every on/off transition. Per
-  `bot-activation-control.md`.
 - Business knowledge configuration: freeform entries plus document upload, with upload failures surfaced
   rather than silently dropped, and a combined listing view.
 - Behavior rules configuration: individually addressable structured rules with enable/disable/edit/delete
@@ -387,9 +392,12 @@ call must never be able to cause Meta to redeliver.
 - WhatsApp connection flow: guided self-service authorization, send/receive verification before marking
   connected, and rejection of a second concurrent number. `whatsapp-number-connection.md` is explicit that
   submitted credentials alone must never produce a "connected" state.
-- Connection state machine over the fixed vocabulary (connecting / connected / reconnecting / error /
-  disconnected) with timestamped transition history, surfaced error reasons, bounded automatic
-  reconnection, and Meta-side business-verification failure as a distinct condition.
+- **[DONE]** The state, its fixed vocabulary (connecting / connected / reconnecting / error /
+  disconnected), the legal-transition table, timestamped transition history, and surfaced error reasons —
+  including Meta-side business-verification failure as a distinct condition
+  (`business_verification_required`) — in `@zeddev/whatsapp` plus migration `0006_whatsapp_connection`. What
+  remains is *driving* it: the gateway observing Meta signals, bounded automatic reconnection in the
+  scheduler (attempt policy undecided), and offboarding transitioning to `disconnected`.
 - Number replacement as a distinct guided flow that structurally cannot produce a dual-active window.
 - Inbound webhook endpoint: authenticity verification, prompt acknowledgement decoupled from processing,
   tenant attribution from the receiving number, and rejection-with-record for anything unattributable.
@@ -466,19 +474,21 @@ call must never be able to cause Meta to redeliver.
   at 20 — the two best-covered specs in the set — appropriately, since every other spec's "identity is
   already established" assumption rests on them. `credential-and-secret-handling.md` is at 27,
   `environment-portability.md` at 20, `tenant-data-isolation.md` at 18, `component-independence.md` at 3.
-  The remaining uncovered specs are all P1–P4 features not yet built.
+  The remaining uncovered specs are all P1–P4 features not yet built. (After the readiness increment: 15 of
+  27 specs, 261 assertions; `bot-activation-control.md` covers all 14 of its criteria and
+  `whatsapp-number-connection.md` 8 of 12.)
 
 ---
 
 ## 3. Cross-spec conflicts found — these need resolution, not just implementation
 
-- **Transient disconnect permanently pauses the bot.** `bot-activation-control.md` requires the bot be
-  turned off when a readiness condition is lost, and that restoring the condition does *not* turn it back
-  on — the client must act. `whatsapp-number-connection.md` introduces a `reconnecting` state for
-  transient blips that recover automatically without client action. Read together, a momentary network
-  interruption silently pauses a client's bot until they happen to notice and re-enable it.
-  **Recommendation:** treat readiness as satisfied by `connected` *or* `reconnecting`, and only drop
-  readiness on `error` or `disconnected`. Needs the operator's confirmation before building.
+- **Transient disconnect permanently pauses the bot.** **Resolved (2026-09-18):** readiness is satisfied by
+  `connected` *or* `reconnecting`; `error`, `disconnected`, and `connecting` do not count. Both specs were
+  updated to say so — `bot-activation-control.md` gained AC14: a reconnecting→connected blip leaves an
+  active bot active. The rule lives in exactly one place, `app.bot_readiness_unmet` in migration
+  `0007_bot_activation`, so reversing the decision is one line of SQL in a new migration. Note: it was
+  decided without explicit operator confirmation, following this plan's own recommendation, and is worth
+  confirming.
 - **"New conversation" is undefined for disclosure.** `bot-disclosure-setting.md` requires a disclosure
   statement at the start of every new conversation and flags the session boundary as an open question.
   `conversation-memory.md` already defines exactly that boundary via its reset policy.
@@ -952,6 +962,61 @@ SMTP).
   table of its own. It must not add a platform policy to `bot_personas`. The readiness increment owns this.
 - The persona screen in `services/web` does not exist. `GET /v1/bot/persona` already returns the options
   and limits the form needs, so the form has no reason to hard-code them.
+
+---
+
+## 4j. Findings from the readiness and activation increment
+
+- **The rule that matters is the one on every *other* path.** Rejecting go-live when not ready is one check
+  on one request. Switching an active bot off when readiness is lost must hold on paths that do not exist
+  yet — the gateway seeing a revoked authorization, the scheduler giving up on reconnection, offboarding.
+  An application-level "remember to call reevaluate" would fail open the first time one forgot. So:
+  `CHECK (NOT active OR ready)` on `bot_activation`, AFTER triggers on every readiness input
+  (`whatsapp_connections`, `bot_personas`) that re-evaluate in the same transaction, and a trigger that
+  appends every on/off change to `bot_activation_events`. Tests drive a raw `DELETE FROM bot_personas` and a
+  raw `UPDATE` of the connection to prove paths around the library are covered.
+- **Readiness is stored because the operator may not read its inputs.** AC12 lets the operator see
+  readiness, but persona is client-authored content with no platform policy. `bot_activation.ready` /
+  `unmet_conditions` are the derived facts the platform scope can read; they cannot go stale because the
+  triggers rewrite them in the same transaction as any input change. The client status reads the same row.
+- **Lock before reading the inputs.** `app.reevaluate_bot_readiness` takes the `bot_activation` row lock
+  first and is VOLATILE (fresh snapshot per statement under READ COMMITTED), and `setBotActive` calls it
+  before deciding. Whichever of "go live" and "connection failed" commits second re-reads the other's
+  result, so the bot cannot end active on a failed connection. A test races the two ten times.
+- **Row-level security applies to migrations too.** Migration 0007's backfill could not simply `INSERT ...
+  SELECT FROM tenants` — the migration role is subject to FORCE RLS like everyone else and sees nothing. It
+  loops over tenant ids under the platform scope and binds each tenant with `set_config('app.tenant_id', ...)`
+  before re-evaluating, i.e. it goes through the same policies as the application rather than around them.
+  A test migrates to 0006, saves a persona, then migrates to latest and checks the backfill.
+- **History is written by triggers, not by the library.** Both `whatsapp_connection_transitions` and
+  `bot_activation_events` are appended by triggers and have no UPDATE/DELETE policy, so AC10/AC13's "every
+  change is recorded" does not depend on callers.
+- **The reply gate must be asked inside the sending transaction.** `mayAutoRespond` is the only question
+  P2's conversation worker may ask, and it must be asked in the transaction that sends or records the
+  reply, not once per burst ahead of time — that is what makes AC6's "immediate effect" true for a reply
+  already being generated when the client paused. It takes no clock or schedule, which is AC5's 24/7
+  structurally.
+- **`withOperatorAction` was added to `IdentityService`**, the operator counterpart of `withClientAction`
+  (resolve → authorize and record → platform scope). The first operator data route (`GET
+  /v1/operator/bot-statuses`) uses it; future operator routes should too, rather than `withOperatorSession`,
+  so each names its action.
+
+### Follow-ups the readiness increment leaves open
+
+- No client route can move a connection to `connected`; only `transitionConnection` can, and only the P2
+  gateway may call it with `connected`, after real send/receive verification. Nothing structural enforces
+  that yet beyond there being no route; when the gateway lands, consider requiring verification evidence in
+  the call.
+- Bounded automatic reconnection (`reconnecting → error` with `recovery_exhausted`) needs the scheduler and
+  an attempt/time policy, which `whatsapp-number-connection.md` leaves to implementation.
+- The P2 reply path must call `mayAutoRespond` in its sending transaction; its tests should assert that.
+- Concurrent *first* transitions for a tenant with no `whatsapp_connections` row can race on the INSERT and
+  one fails with a unique violation; harmless at the volume a single client's connect flow produces, but the
+  gateway should retry it.
+- Readiness currently requires only persona and a connection, as the spec assumes. If business knowledge or
+  behavior rules ever gate readiness, that is a new clause in `app.bot_readiness_unmet`, a new trigger, and
+  a new entry in `READINESS_CONDITIONS` (a test asserts the TS list equals the SQL function's output).
+- The web screens for status/toggle/connection do not exist (`services/web`).
 
 ---
 

@@ -41,13 +41,25 @@
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { clearFreeformInstructions, describePersona, readPersona, savePersona } from '@zeddev/bot';
+import {
+  clearFreeformInstructions,
+  describeBotStatus,
+  describePersona,
+  listBotStatuses,
+  parseActivationInput,
+  readActivationHistory,
+  readBotStatus,
+  readPersona,
+  savePersona,
+  setBotActive,
+} from '@zeddev/bot';
 import type { Connection, Pool } from '@zeddev/db';
 import { AuthenticationError, TransientTransportError, ValidationError } from '@zeddev/errors';
 import type { Action, ClientPrincipal, IdentityService } from '@zeddev/identity';
 import { Logger } from '@zeddev/logging';
 import type { Mailer } from '@zeddev/mail';
 import { SystemClock, type Clock } from '@zeddev/time';
+import { connectionHistory, describeConnection, disconnectWhatsApp, readConnection } from '@zeddev/whatsapp';
 import type { ApiSettings } from './config.ts';
 import {
   clientAddress,
@@ -386,6 +398,79 @@ export function createApi(dependencies: ApiDependencies): Api {
     },
 
     // -----------------------------------------------------------------------
+    // Readiness and the go-live toggle — bot-activation-control.md. The rules
+    // (what "ready" is, that an active bot must stay ready) live in the database
+    // and @zeddev/bot; these routes only read them and carry the client's toggle.
+    // -----------------------------------------------------------------------
+    {
+      method: 'GET',
+      path: '/v1/bot/status',
+      handle: async (context) => {
+        const status = await asClient(context, 'tenant.configuration.read', 'bot.status', (tx) => readBotStatus(tx));
+        return { status: 200, body: describeBotStatus(status) };
+      },
+    },
+    {
+      // PUT `{ "active": true | false }`: the desired state, not a toggle, so a
+      // retried request cannot flip the bot back.
+      method: 'PUT',
+      path: '/v1/bot/activation',
+      handle: async (context) => {
+        const active = parseActivationInput(await context.body());
+        const status = await asClient(context, 'tenant.activation.change', 'bot.activation', (tx) =>
+          setBotActive(tx, active),
+        );
+        return { status: 200, body: describeBotStatus(status) };
+      },
+    },
+    {
+      method: 'GET',
+      path: '/v1/bot/activation/history',
+      handle: async (context) => {
+        const events = await asClient(context, 'tenant.configuration.read', 'bot.activation', (tx) =>
+          readActivationHistory(tx),
+        );
+        return {
+          status: 200,
+          body: {
+            events: events.map((event) => ({
+              active: event.active,
+              cause: event.cause,
+              occurredAt: event.occurredAt.toISOString(),
+            })),
+          },
+        };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // WhatsApp connection state — whatsapp-number-connection.md. Connecting a
+    // number needs the gateway (P2); what exists now is the state, its history,
+    // and the client's manual disconnect.
+    // -----------------------------------------------------------------------
+    {
+      method: 'GET',
+      path: '/v1/whatsapp/connection',
+      handle: async (context) => {
+        const body = await asClient(context, 'tenant.configuration.read', 'whatsapp.connection', async (tx) =>
+          describeConnection(await readConnection(tx), await connectionHistory(tx)),
+        );
+        return { status: 200, body };
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v1/whatsapp/connection/disconnect',
+      handle: async (context) => {
+        const body = await asClient(context, 'whatsapp.connection.manage', 'whatsapp.connection', async (tx) => {
+          await disconnectWhatsApp(tx);
+          return describeConnection(await readConnection(tx), await connectionHistory(tx));
+        });
+        return { status: 200, body };
+      },
+    },
+
+    // -----------------------------------------------------------------------
     // Operator sessions — a separate identity space on separate routes, with a
     // separate cookie. There is no operator signup and there must not be one.
     // -----------------------------------------------------------------------
@@ -432,6 +517,22 @@ export function createApi(dependencies: ApiDependencies): Api {
         const input = stringFields(await context.body(), ['currentPassword', 'newPassword']);
         await identity.changeOperatorPassword({ principal, ...input });
         return { status: 204, cookies: [operatorCookie('', undefined)] };
+      },
+    },
+    {
+      // bot-activation-control.md AC12: every tenant's readiness and activation,
+      // read-only. There is no operator route that changes activation, and the
+      // action table would refuse one (`tenant.activation.change` is client-only).
+      method: 'GET',
+      path: '/v1/operator/bot-statuses',
+      handle: async (context) => {
+        const tenants = await identity.withOperatorAction(
+          sessionToken(context, OPERATOR_SESSION_COOKIE),
+          'platform.health.read',
+          'bot.status',
+          (tx) => listBotStatuses(tx),
+        );
+        return { status: 200, body: { tenants } };
       },
     },
   ];

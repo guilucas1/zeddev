@@ -90,6 +90,13 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - **Bot configuration rules live in `@zeddev/bot`** (validation, limits, option lists, readiness, prompt
   rendering). Its functions take an already tenant-bound `Connection` and write `app.current_tenant_id()`,
   never a tenant parameter. An option list or limit mirrored by a SQL CHECK needs a test asserting the two agree.
+- **Readiness is defined once, in SQL**: `app.bot_readiness_unmet` in migration 0007. A new readiness
+  condition needs a clause there, an AFTER trigger on its input table calling
+  `app.reevaluate_bot_readiness_trigger()`, and an entry in `READINESS_CONDITIONS` in
+  `src/lib/bot/activation.ts` (a test asserts the two agree). Never flip `bot_activation.active` from
+  application code except through `setBotActive`.
+- **An operator data route goes through `identity.withOperatorAction(token, action, resource, fn)`**, the
+  operator counterpart of `asClient`.
 
 ### Database-backed tests
 
@@ -182,3 +189,6 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   (`docker compose -p <other-name>`).
 - `core.autocrlf` is on for this checkout. `.gitattributes` keeps `*.sh`, `Dockerfile`, and `*.yaml` as LF
   regardless, because those files run inside Linux containers.
+- Row-level security applies to migrations: the migration role is not exempt. A data backfill must bind
+  each tenant with `set_config('app.tenant_id', …, true)` (see the `DO` block at the end of
+  `0007_bot_activation.sql`) or it silently touches no rows.

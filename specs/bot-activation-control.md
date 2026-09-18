@@ -7,6 +7,7 @@ Defines the readiness gate that determines when a client's bot is eligible to go
 ## Behavioral Requirements
 
 - The system must track a per-client readiness state derived from whether the client's WhatsApp number is connected and whether the minimum required bot configuration has been set.
+- The system must treat the WhatsApp-connection readiness condition, using the state vocabulary in `whatsapp-number-connection.md`, as satisfied while the connection state is `connected` or `reconnecting`, and as unmet while it is `connecting`, `error`, or `disconnected`. A transient interruption that the platform is recovering from automatically (`reconnecting`) must therefore not by itself turn the bot off; while `reconnecting` the bot remains active but no messages are exchanged through the number, and outbound replies wait for delivery per `message-delivery-reliability.md`. If automatic recovery is exhausted and the state becomes `error`, readiness is lost.
 - The system must consider minimum required bot configuration to include, at minimum, persona/tone configuration being completed.
 - The system must NOT allow a client to turn their bot on until the client is in a ready state.
 - The system must expose an explicit, client-controlled activation toggle ("go live" / "pause") that is separate from and sits on top of readiness.
@@ -17,7 +18,7 @@ Defines the readiness gate that determines when a client's bot is eligible to go
 - The system must stop the bot from automatically responding to end-customer messages while the bot is off (not active), regardless of readiness state.
 - The system must resume the bot automatically responding to end-customer messages as soon as the client turns it on, provided the client is ready.
 - The system must treat "active"/on as always-on (24/7) with no business-hours or scheduling concept — there is no time window during which an active bot is expected to withhold responses.
-- The system must re-evaluate readiness if a previously satisfied readiness condition later becomes unsatisfied (e.g., the WhatsApp connection is lost or required configuration is cleared).
+- The system must re-evaluate readiness if a previously satisfied readiness condition later becomes unsatisfied (e.g., the WhatsApp connection enters `error` or `disconnected`, or required configuration is cleared).
 - The system must turn an active bot off (or otherwise stop it from auto-responding) if the client's readiness state is lost while the bot is active.
 - The system must reflect the current activation state (on/off) and the current readiness state (ready/not ready) to the client in a way the client can check at any time.
 - The system must communicate to a not-ready client which readiness condition(s) remain unmet.
@@ -34,12 +35,13 @@ Defines the readiness gate that determines when a client's bot is eligible to go
 - Given a ready client, When the client turns the bot on, Then the bot begins auto-responding to end-customer messages, at any hour of any day, with no business-hours restriction.
 - Given an active bot, When the client turns the bot off, Then the bot stops auto-responding to end-customer messages immediately, and any message received afterward while off does not trigger an automatic reply.
 - Given a paused (off) bot for a still-ready client, When the client turns the bot back on, Then the bot resumes auto-responding to end-customer messages.
-- Given an active bot, When a readiness condition is subsequently lost (e.g., the WhatsApp connection drops), Then the system transitions the bot to not-responding and reflects the bot as off/not ready, without requiring further client action.
+- Given an active bot, When a readiness condition is subsequently lost (e.g., the WhatsApp connection enters `error` or `disconnected`), Then the system transitions the bot to not-responding and reflects the bot as off/not ready, without requiring further client action.
 - Given a bot that became inactive due to lost readiness, When the client restores the missing condition (e.g., reconnects WhatsApp) but takes no further action, Then the bot remains off until the client explicitly turns it on again.
 - Given a not-ready client, When the client views their bot status, Then the system lists specifically which readiness condition(s) (WhatsApp connection, minimum configuration) are unmet.
 - Given any client, When the client views their bot status at any time, Then the system shows both the current readiness state and the current activation state (on/off).
 - Given a solo operator managing multiple clients, When the operator looks at a client's account, Then the operator can view that client's readiness and activation state but has no control to change the client's activation state in v1.
 - Given an activation state change (on-to-off or off-to-on), When the change occurs, Then the system retains a record of the change and when it happened.
+- Given an active bot, When the WhatsApp connection enters `reconnecting` and later returns to `connected`, Then the bot remains active throughout and requires no client action.
 
 ## Out of Scope
 
@@ -57,6 +59,7 @@ Defines the readiness gate that determines when a client's bot is eligible to go
 
 - Assumed "minimum required bot configuration" for readiness is persona/tone only, per the interview decision; whether business knowledge or behavior rules configuration are ever required for readiness (now or in a future version) is not addressed here and would need to be decided in those sibling specs or a future revision of this one.
 - Assumed the readiness gate and the on/off toggle apply at the level of a single client's single WhatsApp-connected bot; multi-number-per-client scenarios, if they exist, are not addressed here.
-- Assumed automatic deactivation on lost readiness (e.g., disconnected WhatsApp) is desired rather than leaving the bot flagged as active-but-non-functional; this follows from the requirement that the bot must not respond while any readiness condition is unmet, but was not explicitly stated as a transition rule in the interview.
+- Assumed automatic deactivation on lost readiness (e.g., WhatsApp connection in `error` or `disconnected`) is desired rather than leaving the bot flagged as active-but-non-functional; this follows from the requirement that the bot must not respond while any readiness condition is unmet, but was not explicitly stated as a transition rule in the interview.
+- Decided that a transient WhatsApp interruption (`reconnecting` in `whatsapp-number-connection.md`) does not count as lost readiness, so a momentary interruption that recovers automatically does not silently pause the bot until the client notices and re-enables it. Only `error` (including automatic recovery being exhausted), `disconnected`, or `connecting` (a connection never yet verified, or being re-established by the client) make the condition unmet; once readiness is lost this way the bot stays off until the client explicitly turns it back on.
 - Assumed the client is the only actor able to change activation state in v1, and that no automated system process (other than the readiness-loss case above) ever flips the toggle.
 - Assumed "immediate effect" for turning the bot off means no in-flight or queued responses are sent once off, but this spec does not define exact timing/latency guarantees, which are left to implementation.

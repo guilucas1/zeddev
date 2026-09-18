@@ -9,10 +9,28 @@
  * another tenant's data.
  *
  * Persona and tone is the first configuration here because it is the only one
- * that gates readiness (`bot-activation-control.md`). Language, behaviour rules,
- * fallback messages, disclosure, handoff, and memory policy follow in the same
- * package.
+ * that gates readiness (`bot-activation-control.md`). Readiness itself and the
+ * go-live toggle are `activation.ts`. Language, behaviour rules, fallback
+ * messages, disclosure, handoff, and memory policy follow in the same package.
  */
+
+export {
+  ACTIVATION_CAUSES,
+  describeBotStatus,
+  listBotStatuses,
+  mayAutoRespond,
+  parseActivationInput,
+  READINESS_CONDITION_DESCRIPTIONS,
+  READINESS_CONDITIONS,
+  readActivationHistory,
+  readBotStatus,
+  setBotActive,
+  type ActivationCause,
+  type ActivationEvent,
+  type BotStatus,
+  type OperatorBotStatus,
+  type ReadinessCondition,
+} from './activation.ts';
 
 export {
   clearFreeformInstructions,

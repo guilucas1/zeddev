@@ -29,7 +29,7 @@ Defines how a client tenant connects, verifies, monitors, disconnects, and repla
 
 - **connecting** — Client has initiated setup; the platform is completing authorization/verification steps and has not yet confirmed a working link. Not yet counted as connected.
 - **connected** — The number is authorized and verified able to send/receive messages via the WhatsApp Business Cloud API. This is the only state in which the chatbot may exchange messages through this number.
-- **reconnecting** — A previously connected number has experienced an interruption and the platform is automatically attempting to restore the link without client action. Distinct from error: implies an automatic recovery attempt is in progress and has not yet been exhausted.
+- **reconnecting** — A previously connected number has experienced an interruption and the platform is automatically attempting to restore the link without client action. Distinct from error: implies an automatic recovery attempt is in progress and has not yet been exhausted. Being in `reconnecting` does not by itself revoke bot readiness (see `bot-activation-control.md`), whereas entering `error` or `disconnected` does (and `connecting` never satisfies it).
 - **error** — The connection is not functional and automatic recovery either does not apply or has been exhausted; requires attention (client action, or external Meta-side resolution) to restore. Must carry a reason.
 - **disconnected** — No number is actively connected for the tenant, whether because the client manually disconnected, offboarding occurred, or no connection has ever been established.
 

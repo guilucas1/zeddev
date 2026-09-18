@@ -59,6 +59,10 @@ export const TENANT_SCOPED_TABLES = [
   'queue_job_payloads',
   'queue_dispatch_cursors',
   'bot_personas',
+  'whatsapp_connections',
+  'whatsapp_connection_transitions',
+  'bot_activation',
+  'bot_activation_events',
 ] as const;
 
 /**
@@ -75,6 +79,13 @@ export const PLATFORM_READABLE_TABLES = [
   'tenant_lifecycle_events',
   'access_records',
   'secret_access_records',
+  // Connection health and its history — the carve-out AC7 names.
+  'whatsapp_connections',
+  'whatsapp_connection_transitions',
+  // Derived readiness and activation booleans, never the configuration they are
+  // derived from (`bot-activation-control.md` AC12).
+  'bot_activation',
+  'bot_activation_events',
 ] as const;
 
 /**

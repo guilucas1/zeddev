@@ -18,7 +18,8 @@
     "@zeddev/schema": "*",
     "@zeddev/secrets": "*",
     "@zeddev/tenancy": "*",
-    "@zeddev/time": "*"
+    "@zeddev/time": "*",
+    "@zeddev/whatsapp": "*"
   },
   "devDependencies": {
     "@zeddev/testing": "*"

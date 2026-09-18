@@ -1460,6 +1460,25 @@ export class IdentityService {
   }
 
   /**
+   * Perform one permission-checked action as the holder of an operator session
+   * token — the operator's counterpart of `withClientAction`, in the same order:
+   * resolve, check the action against `ACTION_PRINCIPALS` and record the
+   * decision, then open the platform scope. A client token is refused at
+   * resolution, and a client-only action is refused (and recorded) before any
+   * data is touched.
+   */
+  async withOperatorAction<T>(
+    rawToken: string,
+    action: Action,
+    resource: string,
+    fn: (connection: Connection, principal: OperatorPrincipal) => Promise<T>,
+  ): Promise<T> {
+    const principal = await this.resolveOperatorSession(rawToken);
+    await this.authorize(principal, action, resource);
+    return withPlatformScope(this.#pool, (connection) => fn(connection, principal));
+  }
+
+  /**
    * Check an action against the principal's type, recording the decision.
    *
    * Both outcomes are recorded, unlike session resolution: authorization
