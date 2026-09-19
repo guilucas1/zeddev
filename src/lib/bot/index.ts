@@ -11,8 +11,9 @@
  * Persona and tone is the first configuration here because it is the only one
  * that gates readiness (`bot-activation-control.md`). Readiness itself and the
  * go-live toggle are `activation.ts`; behaviour rules are `behavior.ts`;
- * fallback messages are `fallback.ts`; the disclosure setting is `disclosure.ts`.
- * Language, handoff, and memory policy follow in the same package.
+ * fallback messages are `fallback.ts`; the disclosure setting is `disclosure.ts`;
+ * human-handoff configuration is `handoff.ts`. Language and memory policy follow
+ * in the same package.
  */
 
 export {
@@ -112,3 +113,27 @@ export {
   type DisclosureSetting,
   type DisclosureSource,
 } from './disclosure.ts';
+
+export {
+  describeHandoffSettings,
+  HANDOFF_FIELDS,
+  HANDOFF_LIMITS,
+  HANDOFF_TRIGGER_DESCRIPTIONS,
+  HANDOFF_TRIGGERS,
+  handoffDirectives,
+  handoffPolicyFor,
+  parseHandoffEnabledInput,
+  parseHandoffInput,
+  PLATFORM_DEFAULT_HANDOFF_ENABLED,
+  PLATFORM_DEFAULT_HANDOFF_TRIGGERS,
+  readHandoffSettings,
+  resolveHandoffSignal,
+  saveHandoffSettings,
+  setHandoffEnabled,
+  type HandoffDecision,
+  type HandoffPolicy,
+  type HandoffSettings,
+  type HandoffSignal,
+  type HandoffSource,
+  type HandoffTrigger,
+} from './handoff.ts';

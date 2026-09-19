@@ -1059,6 +1059,81 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   });
 
   // -------------------------------------------------------------------------
+  // Bot configuration: human handoff
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'human-handoff.md',
+    'AC5 a client’s customized trigger conditions are what the conversation is evaluated against',
+    'a new client sees handoff off with the default triggers, then saves, toggles, and reads back its own',
+    async () => {
+      const { cookie } = await onboard();
+      const initial = await call(served, 'GET', '/v1/bot/handoff', { cookie });
+      assert.equal(initial.status, 200);
+      assert.equal(initial.body.enabled, false);
+      assert.deepEqual(initial.body.triggers, ['human_request', 'complaint', 'out_of_scope']);
+      assert.deepEqual(initial.body.customConditions, []);
+      assert.equal(initial.body.source, 'platform_default');
+      assert.equal(initial.body.updatedAt, null);
+      assert.deepEqual(initial.body.options.triggers, ['human_request', 'complaint', 'out_of_scope']);
+      assert.deepEqual(initial.body.platformDefault, {
+        enabled: false,
+        triggers: ['human_request', 'complaint', 'out_of_scope'],
+      });
+      assert.deepEqual(initial.body.limits, { conditionMaxLength: 300, maxConditions: 20 });
+
+      const saved = await call(served, 'PUT', '/v1/bot/handoff', {
+        cookie,
+        json: { enabled: true, triggers: ['complaint'], customConditions: ['The customer mentions a refund'] },
+      });
+      assert.equal(saved.status, 200);
+      assert.equal(saved.body.enabled, true);
+      assert.deepEqual(saved.body.triggers, ['complaint']);
+      assert.deepEqual(saved.body.customConditions, ['The customer mentions a refund']);
+      assert.equal(saved.body.source, 'client');
+      assert.deepEqual((await call(served, 'GET', '/v1/bot/handoff', { cookie })).body, saved.body);
+
+      const off = await call(served, 'PUT', '/v1/bot/handoff/enabled', { cookie, json: { enabled: false } });
+      assert.equal(off.status, 200);
+      assert.equal(off.body.enabled, false);
+      assert.deepEqual(off.body.triggers, ['complaint']);
+      assert.deepEqual(off.body.customConditions, ['The customer mentions a refund']);
+    },
+  );
+
+  unitTest('handoff routes refuse invalid input, other tenants, and anonymous or cross-site callers', async () => {
+    const alpha = await onboard();
+    const beta = await onboard();
+    const alphaConfiguration = { enabled: true, triggers: ['human_request'], customConditions: [] };
+    await call(served, 'PUT', '/v1/bot/handoff', { cookie: alpha.cookie, json: alphaConfiguration });
+    const betaView = (await call(served, 'GET', '/v1/bot/handoff', { cookie: beta.cookie })).body;
+    assert.equal(betaView.enabled, false);
+    assert.equal(betaView.source, 'platform_default');
+
+    const invalid = await call(served, 'PUT', '/v1/bot/handoff', {
+      cookie: beta.cookie,
+      json: { enabled: true, triggers: [], customConditions: [] },
+    });
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(invalid.body.error.issues, [
+      { key: 'enabled', reason: 'cannot be true with no trigger selected and no condition written' },
+    ]);
+    const badToggle = await call(served, 'PUT', '/v1/bot/handoff/enabled', { cookie: beta.cookie, json: { enabled: 'yes' } });
+    assert.equal(badToggle.status, 400);
+
+    assert.equal((await call(served, 'GET', '/v1/bot/handoff')).status, 401);
+    assert.equal((await call(served, 'PUT', '/v1/bot/handoff', { json: alphaConfiguration })).status, 401);
+    assert.equal((await call(served, 'PUT', '/v1/bot/handoff/enabled', { json: { enabled: false } })).status, 401);
+    const forged = await call(served, 'PUT', '/v1/bot/handoff/enabled', {
+      cookie: alpha.cookie,
+      headers: { origin: 'https://example.org' },
+      json: { enabled: false },
+    });
+    assert.equal(forged.status, 403);
+    assert.equal((await call(served, 'GET', '/v1/bot/handoff', { cookie: alpha.cookie })).body.enabled, true);
+  });
+
+  // -------------------------------------------------------------------------
   // Readiness, the go-live toggle, and the connection state
   // -------------------------------------------------------------------------
 

@@ -51,6 +51,7 @@ import {
   describeBotStatus,
   describeDisclosureSetting,
   describeFallbackMessages,
+  describeHandoffSettings,
   describePersona,
   listBotStatuses,
   parseActivationInput,
@@ -60,13 +61,16 @@ import {
   readBotStatus,
   readDisclosureSetting,
   readFallbackMessages,
+  readHandoffSettings,
   readPersona,
   saveBehaviorInstructions,
   saveDisclosureSetting,
   saveFallbackMessages,
+  saveHandoffSettings,
   savePersona,
   setBehaviorRuleEnabled,
   setBotActive,
+  setHandoffEnabled,
   updateBehaviorRule,
 } from '@zeddev/bot';
 import type { Connection, Pool } from '@zeddev/db';
@@ -566,6 +570,46 @@ export function createApi(dependencies: ApiDependencies): Api {
           saveDisclosureSetting(tx, body),
         );
         return { status: 200, body: describeDisclosureSetting(setting) };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Human handoff — human-handoff.md. Configuration only: whether a given
+    // conversation is paused is conversation state, and no route here touches it.
+    // -----------------------------------------------------------------------
+    {
+      method: 'GET',
+      path: '/v1/bot/handoff',
+      handle: async (context) => {
+        const settings = await asClient(context, 'tenant.configuration.read', 'bot.handoff', (tx) =>
+          readHandoffSettings(tx),
+        );
+        return { status: 200, body: describeHandoffSettings(settings) };
+      },
+    },
+    {
+      // PUT because a save replaces the whole configuration.
+      method: 'PUT',
+      path: '/v1/bot/handoff',
+      handle: async (context) => {
+        const body = await context.body();
+        const settings = await asClient(context, 'tenant.configuration.write', 'bot.handoff', (tx) =>
+          saveHandoffSettings(tx, body),
+        );
+        return { status: 200, body: describeHandoffSettings(settings) };
+      },
+    },
+    {
+      // PUT `{ "enabled": true | false }`: switches handoff on or off and keeps
+      // the configured triggers, so the form need not resubmit them.
+      method: 'PUT',
+      path: '/v1/bot/handoff/enabled',
+      handle: async (context) => {
+        const body = await context.body();
+        const settings = await asClient(context, 'tenant.configuration.write', 'bot.handoff', (tx) =>
+          setHandoffEnabled(tx, body),
+        );
+        return { status: 200, body: describeHandoffSettings(settings) };
       },
     },
 

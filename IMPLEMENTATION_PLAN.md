@@ -61,9 +61,17 @@ The bot disclosure setting (`bot-disclosure-setting.md`) is done too: two modes,
 brings the totals to 664 passing tests, zero skipped, 17 of 27 specs with covering tests, 297 spec-linked
 assertions.
 
-The next unblocked P1 item is human handoff enable/disable plus trigger configuration. Language configuration is still blocked on the §4 supported-language-list decision; business
-knowledge configuration is blocked on the §4 accepted-document-formats decision, though its freeform-entries
-half does not depend on it.
+Human handoff configuration (`human-handoff.md`, the configuration half) is done too: enable/disable, the
+three built-in triggers, client-written conditions, a platform default of "disabled, all three triggers
+selected" for a tenant that never saved, the prompt section rendered by `handoffDirectives`, and the single
+handoff-or-fallback decision `resolveHandoffSignal`. Migration `0011_bot_handoff_settings` and three API
+routes. See §4n. That brings the totals to 683 passing tests, zero skipped, 18 of 27 specs with covering
+tests, 303 spec-linked assertions.
+
+The next unblocked P1 item is the freeform-entries half of business knowledge configuration. Language
+configuration is still blocked on the §4 supported-language-list decision; document upload is blocked on the
+§4 accepted-document-formats decision; memory reset policy is blocked on the §4 default-inactivity-window
+decision.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -407,13 +415,15 @@ call must never be able to cause Meta to redeliver.
 - **[DONE]** Bot disclosure setting: `@zeddev/bot` (`disclosure.ts`) plus migration `0010_bot_disclosure` and
   `GET`/`PUT /v1/bot/disclosure`. 8 of 9 acceptance criteria covered, AC1–AC4 at the instruction layer; AC6
   (past messages unchanged) needs transcripts. See §4m.
-> **P1 remaining scope.** Everything below this line — language configuration through conversation
-> memory reset policy.
+- **[DONE]** Human handoff enable/disable and trigger configuration: `@zeddev/bot` (`handoff.ts`) plus migration
+  `0011_bot_handoff_settings` and `GET`/`PUT /v1/bot/handoff`, `PUT /v1/bot/handoff/enabled`. AC1–AC5 covered at
+  the configuration and decision layer; AC6–AC13 are per-conversation behaviour and need P2. See §4n.
+> **P1 remaining scope.** Everything below this line — language configuration, business knowledge, and
+> conversation memory reset policy.
 
 - Language configuration with a platform default, per `language-configuration.md`.
 - Business knowledge configuration: freeform entries plus document upload, with upload failures surfaced
   rather than silently dropped, and a combined listing view.
-- Human handoff enable/disable and trigger configuration.
 - Conversation memory reset policy configuration (inactivity window plus manual reset).
 
 ### P2 — Data plane (the bot actually holds conversations)
@@ -509,7 +519,8 @@ call must never be able to cause Meta to redeliver.
   assertions; `behavior-rules-configuration.md` covers 15 of 16, AC16 preview pending the AI port.) (After
   the fallback increment: 16 of 27 specs, 288 assertions; `fallback-response-behavior.md` covers 9 of 13 at
   the configuration layer.) (After the disclosure increment: 17 of 27 specs, 297 assertions;
-  `bot-disclosure-setting.md` covers 8 of 9.)
+  `bot-disclosure-setting.md` covers 8 of 9.) (After the handoff-configuration increment: 18 of 27 specs, 303
+  assertions; `human-handoff.md` covers AC1–AC5 of 13.)
 
 ---
 
@@ -1202,6 +1213,48 @@ SMTP).
   wording is ever required (e.g., for a regulated client), the reply path would prepend literal text instead,
   the way fallback text is sent verbatim.
 - The web screen for disclosure does not exist (`services/web`).
+
+---
+
+## 4n. Findings from the handoff configuration increment
+
+- **Default is disabled, with all three built-in triggers pre-selected.** **[DECISION]** The spec names no
+  default. A handoff pauses a conversation until a person at the business acts, and the notification channel
+  is still undecided (§4) — so a client who never opened the setting would have conversations silently
+  parked on a person nobody knows is needed. Disabled means those messages get the fallback reply instead.
+  The triggers are pre-selected so that switching handoff on without touching them is AC2's "default trigger
+  conditions". Same no-row-means-default shape as §4m, for the same identity-scope reason.
+- **"Disabled" is a routing rule, not an absent section.** AC1 requires a message that *would* match a handoff
+  condition to get fallback behaviour. So `handoffDirectives` always renders: enabled lists the conditions with
+  the `"handoff"` action; disabled tells the model not to offer a person and to take `"fallback"` wherever a
+  request would call for one — including a behaviour rule whose action is `"handoff"`, which `behaviorDirectives`
+  renders unconditionally. `resolveHandoffSignal(policy, signal)` is the runtime backstop and the single place
+  the decision is made: disabled → fallback (`out_of_scope` message) for any signal; enabled → handoff only for a
+  behaviour rule or a *currently configured* trigger/condition. This also answers §4k/§4l's open question of how
+  a `handoff` rule action resolves when handoff is off.
+- **Enabled with nothing to trigger it is refused, in both places.** It would read "on" and behave as "off". The
+  validator and the CHECK `bot_handoff_settings_enabled_has_trigger` both refuse it; disabled with no triggers is
+  fine. `setHandoffEnabled` locks the row before checking so a concurrent save cannot interleave.
+- **Client conditions are a `text[]` checked by an IMMUTABLE SQL function**, not a child table: the list is
+  saved whole, so one row and one upsert keep a save atomic without ordering or replace-all logic. The function
+  `app.bot_handoff_conditions_valid` enforces per-element length, trim, single-line, and no repeats; a test
+  drives each through raw SQL. A repeat is refused rather than merged, so the screen never shows fewer
+  conditions than the client typed.
+- **The configuration never touches conversation state**, which is how AC13 ("disabling does not reactivate a
+  paused conversation") will hold: P2's pause state must not be derived from, or reset by, this row.
+
+### Follow-ups the handoff configuration increment leaves open
+
+- AC6–AC13 (notification, per-conversation pause, retention while paused, client and system resume, status and
+  history) need conversations — P2. The pause record must store the `HandoffSignal` it was raised with (a custom
+  condition by its text), so later edits to the configuration cannot rewrite history.
+- P2's reply output protocol must carry the condition name the directives ask for (`[human_request]`,
+  `[complaint]`, `[out_of_scope]`, `[custom]` + text) and map it to a `HandoffSignal`.
+- The system-side resumption condition (AC10) is undefined; the spec leaves it to a later phase.
+- The spec's "unless the client's trigger configuration explicitly says otherwise" (cross-conversation scope)
+  is not offered; handoff state is per conversation only.
+- The notification channel is still a §4 decision.
+- The web screen for handoff does not exist (`services/web`).
 
 ---
 
