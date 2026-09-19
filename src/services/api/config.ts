@@ -68,6 +68,20 @@ export const API_CONFIG_SCHEMA = {
     default: 10 * 60 * 1000,
     min: 1000,
   },
+  API_PREVIEW_RATE_LIMIT: {
+    type: 'integer',
+    description:
+      'Reply previews one client business may run per API_PREVIEW_RATE_WINDOW. Each preview is a real call to the AI provider, and the provider\'s free-tier quota is shared by every tenant\'s live conversations, so one client previewing in a loop must not be able to spend the quota other businesses\' customers are answered from. Counted per process, so N instances admit up to N times this.',
+    default: 20,
+    min: 1,
+    max: 10_000,
+  },
+  API_PREVIEW_RATE_WINDOW: {
+    type: 'duration',
+    description: 'Window over which API_PREVIEW_RATE_LIMIT is counted.',
+    default: 10 * 60 * 1000,
+    min: 1000,
+  },
   API_MAX_BODY_BYTES: {
     type: 'integer',
     description:
@@ -104,6 +118,8 @@ export interface ApiSettings {
   readonly trustedProxyHops: number;
   readonly anonymousRateLimit: number;
   readonly anonymousRateWindowMs: number;
+  readonly previewRateLimit: number;
+  readonly previewRateWindowMs: number;
   readonly maxBodyBytes: number;
 }
 
@@ -137,6 +153,8 @@ export function loadServerSettings(env: RawEnv = process.env): ServerSettings {
     trustedProxyHops: config.API_TRUSTED_PROXY_HOPS,
     anonymousRateLimit: config.API_ANONYMOUS_RATE_LIMIT,
     anonymousRateWindowMs: config.API_ANONYMOUS_RATE_WINDOW,
+    previewRateLimit: config.API_PREVIEW_RATE_LIMIT,
+    previewRateWindowMs: config.API_PREVIEW_RATE_WINDOW,
     maxBodyBytes: config.API_MAX_BODY_BYTES,
     host: config.API_HTTP_HOST,
     port: config.API_HTTP_PORT,

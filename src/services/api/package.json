@@ -8,6 +8,7 @@
     "./config": "./config.ts"
   },
   "dependencies": {
+    "@zeddev/ai": "*",
     "@zeddev/bot": "*",
     "@zeddev/config": "*",
     "@zeddev/db": "*",

@@ -432,7 +432,7 @@ unitTest('input is normalised: trimmed, traits deduplicated in canonical order, 
     styleTraits: ['friendly', 'witty'],
     freeformInstructions: 'Line one\nLine two\t(tab ok)',
   });
-  assert.deepEqual(issuesOf(() => parsePersonaInput({ botName: 'X', freeformInstructions: 'bell' })), [
+  assert.deepEqual(issuesOf(() => parsePersonaInput({ botName: 'X', freeformInstructions: 'bell\u0007' })), [
     'freeformInstructions: must not contain control characters',
   ]);
 });

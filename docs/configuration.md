@@ -131,6 +131,8 @@ The client and operator HTTP API. API_PUBLIC_BASE_URL and API_TRUSTED_PROXY_HOPS
 | `API_HTTP_HOST` | string | no | `0.0.0.0` | Address the HTTP listener binds to. The default listens on every interface, which is what a container needs; set it to a loopback address to keep a process on a shared host reachable only through a local reverse proxy. |
 | `API_HTTP_PORT` | integer | no | `8080` | TCP port the HTTP listener binds to. 0 asks the operating system for any free port, which is only useful to a test harness. |
 | `API_MAX_BODY_BYTES` | integer | no | `16384` | Largest request body accepted, in bytes. Every request this service takes is a small JSON document, and the bound is what stops a caller making the password hasher chew on megabytes. |
+| `API_PREVIEW_RATE_LIMIT` | integer | no | `20` | Reply previews one client business may run per API_PREVIEW_RATE_WINDOW. Each preview is a real call to the AI provider, and the provider's free-tier quota is shared by every tenant's live conversations, so one client previewing in a loop must not be able to spend the quota other businesses' customers are answered from. Counted per process, so N instances admit up to N times this. |
+| `API_PREVIEW_RATE_WINDOW` | duration | no | `600000` | Window over which API_PREVIEW_RATE_LIMIT is counted. |
 | `API_PUBLIC_BASE_URL` | url | yes | — | Public URL at which clients reach the platform, with the dashboard and the API served from one origin. Verification and password-reset links are built from it; an https URL marks session cookies Secure; and its origin is the only Origin a state-changing request is accepted from. Never derived from the request, because a link built from a caller-supplied Host header lets the caller choose where a password-reset link points. |
 | `API_REQUEST_TIMEOUT` | duration | no | `30000` | How long one request may take to arrive in full and be answered before the connection is dropped. Bounds how long a slow client can hold a connection open. |
 | `API_SHUTDOWN_GRACE` | duration | no | `10000` | On a stop signal, how long in-flight requests and queued outbound mail are given to finish before connections are closed. Should be shorter than the orchestrator's own kill timeout, or the process is killed mid-drain. |
@@ -188,6 +190,14 @@ API_HTTP_PORT=8080
 # Largest request body accepted, in bytes. Every request this service takes is a small JSON document, and the bound is what stops a caller making the password hasher chew on megabytes.
 # default: 16384
 API_MAX_BODY_BYTES=16384
+
+# Reply previews one client business may run per API_PREVIEW_RATE_WINDOW. Each preview is a real call to the AI provider, and the provider's free-tier quota is shared by every tenant's live conversations, so one client previewing in a loop must not be able to spend the quota other businesses' customers are answered from. Counted per process, so N instances admit up to N times this.
+# default: 20
+API_PREVIEW_RATE_LIMIT=20
+
+# Window over which API_PREVIEW_RATE_LIMIT is counted.
+# default: 600000
+API_PREVIEW_RATE_WINDOW=600000
 
 # Public URL at which clients reach the platform, with the dashboard and the API served from one origin. Verification and password-reset links are built from it; an https URL marks session cookies Secure; and its origin is the only Origin a state-changing request is accepted from. Never derived from the request, because a link built from a caller-supplied Host header lets the caller choose where a password-reset link points.
 API_PUBLIC_BASE_URL=https://example.com

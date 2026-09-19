@@ -313,7 +313,7 @@ describe('business knowledge entries', { skip: testDatabaseConfigured() ? false 
       issuesOf(() => parseKnowledgeEntryCreateInput({ content: 'x'.repeat(KNOWLEDGE_LIMITS.entryMaxLength + 1) })),
       [`content: must be at most ${KNOWLEDGE_LIMITS.entryMaxLength} characters`],
     );
-    assert.deepEqual(issuesOf(() => parseKnowledgeEntryCreateInput({ content: 'a b' })), [
+    assert.deepEqual(issuesOf(() => parseKnowledgeEntryCreateInput({ content: 'a\u0000b' })), [
       'content: must not contain control characters',
     ]);
     assert.deepEqual(issuesOf(() => parseKnowledgeEntryCreateInput({ content: 'ok', title: 'Hours' })), [
@@ -325,7 +325,7 @@ describe('business knowledge entries', { skip: testDatabaseConfigured() ? false 
     ]);
     // A reason never echoes the submitted text: it is client content.
     const secret = 'Zq7vXk-never-echo';
-    for (const issue of issuesOf(() => parseKnowledgeEntryCreateInput({ content: `${secret}` }))) {
+    for (const issue of issuesOf(() => parseKnowledgeEntryCreateInput({ content: `${secret}\u0007` }))) {
       assert.ok(!issue.includes(secret));
     }
   });

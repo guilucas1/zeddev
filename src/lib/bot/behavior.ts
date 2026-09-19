@@ -454,14 +454,26 @@ async function writeInstructions(connection: Connection, text: string | null): P
 const ACTION_DIRECTIVES: Readonly<Record<RuleAction, string>> = {
   respond: '',
   handoff:
-    ' When this rule applies, do not answer the constrained request yourself: take the "handoff" action ' +
-    'so a person from the business takes over.',
+    ' When this rule applies, do not answer the constrained request yourself: take the "handoff" action, ' +
+    'naming this rule by its number, so a person from the business takes over.',
   fallback:
     ' When this rule applies, do not answer the constrained request yourself: take the "fallback" action ' +
     'so the business\'s fallback response is sent.',
 };
 
-function ruleDirective(rule: BehaviorRule): string {
+/**
+ * The rules the reply path obeys, in the order they are numbered in the prompt.
+ *
+ * The one definition of that numbering: `behaviorDirectives` labels each rule
+ * `[rule N]` by its position here, and `interpretReply` maps a reply's "rule N"
+ * back to a rule through this same list, so the two cannot disagree about which
+ * rule a number names.
+ */
+export function enabledBehaviorRules(configuration: BehaviorConfiguration): readonly BehaviorRule[] {
+  return configuration.rules.filter((rule) => rule.enabled);
+}
+
+function ruleDirective(rule: BehaviorRule, number: number): string {
   const subject = JSON.stringify(rule.subject);
   let sentence: string;
   switch (rule.kind) {
@@ -483,7 +495,7 @@ function ruleDirective(rule: BehaviorRule): string {
       sentence = `Do not discuss or engage with this topic: ${subject}. Politely decline if asked about it.`;
       break;
   }
-  return `- ${sentence}${ACTION_DIRECTIVES[rule.action]}`;
+  return `- [rule ${number}] ${sentence}${ACTION_DIRECTIVES[rule.action]}`;
 }
 
 /**
@@ -496,6 +508,9 @@ function ruleDirective(rule: BehaviorRule): string {
  * rules first and the client's own words after, with no precedence between them:
  * the spec treats both as binding at once.
  *
+ * Each rule is numbered (`[rule 1]`, …) so a reply can name the rule whose
+ * `handoff` action it took; see `enabledBehaviorRules`.
+ *
  * Client phrases are rendered JSON-quoted. Validation already refuses line breaks
  * in them, and quoting keeps a phrase readable as data even when it contains
  * words that look like instructions of their own.
@@ -503,13 +518,13 @@ function ruleDirective(rule: BehaviorRule): string {
  * Pure and deterministic: the only input is what the tenant's own connection read.
  */
 export function behaviorDirectives(configuration: BehaviorConfiguration): string | undefined {
-  const enabled = configuration.rules.filter((rule) => rule.enabled);
+  const enabled = enabledBehaviorRules(configuration);
   const sections: string[] = [];
   if (enabled.length > 0) {
     sections.push(
       [
         'The business set these rules. Follow every one of them in every reply, for every customer:',
-        ...enabled.map(ruleDirective),
+        ...enabled.map((rule, index) => ruleDirective(rule, index + 1)),
       ].join('\n'),
     );
   }

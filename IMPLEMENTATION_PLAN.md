@@ -82,11 +82,18 @@ capabilities (text, vision, audio), a registry keyed by provider name, configura
 brings the totals to 785 passing tests, zero skipped, 20 of 27 specs with covering tests, 347 spec-linked
 assertions.
 
+Prompt assembly and the reply output protocol are done in `@zeddev/bot` (`reply.ts`): `replyInstructions`
+composes every directive renderer in a fixed order, `interpretReply` reads the model's tagged answer
+(`[reply]` / `[handoff] …` / `[fallback] …`) into a decision, and `generateReply` is the single function the
+future conversation worker and the new `POST /v1/bot/preview` both call, which closes behaviour-rules AC16.
+`services/api` now loads `AI_*` and exposes the active provider to the operator (`GET
+/v1/operator/ai-provider`, ai-provider-portability AC8). See §4q. That brings the totals to 808 passing tests,
+zero skipped, 21 of 27 specs with covering tests, 359 spec-linked assertions.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the
 supported-language list, document upload on accepted document formats and size limits, memory reset policy on
 the default inactivity window. The next unblocked work is P2: the inbound webhook/dedup path (gateway service),
-and prompt assembly (one function composing the `@zeddev/bot` directive renderers into `instructions` for
-`@zeddev/ai`). Behaviour-rules AC16 (preview) is now unblocked too, since the AI port exists.
+then burst aggregation and the conversation worker, which calls `generateReply` with the real conversation.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -421,7 +428,7 @@ call must never be able to cause Meta to redeliver.
   respond/handoff/fallback action) with enable/disable/edit/delete lifecycles, plus freeform instructions,
   both binding simultaneously. `@zeddev/bot` (`behavior.ts`) plus migration `0008_bot_behavior_rules` and
   seven routes in `services/api`. 15 of 16 acceptance criteria covered at the instruction layer; AC16
-  (preview) is not implemented. See §4k.
+  (preview) is done through the live reply path, `POST /v1/bot/preview`. See §4k and §4q.
 - **[DONE]** Fallback message configuration: per-trigger and shared messages, each with a platform default
   per trigger, resolved by one function (`resolveFallbackMessage`) shared by the reply-path entry point and
   preview. `@zeddev/bot` (`fallback.ts`) plus migration `0009_bot_fallback_messages` and three routes in
@@ -473,9 +480,11 @@ call must never be able to cause Meta to redeliver.
   one free-tier provider, which keeps the v1 dependency count at one. A second adapter should be built
   early — the portability requirement in `ai-provider-portability.md` is unfalsifiable with only one
   adapter, so building the second is really a test of the first.
-- Prompt assembly from tenant configuration: persona, tone, language, disclosure mode, behavior rules,
-  retrieved knowledge, and conversation memory. This is the single point where most configuration specs
-  become observable behavior, so it needs the densest test coverage.
+- **[PARTIAL]** Prompt assembly from tenant configuration: `replyInstructions` in `@zeddev/bot` (`reply.ts`)
+  composes persona, disclosure, knowledge entries, behaviour rules, handoff, and the output protocol, and
+  `interpretReply` reads the answer back. Still to add as they land: language (blocked on §4), retrieved
+  knowledge (today every entry is rendered whole), and conversation memory (the worker supplies `turns`).
+  See §4q.
 - Conversation memory: per-end-customer-per-tenant context, unified across text/image/voice, inactivity
   and manual reset, and the guarantee that reset affects active context only and never the stored
   transcript.
@@ -1132,11 +1141,6 @@ SMTP).
 
 ### Follow-ups the behaviour rules increment leaves open
 
-- AC16 (preview against a sample message) is not implemented — it needs the AI port. When built, the
-  preview must go through the *same* prompt-assembly path as a live reply, not a separate one, or the
-  preview can pass while the live path disagrees.
-- P2's reply output protocol must define the `"handoff"`/`"fallback"` action names `behaviorDirectives` emits
-  and resolve a `handoff` action against `human-handoff.md`'s enabled/disabled state at reply time.
 - AC2–AC8 need output-level tests once P2's reply path exists; today's tests only prove the instruction layer
   is correct.
 - The web screen for rules does not exist (`services/web`).
@@ -1195,11 +1199,6 @@ SMTP).
 - Each fallback occurrence must be recorded with its triggering condition (AC10) in a tenant-scoped table
   that does not exist yet.
 - Exactly one fallback per triggering message (AC13) ties into inbound dedup, which P2 also owns.
-- Handoff precedence (AC6/AC7) is resolved at reply time against human-handoff configuration, which does
-  not exist yet.
-- A behaviour rule with action `fallback` needs a trigger mapping — recommend `out_of_scope` — decided as
-  part of P2's reply output protocol (see §4k's open `"handoff"`/`"fallback"` action-name question).
-- Confidence detection and scope detection are both upstream of this increment and remain undefined.
 - `PLATFORM_DEFAULT_FALLBACK_MESSAGES` is English-only; when language configuration lands, defaults become
   per-language, since `language-configuration.md` requires fallback text in the configured language.
 - The spec's own new open question: whether the fallback screen should show the client's active behaviour
@@ -1273,8 +1272,6 @@ SMTP).
 - AC6–AC13 (notification, per-conversation pause, retention while paused, client and system resume, status and
   history) need conversations — P2. The pause record must store the `HandoffSignal` it was raised with (a custom
   condition by its text), so later edits to the configuration cannot rewrite history.
-- P2's reply output protocol must carry the condition name the directives ask for (`[human_request]`,
-  `[complaint]`, `[out_of_scope]`, `[custom]` + text) and map it to a `HandoffSignal`.
 - The system-side resumption condition (AC10) is undefined; the spec leaves it to a later phase.
 - The spec's "unless the client's trigger configuration explicitly says otherwise" (cross-conversation scope)
   is not offered; handoff state is per conversation only.
@@ -1358,12 +1355,60 @@ SMTP).
 
 ### Follow-ups the AI port increment leaves open
 
-- **No service loads `AI_*` yet.** The keys are in `docs/configuration.md` but not in `compose.yaml`; they
-  belong to the conversation worker, and to `services/api` once preview (behaviour-rules AC16) is built.
-- AC8 needs an operator-visible surface (e.g. `GET /v1/operator/ai-provider` returning `descriptor`) once a
-  service holds the provider.
 - AC4 verification mode and a candidate-provider configuration: P4.
 - AC7: an output-level check that no provider identity reaches an end-customer needs the reply path.
+
+---
+
+## 4q. Findings from the prompt assembly and reply preview increment
+
+- **One reply path, so a preview cannot lie.** `generateReply` (`src/lib/bot/reply.ts`) is the only function
+  that assembles instructions, calls the provider, and interprets the answer. The preview route calls it via
+  `previewReply` with one sample message as the opening turn; the conversation worker must call it with the
+  real conversation. A preview with its own prompt could pass while live replies disagree (behaviour-rules
+  AC16), which is why there is no second assembler.
+- **[DECISION] Output protocol is a tagged first line, not JSON.** `[reply]` + message, `[handoff] <trigger |
+  custom "…" | rule N>`, `[fallback] <out_of_scope | low_confidence>`. Free text with quotes and emoji is
+  escaped less reliably inside JSON by small free-tier models, and JSON mode is a provider feature the port
+  does not expose. This also settles where confidence and scope detection come from: the model declares them.
+- **[DECISION] Untagged output with no tag anywhere is accepted as a reply.** Small models drop format
+  instructions often; turning every such answer into an apology would tie quality to formatting obedience.
+  A tag anywhere but the first line, empty output, truncated output, control characters, or more than 4096
+  characters (WhatsApp's per-message limit) becomes the `ai_error` fallback with cause `unusable_output` or
+  `truncated` — never a sent message (text-conversation-handling AC7).
+- **Rules are numbered by `enabledBehaviorRules`**, the one definition used both by `behaviorDirectives`
+  (`[rule N]`) and by `interpretReply` to map "rule N" back. A cited rule whose action is not `handoff`, or a
+  custom condition the client never wrote, cannot pause a conversation; it becomes the out-of-scope fallback.
+- **A behaviour rule's `fallback` action maps to `out_of_scope`**, as §4l recommended.
+- **Handoff honoured only if offered.** The `[handoff]` form appears in the protocol only while handoff is
+  enabled; a handoff line with handoff disabled is resolved by `resolveHandoffSignal` to the fallback, with
+  cause `handoff_unavailable`.
+- **A provider failure is decided, not thrown**: an `ai_generation` error becomes the `ai_error` fallback
+  (fallback AC5), and the route logs `api.preview.generation_failed` with kind/code only, no content.
+- **Preview is rate-limited per tenant** (`API_PREVIEW_RATE_LIMIT`, `API_PREVIEW_RATE_WINDOW`), because every
+  preview spends the free-tier quota all tenants' live conversations share. The limiter is per-process.
+- **The configuration read is one tenant-bound transaction; the model call happens after it commits**, so a
+  slow provider holds no database connection.
+- **`services/api` now requires `AI_BASE_URL` and `AI_MODEL`.** A developer `.env` from before this increment
+  lacks them, and `docker compose up` will refuse to start the API until they are added (the template in
+  `docs/configuration.md` lists them). Credentials are not verified at startup: proving one works costs a
+  generation from the shared quota.
+- **Raw control characters had got into five source files** (NUL/BEL test fixtures and a NUL separator in
+  `src/lib/queue/types.ts`), which made git show those files as binary. They are now `\u` escapes, and
+  `src/lib/testing/source-text.test.ts` fails the build on any raw control character under `src/` or
+  `scripts/`.
+
+### Follow-ups the reply increment leaves open
+
+- The conversation worker (P2) must call `generateReply` with real turns and the right `conversationStart`,
+  resolve fallback text inside the sending transaction, and record each fallback with its trigger and cause
+  (fallback AC10).
+- Output-level tests of behaviour rules AC2–AC8 and disclosure against a real model are still missing; today's
+  tests pin the prompt and the interpretation, with the model faked.
+- Language, retrieved knowledge, and conversation memory are not yet sections of `replyInstructions`.
+- The preview rate limit is per-process; a multi-instance deployment admits N× the limit. Acceptable while the
+  platform runs one API instance.
+- The web screen for preview does not exist (`services/web`).
 
 ---
 

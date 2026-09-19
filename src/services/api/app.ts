@@ -60,7 +60,9 @@ import {
   describePersona,
   listBotStatuses,
   parseActivationInput,
+  parsePreviewInput,
   previewFallbackDraft,
+  previewReply,
   readActivationHistory,
   readBehaviorRules,
   readBotStatus,
@@ -69,6 +71,7 @@ import {
   readHandoffSettings,
   readKnowledge,
   readPersona,
+  readReplyConfiguration,
   saveBehaviorInstructions,
   saveDisclosureSetting,
   saveFallbackMessages,
@@ -81,6 +84,7 @@ import {
   updateKnowledgeEntry,
   type BotStatus,
 } from '@zeddev/bot';
+import type { AiProvider } from '@zeddev/ai';
 import type { Connection, Pool } from '@zeddev/db';
 import { AuthenticationError, TransientTransportError, ValidationError } from '@zeddev/errors';
 import type { Action, ClientPrincipal, IdentityService } from '@zeddev/identity';
@@ -111,6 +115,8 @@ export const OPERATOR_COOKIE_PATH = '/v1/operator';
 export interface ApiDependencies {
   readonly identity: IdentityService;
   readonly mailer: Mailer;
+  /** The platform's AI provider. Used by the reply preview, and described to the operator. */
+  readonly ai: AiProvider;
   /** Used only by the readiness probe. Every data access goes through `identity`. */
   readonly pool: Pool;
   readonly settings: ApiSettings;
@@ -143,13 +149,20 @@ interface Route {
 const ACCEPTED = { status: 'accepted' } as const;
 
 export function createApi(dependencies: ApiDependencies): Api {
-  const { identity, pool, settings } = dependencies;
+  const { identity, pool, settings, ai } = dependencies;
   const clock = dependencies.clock ?? new SystemClock();
   const logger = (dependencies.logger ?? new Logger()).child({ component: 'api' });
   const outbox = new MailOutbox(dependencies.mailer, logger);
   const limiter = new FixedWindowRateLimiter({
     limit: settings.anonymousRateLimit,
     windowMs: settings.anonymousRateWindowMs,
+    clock,
+  });
+  // Keyed by tenant, not by source: what it protects is the AI provider's quota,
+  // which one business's previews must not be able to spend for everyone.
+  const previewLimiter = new FixedWindowRateLimiter({
+    limit: settings.previewRateLimit,
+    windowMs: settings.previewRateWindowMs,
     clock,
   });
 
@@ -614,6 +627,49 @@ export function createApi(dependencies: ApiDependencies): Api {
     },
 
     // -----------------------------------------------------------------------
+    // Reply preview — behavior-rules-configuration.md AC16. A sample message
+    // through the live reply path (`previewReply` → `generateReply`), so the
+    // preview obeys exactly what a real conversation would. The configuration is
+    // read in the tenant's transaction; the model is called after it commits, so
+    // a slow provider holds no database connection.
+    // -----------------------------------------------------------------------
+    {
+      method: 'POST',
+      path: '/v1/bot/preview',
+      handle: async (context) => {
+        const message = parsePreviewInput(await context.body());
+        const { tenantId, configuration, fallback } = await asClient(
+          context,
+          'tenant.configuration.read',
+          'bot.preview',
+          async (tx, principal) => {
+            const decision = previewLimiter.take(principal.tenantId);
+            if (!decision.allowed) {
+              throw new HttpError(429, 'request.rate_limited', {
+                'retry-after': String(Math.max(1, Math.ceil(decision.retryAfterMs / 1000))),
+              });
+            }
+            return {
+              tenantId: principal.tenantId,
+              configuration: await readReplyConfiguration(tx),
+              fallback: await readFallbackMessages(tx),
+            };
+          },
+        );
+        const outcome = await previewReply(ai, configuration, fallback, message);
+        if (outcome.failure !== undefined) {
+          logger.warn('api.preview.generation_failed', {
+            tenantId,
+            errorKind: outcome.failure.kind,
+            errorCode: outcome.failure.code,
+            retryable: outcome.failure.retryable,
+          });
+        }
+        return { status: 200, body: { preview: outcome.preview } };
+      },
+    },
+
+    // -----------------------------------------------------------------------
     // Disclosure — bot-disclosure-setting.md. A never-chosen bot reads as the
     // platform default, with `source` saying so.
     // -----------------------------------------------------------------------
@@ -820,6 +876,21 @@ export function createApi(dependencies: ApiDependencies): Api {
           (tx) => listBotStatuses(tx),
         );
         return { status: 200, body: { tenants } };
+      },
+    },
+    {
+      // Which provider and model is answering every tenant — ai-provider-
+      // portability.md AC8. The descriptor carries no credential and no endpoint.
+      method: 'GET',
+      path: '/v1/operator/ai-provider',
+      handle: async (context) => {
+        const provider = await identity.withOperatorAction(
+          sessionToken(context, OPERATOR_SESSION_COOKIE),
+          'platform.health.read',
+          'ai.provider',
+          async () => ai.descriptor,
+        );
+        return { status: 200, body: { provider } };
       },
     },
   ];

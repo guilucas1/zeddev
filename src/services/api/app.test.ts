@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe } from 'node:test';
+import { InMemoryAiProvider, type ObservedGeneration } from '@zeddev/ai/testing';
 import { withTenant } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { IdentityService, TOKEN_PREFIXES, type IdentityPolicy, type TenantProvisioning } from '@zeddev/identity';
@@ -161,6 +162,7 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   let identity: IdentityService;
   let mailer: InMemoryMailer;
   let sink: MemorySink;
+  let ai: InMemoryAiProvider;
   let api: Api;
   let served: Served;
   let counter = 0;
@@ -175,10 +177,12 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
     readonly settings?: Partial<ApiSettings>;
     readonly identity?: IdentityService;
     readonly mailer?: Mailer;
+    readonly ai?: InMemoryAiProvider;
   } = {}): Api {
     return createApi({
       identity: options.identity ?? identity,
       mailer: options.mailer ?? mailer,
+      ai: options.ai ?? ai,
       pool: db.pool,
       settings: settingsWith(options.settings),
       logger: new Logger({ sink }),
@@ -212,6 +216,7 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
     await migrateToLatest(db.pool);
     sink = new MemorySink();
     mailer = new InMemoryMailer();
+    ai = new InMemoryAiProvider();
     identity = new IdentityService({
       pool: db.pool,
       policy: POLICY,
@@ -1397,6 +1402,128 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   );
 
   // -------------------------------------------------------------------------
+  // Reply preview and the active AI provider
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'behavior-rules-configuration.md',
+    'AC16 a preview against a sample message demonstrates the same constraints as a live conversation',
+    'the preview route runs the sample through the reply path with the tenant’s saved rules and shows what the customer would receive',
+    async () => {
+      const { cookie } = await onboard();
+      await call(served, 'PUT', '/v1/bot/persona', { cookie, json: { botName: 'Juno' } });
+      const created = await call(served, 'POST', '/v1/bot/behavior-rules', {
+        cookie,
+        json: { kind: 'avoid_topic', subject: 'politics', action: 'fallback' },
+      });
+      assert.equal(created.status, 201);
+      await call(served, 'PUT', '/v1/bot/fallback-messages', {
+        cookie,
+        json: { triggerMessages: { out_of_scope: 'Only cake questions, please!' } },
+      });
+
+      ai.backend.script({ kind: 'text', text: '[fallback] out_of_scope' });
+      const before = ai.backend.requests.length;
+      const declined = await call(served, 'POST', '/v1/bot/preview', { cookie, json: { message: 'Who should I vote for?' } });
+      assert.equal(declined.status, 200);
+      assert.deepEqual(declined.body.preview, {
+        outcome: 'fallback',
+        trigger: 'out_of_scope',
+        cause: 'declined',
+        message: 'Only cake questions, please!',
+        source: 'trigger',
+      });
+      const seen = ai.backend.requests[before] as ObservedGeneration;
+      assert.match(seen.instructions, /\[rule 1\] Do not discuss or engage with this topic: "politics"/);
+      assert.match(seen.instructions, /"Juno"/);
+      assert.deepEqual(seen.turns, [{ role: 'customer', parts: [{ type: 'text', text: 'Who should I vote for?' }] }]);
+
+      // Disabling the rule is what the next preview obeys.
+      const disabled = await call(served, 'PUT', '/v1/bot/behavior-rules/rule/enabled', {
+        cookie,
+        json: { id: created.body.rule.id, enabled: false },
+      });
+      assert.equal(disabled.status, 200);
+      ai.backend.script({ kind: 'text', text: '[reply]\nI can’t advise on that, but our cakes are apolitical.' });
+      const answered = await call(served, 'POST', '/v1/bot/preview', { cookie, json: { message: 'Who should I vote for?' } });
+      assert.deepEqual(answered.body.preview, { outcome: 'reply', text: 'I can’t advise on that, but our cakes are apolitical.' });
+      assert.doesNotMatch((ai.backend.requests.at(-1) as ObservedGeneration).instructions, /politics/);
+    },
+  );
+
+  unitTest('the preview refuses invalid input, anonymous callers, and a tenant past its preview budget', async () => {
+    const { cookie } = await onboard();
+    const invalid = await call(served, 'POST', '/v1/bot/preview', { cookie, json: { message: '  ', tenantId: 'x' } });
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(invalid.body.error.issues, [
+      { key: 'message', reason: 'must not be blank' },
+      { key: 'tenantId', reason: 'is not a recognised field' },
+    ]);
+    assert.equal((await call(served, 'POST', '/v1/bot/preview', { json: { message: 'hi' } })).status, 401);
+
+    const budgetedServed = await serve(apiWith({ settings: { previewRateLimit: 2 } }));
+    extra.push(budgetedServed);
+    for (let i = 0; i < 2; i += 1) {
+      assert.equal((await call(budgetedServed, 'POST', '/v1/bot/preview', { cookie, json: { message: 'hi' } })).status, 200);
+    }
+    const limited = await call(budgetedServed, 'POST', '/v1/bot/preview', { cookie, json: { message: 'hi' } });
+    assert.equal(limited.status, 429);
+    assert.ok(Number(limited.headers.get('retry-after')) >= 1);
+    // The budget is per tenant: another business is unaffected.
+    const other = await onboard();
+    assert.equal(
+      (await call(budgetedServed, 'POST', '/v1/bot/preview', { cookie: other.cookie, json: { message: 'hi' } })).status,
+      200,
+    );
+  });
+
+  specTest(
+    'fallback-response-behavior.md',
+    'AC5 the AI generation step fails outright and the customer still receives a fallback',
+    'a provider failure during a preview shows the error fallback rather than an error response',
+    async () => {
+      const { cookie } = await onboard();
+      const failing = new InMemoryAiProvider({ maxAttempts: 1 });
+      failing.backend.script({ kind: 'failure', failure: 'unauthorized' });
+      const failingServed = await serve(apiWith({ ai: failing }));
+      extra.push(failingServed);
+      const answer = await call(failingServed, 'POST', '/v1/bot/preview', { cookie, json: { message: 'Hello?' } });
+      assert.equal(answer.status, 200);
+      assert.equal(answer.body.preview.outcome, 'fallback');
+      assert.equal(answer.body.preview.trigger, 'ai_error');
+      assert.equal(answer.body.preview.cause, 'generation_failed');
+      assert.equal(answer.body.preview.source, 'platform_default');
+    },
+  );
+
+  specTest(
+    'ai-provider-portability.md',
+    'AC8 the operator can tell which provider is active',
+    'the operator reads the active provider and model, with no credential or endpoint, and a client cannot',
+    async () => {
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const operatorCookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+      const answer = await call(served, 'GET', '/v1/operator/ai-provider', { cookie: operatorCookie });
+      assert.equal(answer.status, 200);
+      assert.deepEqual(answer.body.provider, {
+        provider: 'memory',
+        model: 'memory-model',
+        transcriptionModel: 'memory-model',
+        capabilities: ['text', 'vision', 'audio'],
+      });
+
+      const { cookie } = await onboard();
+      const clientToken = cookie.split('=')[1];
+      const peeked = await call(served, 'GET', '/v1/operator/ai-provider', {
+        cookie: `${OPERATOR_SESSION_COOKIE}=${clientToken}`,
+      });
+      assert.equal(peeked.status, 401);
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // Transport defences
   // -------------------------------------------------------------------------
 
@@ -1521,6 +1648,7 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
       const broken = createApi({
         identity,
         mailer,
+        ai,
         pool: { query: async () => Promise.reject(new Error('connect ECONNREFUSED')) } as never,
         settings: settingsWith(),
         logger: new Logger({ sink }),
@@ -1615,7 +1743,14 @@ describe('api service over real SMTP', {
         credentialParams: FAST_SCRYPT,
         logger: new Logger({ sink: new MemorySink() }),
       });
-      api = createApi({ identity, mailer, pool: db.pool, settings: settingsWith(), logger: new Logger({ sink: new MemorySink() }) });
+      api = createApi({
+        identity,
+        mailer,
+        ai: new InMemoryAiProvider(),
+        pool: db.pool,
+        settings: settingsWith(),
+        logger: new Logger({ sink: new MemorySink() }),
+      });
       served = await serve(api);
 
       const email = mailbox.recipient('owner');

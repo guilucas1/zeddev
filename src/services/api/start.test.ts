@@ -33,6 +33,8 @@ const PASSWORD = 'meadow-granite-vessel-8';
 
 /** The keys a deployment must supply because they have no default. */
 const REQUIRED_KEYS = [
+  'AI_BASE_URL',
+  'AI_MODEL',
   'API_PUBLIC_BASE_URL',
   'DATABASE_HOST',
   'DATABASE_NAME',
@@ -53,6 +55,8 @@ function envFor(db: TestDatabase, overrides: Record<string, string> = {}): Recor
     DATABASE_SSL_MODE: 'disable',
     MAIL_HOST: 'mail.invalid',
     MAIL_FROM_ADDRESS: 'no-reply@example.com',
+    AI_BASE_URL: 'https://example.com/v1beta',
+    AI_MODEL: 'gemini-2.5-flash',
     API_PUBLIC_BASE_URL: 'https://app.example.com',
     API_HTTP_HOST: '127.0.0.1',
     API_HTTP_PORT: '0',
@@ -93,7 +97,7 @@ describe('startup configuration', () => {
       // needs to start Node at all.
       const env = Object.fromEntries(
         Object.entries(process.env).filter(
-          ([key]) => !/^(DATABASE|MAIL|API|IDENTITY|STORAGE|LOG|ZEDDEV)_/.test(key) && key !== 'LOG_LEVEL',
+          ([key]) => !/^(DATABASE|MAIL|API|IDENTITY|STORAGE|LOG|ZEDDEV|AI)_/.test(key) && key !== 'LOG_LEVEL',
         ),
       );
       const result = spawnSync(process.execPath, [join('src', 'services', 'api', 'main.ts')], {

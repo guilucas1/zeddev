@@ -205,5 +205,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - In the Bash tool (Git Bash on Windows), `node` does not understand `/tmp/...` paths. Pass files to
   `node -e` scripts via `$(cygpath -w /tmp/file)`.
 - `ValidationError` sorts its issues by key; assert issue lists in key order.
+- The Write/Edit tools can turn a `\u0000`-style escape into the raw character. Write control-character
+  fixtures with a script instead; `src/lib/testing/source-text.test.ts` fails on any raw control character.
 - Python is not usable on this machine (pyenv shim with no version set). Script file edits with `node`: write the script to a file with a quoted heredoc (`<<'EOF'`) and run
   `node "$(cygpath -w /tmp/x.js)"`. Inline `node -e "…"` mangles backslash escapes and backticks.

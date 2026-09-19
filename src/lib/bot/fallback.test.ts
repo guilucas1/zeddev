@@ -335,7 +335,7 @@ unitTest('every problem in a fallback submission is reported at once, and no sub
   const issues = issuesOf(() =>
     parseFallbackInput({
       sharedMessage: `${secret}${'x'.repeat(1000)}`,
-      triggerMessages: { ai_error: 42, low_confidence: `badbell ${secret}`, escalate: secret },
+      triggerMessages: { ai_error: 42, low_confidence: `bad\u0007bell ${secret}`, escalate: secret },
       colour: secret,
     }),
   );

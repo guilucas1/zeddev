@@ -25,6 +25,7 @@
 
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { createAiProvider, loadAiSettings, type AiProvider } from '@zeddev/ai';
 import { loadConfig, type RawEnv } from '@zeddev/config';
 import { assertTenantIsolationEnforceable, createPool, loadDatabaseConfig, type Pool } from '@zeddev/db';
 import { ConfigurationError, type ConfigIssue } from '@zeddev/errors';
@@ -39,6 +40,8 @@ export interface StartOptions {
   readonly sink?: LogSink | undefined;
   /** Replace the SMTP adapter. Tests use this; a deployment never does. */
   readonly mailer?: Mailer | undefined;
+  /** Replace the configured AI provider. Tests use this; a deployment never does. */
+  readonly ai?: AiProvider | undefined;
   /** Test-only scrypt cost. See `IdentityServiceOptions.credentialParams` for why this is not configuration. */
   readonly credentialParams?: IdentityServiceOptions['credentialParams'];
 }
@@ -78,12 +81,17 @@ export function loadAll<T extends readonly (() => unknown)[]>(
 }
 
 export async function startApi(env: RawEnv = process.env, options: StartOptions = {}): Promise<RunningApi> {
-  const [database, policy, smtp, settings, logging] = loadAll([
+  const [database, policy, smtp, ai, settings, logging] = loadAll([
     () => loadDatabaseConfig(env),
     () => loadIdentityPolicy(env),
     // Parsed even when a test supplies its own mailer, so a deployment missing a
     // MAIL_* key fails here rather than at the first signup.
     () => loadSmtpSettings(env),
+    // Likewise parsed even when a test supplies its own provider. Not verified at
+    // startup: proving a credential works costs a generation from the quota every
+    // tenant's conversations share, and a wrong one surfaces on the first preview
+    // as a logged `ai_generation` failure rather than silently.
+    () => loadAiSettings(env),
     () => loadServerSettings(env),
     () => loadConfig(LOGGING_CONFIG_SCHEMA, env),
   ] as const);
@@ -113,7 +121,14 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
     logger,
     ...(options.credentialParams === undefined ? {} : { credentialParams: options.credentialParams }),
   });
-  const api = createApi({ identity, mailer, pool, settings, logger });
+  const api = createApi({
+    identity,
+    mailer,
+    ai: options.ai ?? createAiProvider(ai),
+    pool,
+    settings,
+    logger,
+  });
 
   const server = createServer(api.handler);
   server.requestTimeout = settings.requestTimeoutMs;

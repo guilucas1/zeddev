@@ -586,7 +586,7 @@ unitTest('freeform instructions must be sent explicitly; blank and null both mea
   ]);
   assert.equal(parseBehaviorInstructionsInput({ freeformInstructions: null }), null);
   assert.equal(parseBehaviorInstructionsInput({ freeformInstructions: ' \n ' }), null);
-  assert.deepEqual(issuesOf(() => parseBehaviorInstructionsInput({ freeformInstructions: 'ab' })), [
+  assert.deepEqual(issuesOf(() => parseBehaviorInstructionsInput({ freeformInstructions: 'a\u0007b' })), [
     'freeformInstructions: must not contain control characters',
   ]);
   assert.deepEqual(issuesOf(() => parseBehaviorInstructionsInput({ freeformInstructions: 'x'.repeat(4001) })), [
