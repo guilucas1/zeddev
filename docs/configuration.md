@@ -112,6 +112,15 @@ The model that writes every bot reply, reads images, and transcribes voice notes
 | `AI_REQUEST_TIMEOUT` | duration | no | `60000` | How long one request to the provider may take, including reading the response. A request that exceeds it counts as a transient failure and is retried within AI_MAX_ATTEMPTS. |
 | `AI_TRANSCRIPTION_MODEL` | string | no | `` | Model that transcribes voice notes, when it is not AI_MODEL. Required for "openai_compatible" when AI_CAPABILITIES includes audio, because those servers transcribe with a dedicated speech model (e.g. whisper-large-v3) rather than the chat model. Empty means AI_MODEL. |
 
+## WhatsApp
+
+The platform's one Meta app, which every client's number is authorized to. Platform-wide rather than per tenant: a client's own access token is a tenant secret and never an environment value. Both keys are secrets — the app secret is what proves an inbound notification came from Meta (message-delivery-reliability.md AC2), and without it anyone who found the webhook URL could inject messages into any tenant's conversations.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `WHATSAPP_APP_SECRET` | string | yes | — | The Meta app's secret. Every inbound webhook notification carries an HMAC-SHA256 of its body keyed with it (X-Hub-Signature-256), and a notification whose signature does not verify is refused and recorded rather than processed — message-delivery-reliability.md AC2. Without it anyone who finds the webhook URL could inject messages into any tenant's conversations. **(secret)** |
+| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | string | yes | — | A value you choose and enter in the Meta app dashboard when subscribing the webhook. Meta echoes it once in a GET handshake to prove the subscription request came from the dashboard you control; the gateway answers the handshake only when it matches. **(secret)** |
+
 ## Logging
 
 Read by every service. Verbosity is the only thing that varies; what a record may contain does not, because redaction is an allowlist of field names enforced at the logger boundary and applies at every level.
@@ -137,6 +146,18 @@ The client and operator HTTP API. API_PUBLIC_BASE_URL and API_TRUSTED_PROXY_HOPS
 | `API_REQUEST_TIMEOUT` | duration | no | `30000` | How long one request may take to arrive in full and be answered before the connection is dropped. Bounds how long a slow client can hold a connection open. |
 | `API_SHUTDOWN_GRACE` | duration | no | `10000` | On a stop signal, how long in-flight requests and queued outbound mail are given to finish before connections are closed. Should be shorter than the orchestrator's own kill timeout, or the process is killed mid-drain. |
 | `API_TRUSTED_PROXY_HOPS` | integer | no | `0` | Number of reverse proxies in front of this service whose X-Forwarded-For entries are trusted. 0 means the TCP peer is the client. Too high lets a caller forge their own source address and escape the per-source throttle; too low makes every client share the proxy's address and one noisy client throttles them all. |
+
+## WhatsApp gateway service
+
+The inbound webhook Meta delivers every message to, deployed apart from the API so that acknowledging a notification never waits on anything else the platform is doing — a slow acknowledgement makes Meta redeliver (message-delivery-reliability.md AC1). Meta only calls public HTTPS URLs, so on a laptop or VPS a TLS-terminating proxy or tunnel forwards to GATEWAY_HTTP_PORT; that forwarding is deployment plumbing, not a code path, so it is the same artifact on every tier.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `GATEWAY_HTTP_HOST` | string | no | `0.0.0.0` | Address the webhook listener binds to. The default listens on every interface, which is what a container needs. |
+| `GATEWAY_HTTP_PORT` | integer | no | `8081` | TCP port the webhook listener binds to. Meta must reach it over public HTTPS, so on a VPS or laptop a TLS-terminating reverse proxy or tunnel forwards to it; the URL Meta is given is that proxy's, followed by /v1/whatsapp/webhook. 0 asks the operating system for any free port, which is only useful to a test harness. |
+| `GATEWAY_MAX_BODY_BYTES` | integer | no | `262144` | Largest webhook notification accepted, in bytes. Notifications carry message text and media references, never media itself, so they are small; the bound stops a caller making the gateway hash and buffer megabytes before the signature check refuses them. |
+| `GATEWAY_REQUEST_TIMEOUT` | duration | no | `10000` | How long one notification may take to arrive in full and be acknowledged before the connection is dropped. Meta treats a slow acknowledgement as a failure and redelivers, so this bounds a slow client, not the gateway: acknowledging is a signature check and one short transaction. |
+| `GATEWAY_SHUTDOWN_GRACE` | duration | no | `10000` | On a stop signal, how long in-flight notifications are given to be stored and acknowledged before connections are closed. One cut short is not lost: it was never acknowledged, so Meta redelivers it, and duplicate suppression makes the redelivery safe. |
 
 ## Template
 
@@ -258,6 +279,26 @@ DATABASE_STATEMENT_TIMEOUT=30000
 
 # Role to authenticate as.
 DATABASE_USER=zeddev
+
+# Address the webhook listener binds to. The default listens on every interface, which is what a container needs.
+# default: 0.0.0.0
+GATEWAY_HTTP_HOST=0.0.0.0
+
+# TCP port the webhook listener binds to. Meta must reach it over public HTTPS, so on a VPS or laptop a TLS-terminating reverse proxy or tunnel forwards to it; the URL Meta is given is that proxy's, followed by /v1/whatsapp/webhook. 0 asks the operating system for any free port, which is only useful to a test harness.
+# default: 8081
+GATEWAY_HTTP_PORT=8081
+
+# Largest webhook notification accepted, in bytes. Notifications carry message text and media references, never media itself, so they are small; the bound stops a caller making the gateway hash and buffer megabytes before the signature check refuses them.
+# default: 262144
+GATEWAY_MAX_BODY_BYTES=262144
+
+# How long one notification may take to arrive in full and be acknowledged before the connection is dropped. Meta treats a slow acknowledgement as a failure and redelivers, so this bounds a slow client, not the gateway: acknowledging is a signature check and one short transaction.
+# default: 10000
+GATEWAY_REQUEST_TIMEOUT=10000
+
+# On a stop signal, how long in-flight notifications are given to be stored and acknowledged before connections are closed. One cut short is not lost: it was never acknowledged, so Meta redelivers it, and duplicate suppression makes the redelivery safe.
+# default: 10000
+GATEWAY_SHUTDOWN_GRACE=10000
 
 # How long an email-verification link remains redeemable. Required by authentication-and-access.md AC11, which mandates a defined expiry for any recovery link or code but prescribes no value.
 # default: 86400000
@@ -390,4 +431,10 @@ STORAGE_SECRET_ACCESS_KEY=
 # Whether to speak TLS to the endpoint. False is appropriate only when the endpoint is reached over a trusted local network, such as a container network on a single host.
 # default: true
 STORAGE_TLS=true
+
+# The Meta app's secret. Every inbound webhook notification carries an HMAC-SHA256 of its body keyed with it (X-Hub-Signature-256), and a notification whose signature does not verify is refused and recorded rather than processed — message-delivery-reliability.md AC2. Without it anyone who finds the webhook URL could inject messages into any tenant's conversations.
+WHATSAPP_APP_SECRET=
+
+# A value you choose and enter in the Meta app dashboard when subscribing the webhook. Meta echoes it once in a GET handshake to prove the subscription request came from the dashboard you control; the gateway answers the handshake only when it matches.
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=
 ```

@@ -38,6 +38,8 @@ import { IDENTITY_CONFIG_SCHEMA } from '@zeddev/identity';
 import { LOGGING_CONFIG_SCHEMA } from '@zeddev/logging';
 import { MAIL_CONFIG_SCHEMA } from '@zeddev/mail';
 import { STORAGE_CONFIG_SCHEMA } from '@zeddev/storage';
+import { WHATSAPP_CONFIG_SCHEMA } from '@zeddev/whatsapp';
+import { GATEWAY_CONFIG_SCHEMA } from '@zeddev/whatsapp-gateway/config';
 
 export interface ConfigSection {
   /** Heading in the generated reference. */
@@ -86,6 +88,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     schema: AI_CONFIG_SCHEMA,
   },
   {
+    title: 'WhatsApp',
+    rationale:
+      "The platform's one Meta app, which every client's number is authorized to. Platform-wide rather than per tenant: a client's own access token is a tenant secret and never an environment value. Both keys are secrets — the app secret is what proves an inbound notification came from Meta (message-delivery-reliability.md AC2), and without it anyone who found the webhook URL could inject messages into any tenant's conversations.",
+    schema: WHATSAPP_CONFIG_SCHEMA,
+  },
+  {
     title: 'Logging',
     rationale:
       'Read by every service. Verbosity is the only thing that varies; what a record may contain does not, because redaction is an allowlist of field names enforced at the logger boundary and applies at every level.',
@@ -96,6 +104,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       'The client and operator HTTP API. API_PUBLIC_BASE_URL and API_TRUSTED_PROXY_HOPS are the two values most likely to differ between a laptop, a VPS, and a managed cloud, and both are stated rather than inferred from the request: a link built from a caller-supplied Host header lets the caller choose where a password-reset link points, and trusting X-Forwarded-For without knowing how many proxies wrote it lets a caller forge the source address the login throttle counts by.',
     schema: API_CONFIG_SCHEMA,
+  },
+  {
+    title: 'WhatsApp gateway service',
+    rationale:
+      'The inbound webhook Meta delivers every message to, deployed apart from the API so that acknowledging a notification never waits on anything else the platform is doing — a slow acknowledgement makes Meta redeliver (message-delivery-reliability.md AC1). Meta only calls public HTTPS URLs, so on a laptop or VPS a TLS-terminating proxy or tunnel forwards to GATEWAY_HTTP_PORT; that forwarding is deployment plumbing, not a code path, so it is the same artifact on every tier.',
+    schema: GATEWAY_CONFIG_SCHEMA,
   },
 ];
 

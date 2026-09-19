@@ -7,8 +7,10 @@
     ".": "./index.ts"
   },
   "dependencies": {
+    "@zeddev/config": "*",
     "@zeddev/db": "*",
-    "@zeddev/errors": "*"
+    "@zeddev/errors": "*",
+    "@zeddev/secrets": "*"
   },
   "devDependencies": {
     "@zeddev/schema": "*",

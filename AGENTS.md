@@ -30,6 +30,7 @@ Run from the repo root.
 | `npm run spec-coverage` | Prints which `specs/*.md` have covering tests and which have none. |
 | `npm run config-reference` | Regenerates `docs/configuration.md` from the config schemas. A test fails the build if the committed file is stale. |
 | `node src/services/api/main.ts` | Runs the API service. Reads every setting from the environment and refuses to start, listing every missing key. |
+| `node src/services/whatsapp-gateway/main.ts` | Runs the inbound WhatsApp webhook (`/v1/whatsapp/webhook`). Needs `DATABASE_*` and `WHATSAPP_*`. |
 | `node src/services/api/cli.ts create-operator --email <addr>` | Creates the platform operator. Password is read from stdin. |
 | `docker compose up -d` (add `--profile local-mail` on a laptop) | Runs the platform from `compose.yaml`. Needs a `.env` and `deploy/secrets/postgres-superuser-password` — see the header of `compose.yaml`. |
 
@@ -88,6 +89,8 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   `dockerfile: src/services/<name>/Dockerfile` entry in `compose.yaml` — a test in `@zeddev/deployment`
   enforces both. A service's own config schema lives in its `config.ts`, exported via a `./config`
   subpath, and is registered in `PLATFORM_CONFIG_SCHEMAS` like any library's.
+- **HTTP plumbing shared by services lives in `@zeddev/http`** (`readBody`, `HttpError`, `SECURITY_HEADERS`) and
+  `loadAll` in `@zeddev/config`. Do not copy them into a new service.
 - **A process entrypoint that is also imported by tests uses `if (import.meta.main)`** to run.
 - **A tenant-scoped API route goes through `asClient(context, action, resource, fn)`** in
   `src/services/api/app.ts` (→ `IdentityService.withClientAction`). It resolves the session, authorizes and
@@ -118,6 +121,8 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   SECURITY`, and a policy; new tenant-scoped tables must also be added to
   `TENANT_SCOPED_TABLES` in `src/lib/schema/index.ts` or the structural test will not
   check them.
+- Tables with a policy granting `app.has_inbound_scope()` (the gateway's attribution context) must be listed in
+  `INBOUND_SCOPE_TABLES`; the structural test scans both `USING` and `WITH CHECK`.
 - Tables reachable from the queue's cross-tenant dispatch context must also be listed in
   `DISPATCH_READABLE_TABLES` in `src/lib/schema/index.ts`; a structural test fails the build if a
   table grants `app.has_dispatch_scope()` without being declared there.
@@ -207,5 +212,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - `ValidationError` sorts its issues by key; assert issue lists in key order.
 - The Write/Edit tools can turn a `\u0000`-style escape into the raw character. Write control-character
   fixtures with a script instead; `src/lib/testing/source-text.test.ts` fails on any raw control character.
+- Long Bash heredocs mixing backticks and apostrophes can fail to parse in the Bash tool. Write the script with
+  the Write tool (e.g. under `C:/Users/Guilherme/AppData/Local/Temp/`) and run it with `node`.
 - Python is not usable on this machine (pyenv shim with no version set). Script file edits with `node`: write the script to a file with a quoted heredoc (`<<'EOF'`) and run
   `node "$(cygpath -w /tmp/x.js)"`. Inline `node -e "…"` mangles backslash escapes and backticks.

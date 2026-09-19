@@ -73,6 +73,9 @@ export const IDENTITY_SCOPE_SETTING = 'app.identity_scope';
 /** Session setting that, when `on`, admits the queue routing tables a worker must read before a tenant is known. */
 export const DISPATCH_SCOPE_SETTING = 'app.dispatch_scope';
 
+/** Session setting that, when `on`, admits the number routes an inbound notification is attributed by. */
+export const INBOUND_SCOPE_SETTING = 'app.inbound_scope';
+
 /**
  * Run `fn` with every query scoped to one tenant.
  *
@@ -171,6 +174,29 @@ export async function withDispatchScope<T>(
 ): Promise<T> {
   return pool.transaction(async (connection) => {
     await connection.query('SELECT set_config($1, $2, true)', [DISPATCH_SCOPE_SETTING, 'on']);
+    return fn(connection);
+  });
+}
+
+/**
+ * Run `fn` with access to the inbound attribution tables, before a tenant is known.
+ *
+ * The fifth scope, and the same ordering constraint once more. A WhatsApp
+ * notification names the number that received it, not a tenant, and
+ * `message-delivery-reliability.md` requires the tenant be *derived* from that
+ * number — so the route must be read before any tenant can be bound. A gateway
+ * that already knew its tenant would be trusting the notification to name one.
+ *
+ * What limits the blast radius is, again, the reach fixed in migration 0013: the
+ * number→tenant routes (read-only) and the rejection log (append-only). Stored
+ * messages carry no inbound policy, so this scope cannot read one.
+ */
+export async function withInboundScope<T>(
+  pool: Pool,
+  fn: (connection: Connection) => Promise<T>,
+): Promise<T> {
+  return pool.transaction(async (connection) => {
+    await connection.query('SELECT set_config($1, $2, true)', [INBOUND_SCOPE_SETTING, 'on']);
     return fn(connection);
   });
 }

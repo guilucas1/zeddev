@@ -26,9 +26,8 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createAiProvider, loadAiSettings, type AiProvider } from '@zeddev/ai';
-import { loadConfig, type RawEnv } from '@zeddev/config';
+import { loadAll, loadConfig, type RawEnv } from '@zeddev/config';
 import { assertTenantIsolationEnforceable, createPool, loadDatabaseConfig, type Pool } from '@zeddev/db';
-import { ConfigurationError, type ConfigIssue } from '@zeddev/errors';
 import { IdentityService, loadIdentityPolicy, type IdentityServiceOptions } from '@zeddev/identity';
 import { Logger, LOGGING_CONFIG_SCHEMA, type LogSink } from '@zeddev/logging';
 import { loadSmtpSettings, SmtpMailer, type Mailer } from '@zeddev/mail';
@@ -55,29 +54,6 @@ export interface RunningApi {
   readonly url: string;
   /** Stop accepting, finish in-flight work within the grace period, release everything. Idempotent. */
   stop(): Promise<void>;
-}
-
-/**
- * Run each loader, collecting every configuration issue across all of them.
- *
- * A loader that throws anything other than `ConfigurationError` is a defect, not
- * a misconfiguration, and is rethrown immediately.
- */
-export function loadAll<T extends readonly (() => unknown)[]>(
-  loaders: T,
-): { [K in keyof T]: T[K] extends () => infer R ? R : never } {
-  const issues: ConfigIssue[] = [];
-  const results = loaders.map((load) => {
-    try {
-      return load();
-    } catch (error) {
-      if (!(error instanceof ConfigurationError)) throw error;
-      issues.push(...error.issues);
-      return undefined;
-    }
-  });
-  if (issues.length > 0) throw new ConfigurationError(issues);
-  return results as { [K in keyof T]: T[K] extends () => infer R ? R : never };
 }
 
 export async function startApi(env: RawEnv = process.env, options: StartOptions = {}): Promise<RunningApi> {
@@ -173,3 +149,5 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
 
   return { server, api, pool, settings, url: `http://${host}:${address.port}`, stop };
 }
+
+export { loadAll } from '@zeddev/config';

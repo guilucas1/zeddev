@@ -1,0 +1,24 @@
+{
+  "name": "@zeddev/whatsapp-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./config": "./config.ts"
+  },
+  "dependencies": {
+    "@zeddev/config": "*",
+    "@zeddev/db": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/http": "*",
+    "@zeddev/logging": "*",
+    "@zeddev/queue": "*",
+    "@zeddev/schema": "*",
+    "@zeddev/secrets": "*",
+    "@zeddev/whatsapp": "*"
+  },
+  "devDependencies": {
+    "@zeddev/testing": "*"
+  }
+}

@@ -16,6 +16,7 @@
  */
 
 import type { IncomingMessage } from 'node:http';
+import { HttpError, readBody } from '@zeddev/http';
 import {
   AuthenticationError,
   AuthorizationError,
@@ -31,29 +32,6 @@ export interface Reply {
   readonly body?: unknown;
   readonly headers?: Readonly<Record<string, string>>;
   readonly cookies?: readonly string[];
-}
-
-/**
- * A failure that belongs to the transport rather than to the domain.
- *
- * Deliberately not a `ZedError`. The taxonomy in `@zeddev/errors` is closed
- * because each kind is a branch some spec-mandated behaviour keys off; "the body
- * was not JSON" and "wrong method" are HTTP facts that nothing outside this
- * service ever branches on, and adding them there would widen a vocabulary every
- * other package must then consider.
- */
-export class HttpError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly headers: Readonly<Record<string, string>>;
-
-  constructor(status: number, code: string, headers: Readonly<Record<string, string>> = {}) {
-    super(code);
-    this.name = 'HttpError';
-    this.status = status;
-    this.code = code;
-    this.headers = headers;
-  }
 }
 
 /**
@@ -123,29 +101,10 @@ export async function readJsonObject(
     throw new HttpError(415, 'request.unsupported_media_type');
   }
 
-  const declared = Number(request.headers['content-length']);
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    request.resume();
-    throw new HttpError(413, 'request.too_large');
-  }
-
-  // A chunked body declares no length, so the bound is also enforced while
-  // reading. Past it the remainder is read and discarded rather than abandoned:
-  // leaving a `for await` early destroys the request stream, and with it the
-  // socket the 413 was supposed to be written to. `API_REQUEST_TIMEOUT` bounds
-  // how long a caller can keep the discard going.
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = chunk as Buffer;
-    size += buffer.length;
-    if (size <= maxBytes) chunks.push(buffer);
-  }
-  if (size > maxBytes) throw new HttpError(413, 'request.too_large');
-
+  const body = await readBody(request, maxBytes);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    parsed = JSON.parse(body.toString('utf8'));
   } catch {
     throw new HttpError(400, 'request.malformed');
   }
@@ -257,19 +216,4 @@ export function clientAddress(
   return chain[Math.max(0, chain.length - 1 - trustedHops)]!;
 }
 
-/**
- * Headers on every response.
- *
- * `no-store` because nearly every response here either sets a session or
- * describes one, and a shared cache holding either is a session handed to the
- * next person behind the same proxy. The CSP forbids everything because this
- * service returns JSON, never a document: if a browser is ever induced to render
- * a response, nothing in it can execute or be framed.
- */
-export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
-  'cache-control': 'no-store',
-  'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
-  'referrer-policy': 'no-referrer',
-  'x-content-type-options': 'nosniff',
-  'x-frame-options': 'DENY',
-};
+export { HttpError, SECURITY_HEADERS } from '@zeddev/http';

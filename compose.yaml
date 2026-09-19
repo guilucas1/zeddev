@@ -80,6 +80,37 @@ services:
     # Longer than API_SHUTDOWN_GRACE's default, so a stop drains rather than kills.
     stop_grace_period: 15s
 
+  whatsapp-gateway:
+    build:
+      context: .
+      dockerfile: src/services/whatsapp-gateway/Dockerfile
+    image: zeddev-whatsapp-gateway
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Meta calls only public HTTPS URLs. Loopback by default: a TLS-terminating
+      # reverse proxy (VPS) or a tunnel (laptop) forwards here, and the webhook URL
+      # given to Meta is that proxy's, ending in /v1/whatsapp/webhook.
+      - "${GATEWAY_PUBLISHED_ADDRESS:-127.0.0.1}:${GATEWAY_PUBLISHED_PORT:-8081}:${GATEWAY_HTTP_PORT:-8081}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:' + (process.env.GATEWAY_HTTP_PORT || 8081) + '/health/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 15s
+
   # Catches outbound mail on a laptop, where there is no relay to send through.
   # Set MAIL_HOST=mailpit, MAIL_PORT=1025, MAIL_TLS=disable in .env; read the mail
   # at http://127.0.0.1:8025.

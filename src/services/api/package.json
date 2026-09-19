@@ -13,6 +13,7 @@
     "@zeddev/config": "*",
     "@zeddev/db": "*",
     "@zeddev/errors": "*",
+    "@zeddev/http": "*",
     "@zeddev/identity": "*",
     "@zeddev/logging": "*",
     "@zeddev/mail": "*",

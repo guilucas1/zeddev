@@ -32,6 +32,7 @@ import {
 import { specTest, unitTest } from '@zeddev/testing';
 import {
   DISPATCH_READABLE_TABLES,
+  INBOUND_SCOPE_TABLES,
   migrateToLatest,
   PLATFORM_READABLE_TABLES,
   TENANT_SCOPED_TABLES,
@@ -177,6 +178,34 @@ describe('baseline schema', { skip: testDatabaseConfigured() ? false : SKIP_REAS
         assert.ok(
           readable.has(row.table_name),
           `${row.table_name} grants the dispatch scope but is not in DISPATCH_READABLE_TABLES`,
+        );
+      }
+    },
+  );
+
+  specTest(
+    'tenant-data-isolation.md',
+    'AC2 no data from one tenant conversation appears in another tenant context',
+    'no table outside the declared inbound-scope list is reachable under the inbound scope',
+    async () => {
+      if (!testDatabaseConfigured()) return;
+      // Checked on both halves of every policy: the rejection log grants the
+      // inbound scope an INSERT, whose expression is a WITH CHECK rather than a
+      // USING, and a scan of USING alone would never see it — nor a future
+      // INSERT policy on a table holding messages.
+      const reachable = new Set<string>(INBOUND_SCOPE_TABLES);
+      const withInboundPolicy = await pool.query<{ table_name: string }>(
+        `SELECT DISTINCT c.relname AS table_name
+           FROM pg_policy p
+           JOIN pg_class c ON c.oid = p.polrelid
+          WHERE COALESCE(pg_get_expr(p.polqual, p.polrelid), '') LIKE '%has_inbound_scope%'
+             OR COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') LIKE '%has_inbound_scope%'`,
+      );
+      assert.ok(withInboundPolicy.rows.length > 0, 'the scan must find a policy, or it proves nothing');
+      for (const row of withInboundPolicy.rows) {
+        assert.ok(
+          reachable.has(row.table_name),
+          `${row.table_name} grants the inbound scope but is not in INBOUND_SCOPE_TABLES`,
         );
       }
     },

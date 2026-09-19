@@ -269,6 +269,33 @@ export function loadConfig<S extends ConfigSchema>(schema: S, env: RawEnv = proc
 }
 
 /**
+ * Run each loader, collecting every configuration issue across all of them.
+ *
+ * A service reads several packages' schemas at startup. Stopping at the first one
+ * that fails would turn configuring a new tier into a fix-one-restart-repeat loop,
+ * which `environment-portability.md` AC7 rules out as firmly as `loadConfig`
+ * rules it out within one schema. A loader that throws anything other than
+ * `ConfigurationError` is a defect, not a misconfiguration, and is rethrown
+ * immediately.
+ */
+export function loadAll<T extends readonly (() => unknown)[]>(
+  loaders: T,
+): { [K in keyof T]: T[K] extends () => infer R ? R : never } {
+  const issues: ConfigIssue[] = [];
+  const results = loaders.map((load) => {
+    try {
+      return load();
+    } catch (error) {
+      if (!(error instanceof ConfigurationError)) throw error;
+      issues.push(...error.issues);
+      return undefined;
+    }
+  });
+  if (issues.length > 0) throw new ConfigurationError(issues);
+  return results as { [K in keyof T]: T[K] extends () => infer R ? R : never };
+}
+
+/**
  * Generate the environment-variable reference documentation from a schema.
  *
  * This is what makes `environment-portability.md` AC6 hold: the documented list

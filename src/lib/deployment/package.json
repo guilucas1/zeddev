@@ -14,7 +14,9 @@
     "@zeddev/identity": "*",
     "@zeddev/logging": "*",
     "@zeddev/mail": "*",
-    "@zeddev/storage": "*"
+    "@zeddev/storage": "*",
+    "@zeddev/whatsapp": "*",
+    "@zeddev/whatsapp-gateway": "*"
   },
   "devDependencies": {
     "@zeddev/testing": "*"

@@ -90,10 +90,19 @@ future conversation worker and the new `POST /v1/bot/preview` both call, which c
 /v1/operator/ai-provider`, ai-provider-portability AC8). See §4q. That brings the totals to 808 passing tests,
 zero skipped, 21 of 27 specs with covering tests, 359 spec-linked assertions.
 
+The inbound half of message delivery is done: a new service, `services/whatsapp-gateway`, verifies Meta's
+webhook signature, attributes each notification to a tenant by its receiving number, stores each message
+exactly once (the stored row *is* the duplicate-suppression record), and schedules it on the durable queue in
+the same transaction before acknowledging. Migration `0013_whatsapp_inbound` adds a fifth RLS scope
+(`app.inbound_scope`), number routes, inbound messages, and a rejection log; `@zeddev/http` now holds the
+shared bounded body reader. See §4r. That brings the totals to 836 passing tests, zero skipped, 21 of 27 specs
+with covering tests, 376 spec-linked assertions.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the
 supported-language list, document upload on accepted document formats and size limits, memory reset policy on
-the default inactivity window. The next unblocked work is P2: the inbound webhook/dedup path (gateway service),
-then burst aggregation and the conversation worker, which calls `generateReply` with the real conversation.
+the default inactivity window. The next unblocked work is P2: the conversation worker — consume
+`inbound_messages` jobs, burst aggregation, then `generateReply` with the real conversation — and the outbound
+send path it needs (see §4r follow-ups for what the worker must honour).
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -465,11 +474,16 @@ call must never be able to cause Meta to redeliver.
   remains is *driving* it: the gateway observing Meta signals, bounded automatic reconnection in the
   scheduler (attempt policy undecided), and offboarding transitioning to `disconnected`.
 - Number replacement as a distinct guided flow that structurally cannot produce a dual-active window.
-- Inbound webhook endpoint: authenticity verification, prompt acknowledgement decoupled from processing,
-  tenant attribution from the receiving number, and rejection-with-record for anything unattributable.
-- **Inbound deduplication.** The highest-risk correctness requirement in the data plane: Meta redelivers,
-  and a missed duplicate check means a double reply and a corrupted transcript.
-- Per-end-customer ordering and durability of accepted-but-unprocessed messages across a worker restart.
+- **[DONE]** Inbound webhook endpoint: `services/whatsapp-gateway` — signature verification, the subscription
+  handshake, acknowledgement only after the message is committed and scheduled, tenant attribution from the
+  receiving number, and rejection-with-record for anything unauthentic, unreadable, or unattributable. AC1–AC4,
+  AC6 (queue half), AC11, AC13, AC17 covered. See §4r.
+- **[DONE]** Inbound deduplication: `inbound_messages` is unique on `(tenant_id, external_id)`, so a redelivery —
+  even after the original job was completed and purged — stores and schedules nothing.
+- **[PARTIAL]** Per-end-customer ordering and durability: messages are stored with the sender's timestamp and
+  listed in send order, scheduled in send order within a notification, partitioned per end-customer on the queue,
+  and survive a gateway restart. What remains is the worker's half: it must re-read pending messages by send
+  time rather than trust job order across notifications (§4r).
 - Burst aggregation into conversational turns, with the quiet-period window, the maximum turn extension,
   mixed-type combination, and exactly-one-reply-per-turn. Per `message-burst-aggregation.md`.
 - **[DONE]** `src/lib/ai` provider port with declared capabilities (text generation, vision, audio transcription),
@@ -1409,6 +1423,63 @@ SMTP).
 - The preview rate limit is per-process; a multi-instance deployment admits N× the limit. Acceptable while the
   platform runs one API instance.
 - The web screen for preview does not exist (`services/web`).
+
+---
+
+## 4r. Findings from the inbound gateway increment
+
+- **The stored message is the duplicate-suppression record.** **[DECISION]** The spec leaves open how long
+  suppression must last. A separate "seen ids" table would need its own retention window, and every choice of
+  window is a bet on Meta's redelivery behaviour. Making `(tenant_id, external_id)` unique on the message itself
+  means suppression lasts exactly as long as the message exists. The queue's `dedupeKey` is still set (belt and
+  braces) but is not what AC4 rests on — a test completes and purges the original job before redelivering.
+- **A fifth RLS scope, `app.inbound_scope`.** Same ordering constraint as identity and dispatch: a notification
+  names a number, not a tenant. Its reach is `whatsapp_number_routes` (read) and `inbound_rejections` (insert)
+  only, declared as `INBOUND_SCOPE_TABLES`; the structural test scans *both* `USING` and `WITH CHECK`
+  expressions, because the rejection log's grant is an INSERT policy that a `USING`-only scan (like the
+  existing platform/dispatch ones) would never see.
+- **Routes are released by trigger on every move to `disconnected`.** So offboarding, a manual disconnect, and a
+  raw `UPDATE` all make the former number unattributable without remembering to (AC13). `reconnecting` and
+  `error` keep the route, so messages sent during recovery are still retained. `assignPhoneNumber` works only
+  while `connecting`; the P2 connection flow is its intended caller.
+- **Acknowledgement statuses.** **[DECISION]** 200 only after commit. Unauthentic → 401 (+ record). Authentic but
+  unusable (malformed, unattributable) → 200 (+ record), because a non-200 makes Meta retry for days with no
+  chance of a different outcome. Database failure → 503 so Meta redelivers; batches that did commit are then
+  suppressed as duplicates.
+- **Signature over the raw bytes.** `readBody` returns the untouched buffer; verifying a re-serialised parse
+  would reject real notifications. A test asserts two byte-different encodings of the same JSON verify differently.
+- **PostgreSQL `jsonb` refuses U+0000.** One NUL in an end-customer's text would fail the insert → 503 → Meta
+  redelivers the same unstorable body forever. The parser strips NUL from text and captions.
+- **Shared HTTP helpers moved to `@zeddev/http`** (`readBody`, `HttpError`, `SECURITY_HEADERS`), and `loadAll` to
+  `@zeddev/config`, rather than copying them into the second service. `services/api` re-exports them unchanged.
+- **The gateway migrates at startup too** (advisory-locked), so neither service needs the other up first.
+- **Bash heredocs in the tool sometimes fail to parse** (`unexpected EOF while looking for matching '`) when a long
+  script mixes backticks and apostrophes. Writing the script with the Write tool and running it with `node` is
+  reliable; see `AGENTS.md`.
+
+### Follow-ups the inbound gateway increment leaves open
+
+- **Conversation worker (next):** consume `INBOUND_QUEUE`/`INBOUND_JOB_KIND` jobs (payload `{ inboundMessageId }`),
+  set `maxInFlightPerTenant` (§4d), re-read the customer's pending messages ordered by `sent_at` (AC5 across
+  notifications — a late-arriving earlier message gets a later job), call `mayAutoRespond` and
+  `fallbackMessageFor` inside the sending transaction, and treat `unsupported` messages via fallback.
+  Track which messages have been answered (a per-message processed marker or a turn table) so a re-run job is
+  idempotent.
+- **Outbound delivery receipts** (`statuses`) are acknowledged and ignored until the outbound path exists.
+- **Media ids expire.** The worker must fetch image/voice media promptly and store it in object storage; the
+  gateway stores only the upstream id.
+- **Rejection flood:** every unauthentic POST writes one `inbound_rejections` row. Bounded by
+  `GATEWAY_MAX_BODY_BYTES` and a cheap HMAC, but a sustained flood grows the table; consider aggregating per
+  minute and reason, or a per-source limiter, if it is ever observed. The table also needs a retention sweep
+  (scheduler).
+- **Meta account-level events** (`account_update`, number quality, revoked permission) arrive on the same webhook
+  and are ignored today; they are the natural signal for driving `reconnecting`/`error` transitions.
+- **Public exposure:** Meta calls public HTTPS only. `compose.yaml` publishes the gateway on loopback
+  (`GATEWAY_PUBLISHED_*`); the proxy or tunnel in front is deployment plumbing still to document per tier.
+- The `whatsapp_number_routes` unique key reveals across tenants that a number is already routed
+  (`whatsapp.number.in_use`). Accepted: Meta itself refuses one number to two apps' tenants.
+- Not yet verified against real Meta traffic; the envelope shape is from Meta's documentation. Run one live
+  delivery through a tunnel before go-live, as §4p recommends for the AI adapters.
 
 ---
 

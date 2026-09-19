@@ -69,6 +69,8 @@ export const TENANT_SCOPED_TABLES = [
   'bot_disclosure_settings',
   'bot_handoff_settings',
   'bot_knowledge_entries',
+  'whatsapp_number_routes',
+  'inbound_messages',
 ] as const;
 
 /**
@@ -92,6 +94,9 @@ export const PLATFORM_READABLE_TABLES = [
   // derived from (`bot-activation-control.md` AC12).
   'bot_activation',
   'bot_activation_events',
+  // Refused inbound notifications — reason, receiving number id, count, time.
+  // Delivery diagnostics, never content (`message-delivery-reliability.md` AC17).
+  'inbound_rejections',
 ] as const;
 
 /**
@@ -108,3 +113,17 @@ export const PLATFORM_READABLE_TABLES = [
  * policy to a table holding content" into a build failure.
  */
 export const DISPATCH_READABLE_TABLES = ['queue_jobs', 'queue_dispatch_cursors'] as const;
+
+/**
+ * Tables reachable under the inbound scope — the cross-tenant context the
+ * WhatsApp gateway runs in while working out which tenant a notification belongs
+ * to.
+ *
+ * Enumerated for the same reason as the two lists above. The scope exists because
+ * the tenant is derived from the receiving number, so the route must be read
+ * before a tenant can be bound; what keeps that safe is that the reachable set is
+ * the routes and the rejection log and nothing else. A test asserting this list
+ * is complete turns "someone gave the inbound scope a policy on stored messages"
+ * into a build failure.
+ */
+export const INBOUND_SCOPE_TABLES = ['whatsapp_number_routes', 'inbound_rejections'] as const;
