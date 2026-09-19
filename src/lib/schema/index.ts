@@ -66,6 +66,7 @@ export const TENANT_SCOPED_TABLES = [
   'bot_behavior_rules',
   'bot_behavior_instructions',
   'bot_fallback_messages',
+  'bot_disclosure_settings',
 ] as const;
 
 /**

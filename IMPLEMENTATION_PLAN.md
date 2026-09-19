@@ -55,8 +55,13 @@ See §4l. That brings the totals to 647 passing tests, zero skipped, 16 of 27 sp
 spec-linked assertions. (The pre-increment "16 of 27" figure recorded below was itself an overcount by one;
 16 of 27 is also the correct post-increment count.)
 
-The next unblocked P1 items are the bot disclosure setting and human handoff enable/disable plus trigger
-configuration. Language configuration is still blocked on the §4 supported-language-list decision; business
+The bot disclosure setting (`bot-disclosure-setting.md`) is done too: two modes, a platform default of
+"disclose" for a tenant that never chose (no row seeded), the prompt section rendered by
+`disclosureDirectives`, migration `0010_bot_disclosure`, and `GET`/`PUT /v1/bot/disclosure`. See §4m. That
+brings the totals to 664 passing tests, zero skipped, 17 of 27 specs with covering tests, 297 spec-linked
+assertions.
+
+The next unblocked P1 item is human handoff enable/disable plus trigger configuration. Language configuration is still blocked on the §4 supported-language-list decision; business
 knowledge configuration is blocked on the §4 accepted-document-formats decision, though its freeform-entries
 half does not depend on it.
 
@@ -399,13 +404,15 @@ call must never be able to cause Meta to redeliver.
   preview. `@zeddev/bot` (`fallback.ts`) plus migration `0009_bot_fallback_messages` and three routes in
   `services/api`, including a preview route for an unsaved draft. 9 of 13 acceptance criteria covered at the
   configuration layer; AC6, AC7, AC10, AC13 need P2's reply path. See §4l.
+- **[DONE]** Bot disclosure setting: `@zeddev/bot` (`disclosure.ts`) plus migration `0010_bot_disclosure` and
+  `GET`/`PUT /v1/bot/disclosure`. 8 of 9 acceptance criteria covered, AC1–AC4 at the instruction layer; AC6
+  (past messages unchanged) needs transcripts. See §4m.
 > **P1 remaining scope.** Everything below this line — language configuration through conversation
 > memory reset policy.
 
 - Language configuration with a platform default, per `language-configuration.md`.
 - Business knowledge configuration: freeform entries plus document upload, with upload failures surfaced
   rather than silently dropped, and a combined listing view.
-- Bot disclosure setting.
 - Human handoff enable/disable and trigger configuration.
 - Conversation memory reset policy configuration (inactivity window plus manual reset).
 
@@ -501,7 +508,8 @@ call must never be able to cause Meta to redeliver.
   `whatsapp-number-connection.md` 8 of 12.) (After the behaviour-rules increment: 16 of 27 specs, 278
   assertions; `behavior-rules-configuration.md` covers 15 of 16, AC16 preview pending the AI port.) (After
   the fallback increment: 16 of 27 specs, 288 assertions; `fallback-response-behavior.md` covers 9 of 13 at
-  the configuration layer.)
+  the configuration layer.) (After the disclosure increment: 17 of 27 specs, 297 assertions;
+  `bot-disclosure-setting.md` covers 8 of 9.)
 
 ---
 
@@ -518,7 +526,9 @@ call must never be able to cause Meta to redeliver.
   statement at the start of every new conversation and flags the session boundary as an open question.
   `conversation-memory.md` already defines exactly that boundary via its reset policy.
   **Recommendation:** define disclosure's "new conversation" as the memory-reset boundary, so there is one
-  concept rather than two that can drift apart.
+  concept rather than two that can drift apart. The disclosure increment (§4m) kept this open deliberately:
+  `disclosureDirectives(mode, { conversationStart })` takes the boundary from its caller, so P2's reply path
+  decides it in one place and the disclosure module needs no change either way.
 - **Zero-cost operation may not survive contact with Meta's pricing.**
   `cost-efficient-operation.md` requires that the platform be operable end-to-end — "bot conversations,
   hosting, storage" — at no cost at low volume. AI and hosting can plausibly be free-tier. WhatsApp
@@ -1159,6 +1169,39 @@ SMTP).
 - The spec's own new open question: whether the fallback screen should show the client's active behaviour
   rules and persona, to help the client author compliant text.
 - The web screen for fallback configuration does not exist (`services/web`).
+
+---
+
+## 4m. Findings from the disclosure increment
+
+- **The default is the absence of a row, not a seeded row.** **[DECISION]** AC8 requires a new bot to have a
+  defined mode without the client configuring it. Seeding a row at tenant creation was rejected: tenants are
+  created under the identity scope before any tenant is bound, so a seeding trigger or insert would need a
+  policy letting the identity scope write bot configuration — widening the one scope that crosses tenants.
+  Test fixtures insert tenants under that scope too, which is how the problem surfaced. So a tenant with no
+  row follows `PLATFORM_DEFAULT_DISCLOSURE_MODE` ("disclose", the spec's stated assumption), and the view
+  reports `source: 'platform_default'` vs `'client'` so the screen is accurate either way (AC9).
+- **The cost of that shape is recorded where someone changing it will look.** Changing the platform default
+  would silently flip every tenant that never chose. Migration 0010's header and the constant's doc comment
+  both say a default change must first be a migration that materialises the *old* default per never-chosen
+  tenant (binding each tenant, as 0007's backfill does). An explicit choice of the default mode is still
+  stored as a choice, so it survives such a change.
+- **The mode is required on save; there is no "reset to default".** A save with the field missing is a 400,
+  not a return to the default, because a form that forgot the field would otherwise flip the bot's behaviour.
+  Exact values only — no case-folding — so "exactly two modes" cannot widen.
+- **"Do not disclose" renders no instruction about denial.** The spec does not require denial and assigns
+  whether evasion or denial is allowed to behaviour rules, so `disclosureDirectives` forbids volunteering
+  and says nothing else; a test asserts the do-not-disclose text does not mention humans at all.
+
+### Follow-ups the disclosure increment leaves open
+
+- P2's prompt assembly must call `disclosureDirectives(disclosureModeFor(tx), { conversationStart })` in the
+  reply transaction and decide `conversationStart` (§3 recommends the memory-reset boundary).
+- AC1–AC4 need output-level tests once the reply path and AI port exist; AC6 needs transcripts (P3).
+- The disclosure statement's exact wording is left to the model in the persona's voice. If deterministic
+  wording is ever required (e.g., for a regulated client), the reply path would prepend literal text instead,
+  the way fallback text is sent verbatim.
+- The web screen for disclosure does not exist (`services/web`).
 
 ---
 

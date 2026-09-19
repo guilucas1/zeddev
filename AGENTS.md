@@ -200,3 +200,4 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - In the Bash tool (Git Bash on Windows), `node` does not understand `/tmp/...` paths. Pass files to
   `node -e` scripts via `$(cygpath -w /tmp/file)`.
 - `ValidationError` sorts its issues by key; assert issue lists in key order.
+- Python is not usable on this machine (pyenv shim with no version set). Script file edits with `node -e`.

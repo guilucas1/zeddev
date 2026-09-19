@@ -49,6 +49,7 @@ import {
   describeBehaviorRule,
   describeBehaviorRules,
   describeBotStatus,
+  describeDisclosureSetting,
   describeFallbackMessages,
   describePersona,
   listBotStatuses,
@@ -57,9 +58,11 @@ import {
   readActivationHistory,
   readBehaviorRules,
   readBotStatus,
+  readDisclosureSetting,
   readFallbackMessages,
   readPersona,
   saveBehaviorInstructions,
+  saveDisclosureSetting,
   saveFallbackMessages,
   savePersona,
   setBehaviorRuleEnabled,
@@ -537,6 +540,32 @@ export function createApi(dependencies: ApiDependencies): Api {
           previewFallbackDraft(body),
         );
         return { status: 200, body: { preview } };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Disclosure — bot-disclosure-setting.md. A never-chosen bot reads as the
+    // platform default, with `source` saying so.
+    // -----------------------------------------------------------------------
+    {
+      method: 'GET',
+      path: '/v1/bot/disclosure',
+      handle: async (context) => {
+        const setting = await asClient(context, 'tenant.configuration.read', 'bot.disclosure', (tx) =>
+          readDisclosureSetting(tx),
+        );
+        return { status: 200, body: describeDisclosureSetting(setting) };
+      },
+    },
+    {
+      method: 'PUT',
+      path: '/v1/bot/disclosure',
+      handle: async (context) => {
+        const body = await context.body();
+        const setting = await asClient(context, 'tenant.configuration.write', 'bot.disclosure', (tx) =>
+          saveDisclosureSetting(tx, body),
+        );
+        return { status: 200, body: describeDisclosureSetting(setting) };
       },
     },
 

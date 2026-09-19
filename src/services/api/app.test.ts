@@ -1010,6 +1010,55 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   });
 
   // -------------------------------------------------------------------------
+  // Bot configuration: disclosure
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'bot-disclosure-setting.md',
+    'AC9 the configuration view displays the currently active mode accurately',
+    'a new client sees the defaulted mode over HTTP, and after a change sees the chosen one',
+    async () => {
+      const { cookie } = await onboard();
+      const initial = await call(served, 'GET', '/v1/bot/disclosure', { cookie });
+      assert.equal(initial.status, 200);
+      assert.deepEqual(initial.body, {
+        mode: 'disclose',
+        source: 'platform_default',
+        updatedAt: null,
+        modes: ['disclose', 'do_not_disclose'],
+        platformDefault: 'disclose',
+      });
+
+      const saved = await call(served, 'PUT', '/v1/bot/disclosure', { cookie, json: { mode: 'do_not_disclose' } });
+      assert.equal(saved.status, 200);
+      assert.equal(saved.body.mode, 'do_not_disclose');
+      assert.equal(saved.body.source, 'client');
+      assert.deepEqual((await call(served, 'GET', '/v1/bot/disclosure', { cookie })).body, saved.body);
+    },
+  );
+
+  unitTest('disclosure routes refuse invalid input, other tenants, and anonymous or cross-site callers', async () => {
+    const alpha = await onboard();
+    const beta = await onboard();
+    await call(served, 'PUT', '/v1/bot/disclosure', { cookie: alpha.cookie, json: { mode: 'do_not_disclose' } });
+    assert.equal((await call(served, 'GET', '/v1/bot/disclosure', { cookie: beta.cookie })).body.mode, 'disclose');
+
+    const invalid = await call(served, 'PUT', '/v1/bot/disclosure', { cookie: beta.cookie, json: { mode: 'maybe' } });
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(invalid.body.error.issues, [{ key: 'mode', reason: 'must be one of: disclose, do_not_disclose' }]);
+
+    assert.equal((await call(served, 'GET', '/v1/bot/disclosure')).status, 401);
+    assert.equal((await call(served, 'PUT', '/v1/bot/disclosure', { json: { mode: 'disclose' } })).status, 401);
+    const forged = await call(served, 'PUT', '/v1/bot/disclosure', {
+      cookie: alpha.cookie,
+      headers: { origin: 'https://example.org' },
+      json: { mode: 'disclose' },
+    });
+    assert.equal(forged.status, 403);
+    assert.equal((await call(served, 'GET', '/v1/bot/disclosure', { cookie: alpha.cookie })).body.mode, 'do_not_disclose');
+  });
+
+  // -------------------------------------------------------------------------
   // Readiness, the go-live toggle, and the connection state
   // -------------------------------------------------------------------------
 
