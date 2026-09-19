@@ -75,10 +75,18 @@ too: add/edit/remove of unstructured entries, the listing, the prompt section re
 skipped, 18 of 27 specs with covering tests, 316 spec-linked assertions. (The "18 of 27" recorded after the
 handoff increment was an overcount by one: `npm run spec-coverage` reported 17 before this increment.)
 
+The AI provider port (`ai-provider-portability.md`) is done as a new library, `@zeddev/ai`: declared
+capabilities (text, vision, audio), a registry keyed by provider name, configuration-driven selection
+(`AI_*` keys), two real adapters — Gemini `generateContent` and OpenAI-compatible `/chat/completions` +
+`/audio/transcriptions` — an in-memory fake, and one conformance suite run against all three. See §4p. That
+brings the totals to 785 passing tests, zero skipped, 20 of 27 specs with covering tests, 347 spec-linked
+assertions.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the
 supported-language list, document upload on accepted document formats and size limits, memory reset policy on
-the default inactivity window. The next unblocked work is P2: the `src/lib/ai` provider port (with two
-adapters, per §2) and the inbound webhook/dedup path are the best candidates, since neither needs a decision.
+the default inactivity window. The next unblocked work is P2: the inbound webhook/dedup path (gateway service),
+and prompt assembly (one function composing the `@zeddev/bot` directive renderers into `instructions` for
+`@zeddev/ai`). Behaviour-rules AC16 (preview) is now unblocked too, since the AI port exists.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -457,8 +465,10 @@ call must never be able to cause Meta to redeliver.
 - Per-end-customer ordering and durability of accepted-but-unprocessed messages across a worker restart.
 - Burst aggregation into conversational turns, with the quiet-period window, the maximum turn extension,
   mixed-type combination, and exactly-one-reply-per-turn. Per `message-burst-aggregation.md`.
-- `src/lib/ai` provider port with declared capabilities (text generation, vision, audio transcription),
-  a registry, and configuration-driven selection.
+- **[DONE]** `src/lib/ai` provider port with declared capabilities (text generation, vision, audio transcription),
+  a registry, and configuration-driven selection. Two adapters (Gemini, OpenAI-compatible), an in-memory fake,
+  and a shared conformance suite. AC1, AC2, AC3, AC5, AC8 covered; AC4 (verification mode) is P4; AC6/AC7 are
+  structural (no tenant on any port call, instructions sent unchanged) but have no dedicated test. See §4p.
 - **[DECISION] Default provider: Google Gemini free tier**, because it covers text, vision, and audio in
   one free-tier provider, which keeps the v1 dependency count at one. A second adapter should be built
   early — the portability requirement in `ai-provider-portability.md` is unfalsifiable with only one
@@ -534,6 +544,8 @@ call must never be able to cause Meta to redeliver.
   `bot-disclosure-setting.md` covers 8 of 9.) (After the handoff-configuration increment: 303
   assertions; `human-handoff.md` covers AC1–AC5 of 13.) (After the knowledge-entries increment: 18 of 27 specs,
   316 assertions; `business-knowledge-configuration.md` covers 10 of 12 criteria — AC3/AC4 are document upload.)
+  (After the AI port increment: 20 of 27 specs, 347 assertions; `ai-provider-portability.md` covers AC1, AC2,
+  AC3, AC5, AC8; `voice-message-understanding.md` gained its first two at the port layer.)
 
 ---
 
@@ -1307,6 +1319,51 @@ SMTP).
   through `knowledgeDirectives`, not render entries itself.
 - AC5–AC8 need output-level tests once P2's reply path and AI port exist.
 - The web screen for knowledge does not exist (`services/web`).
+
+## 4p. Findings from the AI provider port increment
+
+- **Tested against local stubs of each upstream, not a live model.** **[DECISION]** Unlike MinIO and Mailpit, a
+  real model needs a credential in CI, spends the free-tier quota the platform itself depends on, and cannot be
+  made to return a 429, a safety block, or a stalled body on demand. The stubs (`src/lib/ai/stubs.ts`) *decode*
+  each wire format back into the port's vocabulary before consulting the same `ScriptedBackend` the fake uses,
+  so "the model saw exactly this conversation" is asserted against what crossed the socket. **Risk:** the stubs
+  are written from the providers' documentation. Before go-live, run one manual smoke test per adapter against
+  the real upstream (Gemini free tier; Groq or a local Ollama for the OpenAI-compatible adapter).
+- **Unverified: thinking models and `maxOutputTokens`.** Gemini 2.5 models think by default, and reasoning
+  tokens may count against the output bound. With a small bound the reply could come back empty
+  (`ai.empty_response`). Check during the smoke test; if confirmed, either give the reply path headroom or add a
+  thinking-budget setting to the Gemini adapter.
+- **A second, non-retryable AI error class.** `AiRequestRejectedError` in `@zeddev/errors`: same kind
+  (`ai_generation`, so fallback catches both) but `retryable = false`, for a bad credential, a missing model, a
+  malformed request, a content-filter block, or a capability the model lacks. Retrying those only burns quota.
+- **Validation, merging, retry, and classification are written once and shared by every adapter and the fake.**
+  `normalizeGeneration` merges consecutive same-side turns and adjacent texts (joined with a blank line), so a
+  swap cannot change how a burst is shown to the model. `runAttempts` owns retry: 408/425/429/5xx, timeouts,
+  and dropped connections are retried; everything else is not. The fake reports scripted failures as HTTP
+  statuses and goes through the same loop, so it cannot drift from the adapters.
+- **Capabilities are declared (`AI_CAPABILITIES`), not probed.** A model's capabilities belong to the model,
+  and probing costs quota. A request needing an undeclared capability is refused before anything is sent
+  (`ai.capability_unsupported`). Accepted media types are the *intersection* of the two upstreams (JPEG/PNG/WebP;
+  OGG/MP3/WAV/FLAC), so a swap cannot change which media is understood. WhatsApp AMR/AAC/MP4 audio is refused
+  (transcoding is not in scope); `audioMediaType`/`imageMediaType` map WhatsApp's raw types.
+- **Upstream quirks are handled in the adapter, not the loop.** Gemini answers a bad key with 400 +
+  `API_KEY_INVALID`; the adapter reports it as 401 so the operator sees `ai.unauthorized`. Upstream error
+  *messages* are never read (they quote the request back); only code-shaped values survive `safeProviderCode`.
+  The Gemini key goes in `x-goog-api-key`, never `?key=`.
+- **`Retry-After` is honoured up to 20 s (`MAX_RETRY_WAIT_MS`), then the call fails at once.** A free-tier 429
+  means either "this minute" or "today"; waiting out the second would hold a worker for hours.
+- **The per-attempt timeout runs on the injected `Clock`**, so `FakeClock` drives it.
+- **`fetch`, not the hand-written transport from `@zeddev/storage`.** That transport exists because SigV4 signs
+  exact headers; neither AI upstream signs anything, and `fetch` gives abort-covers-body and native multipart.
+
+### Follow-ups the AI port increment leaves open
+
+- **No service loads `AI_*` yet.** The keys are in `docs/configuration.md` but not in `compose.yaml`; they
+  belong to the conversation worker, and to `services/api` once preview (behaviour-rules AC16) is built.
+- AC8 needs an operator-visible surface (e.g. `GET /v1/operator/ai-provider` returning `descriptor`) once a
+  service holds the provider.
+- AC4 verification mode and a candidate-provider configuration: P4.
+- AC7: an output-level check that no provider identity reaches an end-customer needs the reply path.
 
 ---
 

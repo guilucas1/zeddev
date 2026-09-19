@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { specTest, unitTest } from '@zeddev/testing';
 import {
   AiGenerationError,
+  AiRequestRejectedError,
   AuthenticationError,
   AuthorizationError,
   ConfigurationError,
@@ -245,6 +246,7 @@ unitTest('every error class reports a kind drawn from the closed vocabulary', ()
     new TerminalTransportError('m', { code: 'c' }),
     new ConnectionRevokedError({ tenantId: 't', reason: 'r' }),
     new AiGenerationError('m', { code: 'c' }),
+    new AiRequestRejectedError('m', { code: 'c' }),
     new MediaRetrievalError({ mediaId: 'm', retryCount: 0 }),
     new OutsideServiceWindowError({ tenantId: 't', hoursSinceLastInbound: 25 }),
     new DuplicateError({ resource: 'r', externalId: 'e' }),

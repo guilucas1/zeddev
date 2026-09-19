@@ -1,0 +1,19 @@
+{
+  "name": "@zeddev/ai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./testing": "./testing.ts"
+  },
+  "dependencies": {
+    "@zeddev/config": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/secrets": "*",
+    "@zeddev/time": "*"
+  },
+  "devDependencies": {
+    "@zeddev/testing": "*"
+  }
+}

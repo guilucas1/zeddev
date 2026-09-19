@@ -97,6 +97,21 @@ Carries the email-verification and password-reset links that client-signup-and-t
 | `MAIL_TLS` | enum(disable\|starttls\|implicit) | no | `starttls` | How TLS is reached: "starttls" upgrades an established cleartext connection and fails if the server does not offer it, "implicit" speaks TLS from the first byte, "disable" does not encrypt at all and is appropriate only over a trusted local network such as a container network on a single host. There is deliberately no opportunistic mode — a silent fallback to cleartext is a downgrade nothing observes. |
 | `MAIL_USERNAME` | string | no | `` | Account to authenticate as. Empty means do not authenticate, which is correct for a local relay that accepts mail from its own host and for nothing else. |
 
+## AI provider
+
+The model that writes every bot reply, reads images, and transcribes voice notes. ai-provider-portability.md requires swapping it — and reverting the swap — be a configuration change, so these keys are the whole mechanism: one platform-wide selection, applied to every tenant at once, with no per-provider tenant state to migrate. The base URL is always stated rather than defaulted, so a deployment can point the same adapter at a vendor, a gateway, or a local model server without a code change. AI_CAPABILITIES records what the chosen model can do; a message needing anything else is answered with the fallback message the client wrote rather than sent to a model that cannot handle it.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `AI_API_KEY` | string | no | `<secret>` | Credential for the provider. Empty sends none, which is correct for a local model server and for nothing reachable over the internet. **(secret)** |
+| `AI_BASE_URL` | url | yes | — | API root the adapter appends its paths to — the Gemini "v1beta" root, or the "/v1" root of an OpenAI-compatible server. Always stated, never defaulted, so the deployment names its upstream in configuration rather than in code. |
+| `AI_CAPABILITIES` | string | no | `text,vision,audio` | Comma-separated list of what the configured model can do: text, vision (understand images), audio (transcribe voice notes). "text" is required. A message needing a capability not listed here is answered with the client's fallback message instead of being sent to a model that cannot handle it. |
+| `AI_MAX_ATTEMPTS` | integer | no | `3` | Attempts per reply before the failure is surfaced and fallback applies. Only transient failures (rate limits, timeouts, 5xx) are retried; a rejected credential, a missing model, or a withheld reply is not, because a second attempt would only spend quota. |
+| `AI_MODEL` | string | yes | — | Model that generates replies, exactly as the provider names it. |
+| `AI_PROVIDER` | enum(gemini\|openai_compatible) | no | `gemini` | Which adapter speaks to the model: "gemini" for the Gemini generateContent API, "openai_compatible" for any server exposing /chat/completions (OpenAI, Groq, OpenRouter, or a local Ollama or llama.cpp server). Applies to every tenant at once. Changing it back reverts the swap; no tenant configuration is stored per provider, so nothing needs re-entering. |
+| `AI_REQUEST_TIMEOUT` | duration | no | `60000` | How long one request to the provider may take, including reading the response. A request that exceeds it counts as a transient failure and is retried within AI_MAX_ATTEMPTS. |
+| `AI_TRANSCRIPTION_MODEL` | string | no | `` | Model that transcribes voice notes, when it is not AI_MODEL. Required for "openai_compatible" when AI_CAPABILITIES includes audio, because those servers transcribe with a dedicated speech model (e.g. whisper-large-v3) rather than the chat model. Empty means AI_MODEL. |
+
 ## Logging
 
 Read by every service. Verbosity is the only thing that varies; what a record may contain does not, because redaction is an allowlist of field names enforced at the logger boundary and applies at every level.
@@ -124,6 +139,36 @@ The client and operator HTTP API. API_PUBLIC_BASE_URL and API_TRUSTED_PROXY_HOPS
 ## Template
 
 ```sh
+# Credential for the provider. Empty sends none, which is correct for a local model server and for nothing reachable over the internet.
+AI_API_KEY=
+
+# API root the adapter appends its paths to — the Gemini "v1beta" root, or the "/v1" root of an OpenAI-compatible server. Always stated, never defaulted, so the deployment names its upstream in configuration rather than in code.
+AI_BASE_URL=https://example.com/v1
+
+# Comma-separated list of what the configured model can do: text, vision (understand images), audio (transcribe voice notes). "text" is required. A message needing a capability not listed here is answered with the client's fallback message instead of being sent to a model that cannot handle it.
+# default: text,vision,audio
+AI_CAPABILITIES=text,vision,audio
+
+# Attempts per reply before the failure is surfaced and fallback applies. Only transient failures (rate limits, timeouts, 5xx) are retried; a rejected credential, a missing model, or a withheld reply is not, because a second attempt would only spend quota.
+# default: 3
+AI_MAX_ATTEMPTS=3
+
+# Model that generates replies, exactly as the provider names it.
+AI_MODEL=gemini-2.5-flash
+
+# Which adapter speaks to the model: "gemini" for the Gemini generateContent API, "openai_compatible" for any server exposing /chat/completions (OpenAI, Groq, OpenRouter, or a local Ollama or llama.cpp server). Applies to every tenant at once. Changing it back reverts the swap; no tenant configuration is stored per provider, so nothing needs re-entering.
+# one of: gemini, openai_compatible
+# default: gemini
+AI_PROVIDER=gemini
+
+# How long one request to the provider may take, including reading the response. A request that exceeds it counts as a transient failure and is retried within AI_MAX_ATTEMPTS.
+# default: 60000
+AI_REQUEST_TIMEOUT=60000
+
+# Model that transcribes voice notes, when it is not AI_MODEL. Required for "openai_compatible" when AI_CAPABILITIES includes audio, because those servers transcribe with a dedicated speech model (e.g. whisper-large-v3) rather than the chat model. Empty means AI_MODEL.
+# default: 
+AI_TRANSCRIPTION_MODEL=
+
 # Unauthenticated requests one source may make to the credential and recovery endpoints (signup, login, verification, password reset) per API_ANONYMOUS_RATE_WINDOW. The per-source half of the login throttle authentication-and-access.md AC12 requires; the per-account half is IDENTITY_LOGIN_MAX_FAILED_ATTEMPTS. Counted per process, so N instances admit up to N times this.
 # default: 30
 API_ANONYMOUS_RATE_LIMIT=30

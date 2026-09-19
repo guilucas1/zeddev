@@ -369,6 +369,33 @@ export class AiGenerationError extends ZedError {
 }
 
 /**
+ * The AI provider refused the request, and asking again will not change that.
+ *
+ * Same `kind` as `AiGenerationError`, deliberately: to `fallback-response-
+ * behavior.md` both are "the bot could not produce an answer", and a handler that
+ * routes on `kind === 'ai_generation'` must catch both. A separate class because
+ * `retryable` is a property of the type here, and a rejected credential, a model
+ * that does not exist, a request the provider calls malformed, a reply withheld by
+ * the provider's content filter, or a capability the configured model does not
+ * have is not worth a second attempt — retrying it burns free-tier quota the next
+ * customer's message needs, and delays that customer's fallback for nothing.
+ */
+export class AiRequestRejectedError extends ZedError {
+  override readonly kind = 'ai_generation' as const;
+  override readonly retryable = false;
+
+  constructor(
+    message: string,
+    options: ZedErrorOptions & { readonly provider?: string | undefined },
+  ) {
+    super(message, {
+      ...options,
+      context: { ...(options.context ?? {}), provider: options.provider ?? null },
+    });
+  }
+}
+
+/**
  * Media referenced by an inbound message could not be retrieved.
  *
  * `message-delivery-reliability.md` AC14/AC15 give media retrieval its own retry

@@ -30,6 +30,7 @@
  * register one is the only way this could still drift, and it is closed.
  */
 
+import { AI_CONFIG_SCHEMA } from '@zeddev/ai';
 import { API_CONFIG_SCHEMA } from '@zeddev/api/config';
 import { renderEnvTemplate, renderReference, type ConfigSchema } from '@zeddev/config';
 import { DATABASE_CONFIG_SCHEMA } from '@zeddev/db';
@@ -77,6 +78,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       'Carries the email-verification and password-reset links that client-signup-and-tenancy.md and authentication-and-access.md require. Any SMTP server: a container on a laptop, a relay on a VPS, a provider in a managed cloud — one adapter reached through different values, for the same reason object storage has one S3 adapter. MAIL_TLS is stated rather than inferred from the port, because "465 means implicit and 587 means STARTTLS" is environment detection wearing a disguise; and there is deliberately no opportunistic mode, because a silent fallback to cleartext is a downgrade nothing observes until the credentials are already on the wire.',
     schema: MAIL_CONFIG_SCHEMA,
+  },
+  {
+    title: 'AI provider',
+    rationale:
+      'The model that writes every bot reply, reads images, and transcribes voice notes. ai-provider-portability.md requires swapping it — and reverting the swap — be a configuration change, so these keys are the whole mechanism: one platform-wide selection, applied to every tenant at once, with no per-provider tenant state to migrate. The base URL is always stated rather than defaulted, so a deployment can point the same adapter at a vendor, a gateway, or a local model server without a code change. AI_CAPABILITIES records what the chosen model can do; a message needing anything else is answered with the fallback message the client wrote rather than sent to a model that cannot handle it.',
+    schema: AI_CONFIG_SCHEMA,
   },
   {
     title: 'Logging',

@@ -62,6 +62,11 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   `runMailConformance(harness)` from `@zeddev/mail/testing` is the single definition of the
   port's semantics and runs against both the SMTP adapter and the in-memory fake. Import
   `InMemoryMailer` only from `@zeddev/mail/testing`, never from `@zeddev/mail`.
+- **A new AI adapter must pass `runAiConformance(harness)`** from `@zeddev/ai/testing`, run against a
+  local stub of its upstream (`startAiStub`) — see `src/lib/ai/conformance.test.ts` — and be registered in
+  `AI_PROVIDERS` (`src/lib/ai/registry.ts`). Adapters only encode and decode; validation, turn merging, retry,
+  and failure classification live in `request.ts`/`attempts.ts` and are shared. Import `InMemoryAiProvider`
+  only from `@zeddev/ai/testing`.
 - **Message bytes are built in exactly one place**: `buildMessage` in `src/lib/mail/message.ts`.
   Both adapters call it, which is what makes the fake's validation and encoding identical to the
   real one's. Do not let an adapter assemble headers itself.
