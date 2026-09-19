@@ -98,11 +98,23 @@ the same transaction before acknowledging. Migration `0013_whatsapp_inbound` add
 shared bounded body reader. See §4r. That brings the totals to 836 passing tests, zero skipped, 21 of 27 specs
 with covering tests, 376 spec-linked assertions.
 
+The conversation worker is done too: a new library, `@zeddev/conversation`, turns bursts of inbound messages
+into conversational turns, assembles per-customer memory for the model, and records exactly one outcome per
+turn; a new service, `services/conversation-worker`, consumes the queue `services/whatsapp-gateway` schedules
+onto. Migration `0014_conversation_turns` adds `conversations` (one lock row per end-customer per tenant),
+`conversation_turns`, `inbound_dispositions`, `conversation_turn_outcomes` (the pending outbox the future
+outbound sender drains), and `conversation_handoff_events`. A new route,
+`POST /v1/conversations/handoff/resume`, lets a client resume a paused conversation. Alongside it, a queue fix:
+`waitForWork` in both adapters now wakes for the next delayed job's due time instead of only the idle timeout,
+which had been silently delaying every retry and turn close by up to 30 s. See §4s. That brings the totals to
+889 passing tests, zero skipped, 23 of 27 specs with covering tests, 409 spec-linked assertions.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the
 supported-language list, document upload on accepted document formats and size limits, memory reset policy on
-the default inactivity window. The next unblocked work is P2: the conversation worker — consume
-`inbound_messages` jobs, burst aggregation, then `generateReply` with the real conversation — and the outbound
-send path it needs (see §4r follow-ups for what the worker must honour).
+the default inactivity window. The next unblocked work is the WhatsApp connection flow — it stores the
+tenant's access token as a tenant secret, which both the outbound sender and media retrieval need — then the
+outbound sender that drains `conversation_turn_outcomes` rows with `delivery_state = 'pending'`, then image and
+voice understanding, which replace the "could not be viewed/listened to" notes.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -394,10 +406,11 @@ call must never be able to cause Meta to redeliver.
   `client_sessions`, `account_tokens`, `operators`, `operator_sessions`, `access_records`,
   `tenant_secrets`, `secret_access_records`.
 
-> **P0 is complete.** Still-open follow-ups, carried forward rather than blocking anything: setting
-> `maxInFlightPerTenant` and calling `purgeSucceeded` from the scheduler (queue, §4d), and calling
-> `verifyAccess()` from any service that holds an object store (storage, §4e) — none does yet, which is
-> also why object storage (MinIO) is not in `compose.yaml`: there is nothing in it to run against.
+> **P0 is complete.** Still-open follow-ups, carried forward rather than blocking anything:
+> `maxInFlightPerTenant` is now set by `services/conversation-worker` (§4s); `purgeSucceeded` still has no
+> caller (queue, §4d), and neither does `verifyAccess()` from any service that holds an object store (storage,
+> §4e) — none does yet, which is also why object storage (MinIO) is not in `compose.yaml`: there is nothing in
+> it to run against.
 
 ### P1 — Control plane (a client can sign up, configure, and reach "ready")
 
@@ -480,12 +493,14 @@ call must never be able to cause Meta to redeliver.
   AC6 (queue half), AC11, AC13, AC17 covered. See §4r.
 - **[DONE]** Inbound deduplication: `inbound_messages` is unique on `(tenant_id, external_id)`, so a redelivery —
   even after the original job was completed and purged — stores and schedules nothing.
-- **[PARTIAL]** Per-end-customer ordering and durability: messages are stored with the sender's timestamp and
+- **[DONE]** Per-end-customer ordering and durability: messages are stored with the sender's timestamp and
   listed in send order, scheduled in send order within a notification, partitioned per end-customer on the queue,
-  and survive a gateway restart. What remains is the worker's half: it must re-read pending messages by send
-  time rather than trust job order across notifications (§4r).
-- Burst aggregation into conversational turns, with the quiet-period window, the maximum turn extension,
-  mixed-type combination, and exactly-one-reply-per-turn. Per `message-burst-aggregation.md`.
+  and survive a gateway restart. The worker's half is pull-based admission under the conversation lock, ordered
+  by send time within a turn. See §4s.
+- **[DONE]** Burst aggregation into conversational turns, with the quiet-period window, the maximum turn
+  extension, mixed-type combination, and exactly-one-reply-per-turn, in `@zeddev/conversation`. See §4s. AC2
+  (combined understanding of an image and a voice message) needs media understanding; AC12 (reset window
+  independence) needs the memory reset policy. Per `message-burst-aggregation.md`.
 - **[DONE]** `src/lib/ai` provider port with declared capabilities (text generation, vision, audio transcription),
   a registry, and configuration-driven selection. Two adapters (Gemini, OpenAI-compatible), an in-memory fake,
   and a shared conformance suite. AC1, AC2, AC3, AC5, AC8 covered; AC4 (verification mode) is P4; AC6/AC7 are
@@ -496,27 +511,30 @@ call must never be able to cause Meta to redeliver.
   adapter, so building the second is really a test of the first.
 - **[PARTIAL]** Prompt assembly from tenant configuration: `replyInstructions` in `@zeddev/bot` (`reply.ts`)
   composes persona, disclosure, knowledge entries, behaviour rules, handoff, and the output protocol, and
-  `interpretReply` reads the answer back. Still to add as they land: language (blocked on §4), retrieved
-  knowledge (today every entry is rendered whole), and conversation memory (the worker supplies `turns`).
-  See §4q.
-- Conversation memory: per-end-customer-per-tenant context, unified across text/image/voice, inactivity
-  and manual reset, and the guarantee that reset affects active context only and never the stored
-  transcript.
+  `interpretReply` reads the answer back. Conversation memory is now supplied (up to 20 turns, from
+  `@zeddev/conversation`). Still to add as they land: language (blocked on §4), retrieved knowledge (today
+  every entry is rendered whole), and the reset boundary. See §4q, §4s.
+- **[PARTIAL]** Conversation memory: `@zeddev/conversation` (`context.ts`) supplies a unified
+  per-end-customer-per-tenant context across text/image/voice, capped at `CONVERSATION_LIMITS.contextTurns` =
+  20 turns; the stored transcript itself is untouched. Inactivity and manual reset are still blocked on the §4
+  default-inactivity-window decision. See §4s.
 - Knowledge retrieval grounding over configured freeform entries and ingested documents.
 - Outbound send with transient retry and backoff, exactly-once delivery from the end-customer's
   perspective, terminal-failure recording feeding the operator metrics, and connection-state feedback when
   a send failure indicates the connection itself is broken.
 - 24-hour customer service window detection and handling — **blocked on a product decision**, see §4.
-- Fallback execution across all three triggers, including the path where AI generation itself failed and
-  the message must come from stored literal text rather than being generated.
+- **[PARTIAL]** Fallback execution across all three triggers, plus the new `not_understood` cause, are decided
+  and recorded with literal text in the outbox (`conversation_turn_outcomes`); actually sending it is the
+  outbound sender's. See §4s.
 - Image understanding, including captions, multiple images per turn, and text visible within images.
   Derived understanding must be **persisted**, not transient — `client-conversation-visibility.md`
   requires the client see what the bot understood from an image in the transcript.
 - Voice note transcription, with transcription artifacts stripped from replies, and transcript persistence
   for the same reason.
-- Human handoff: trigger detection, per-conversation pause, client notification with identifying context,
-  continued receipt and retention of messages while paused, client-initiated resume, and a system-side
-  resumption condition.
+- **[PARTIAL]** Human handoff: trigger detection via the reply protocol, per-conversation pause, held
+  messages, client-initiated resume (`POST /v1/conversations/handoff/resume`), and history are done. Client
+  notification (blocked on channel decision), a system-side resumption condition, and a status listing (P3
+  visibility) remain. See §4s.
 
 ### P3 — Visibility
 
@@ -568,7 +586,9 @@ call must never be able to cause Meta to redeliver.
   assertions; `human-handoff.md` covers AC1–AC5 of 13.) (After the knowledge-entries increment: 18 of 27 specs,
   316 assertions; `business-knowledge-configuration.md` covers 10 of 12 criteria — AC3/AC4 are document upload.)
   (After the AI port increment: 20 of 27 specs, 347 assertions; `ai-provider-portability.md` covers AC1, AC2,
-  AC3, AC5, AC8; `voice-message-understanding.md` gained its first two at the port layer.)
+  AC3, AC5, AC8; `voice-message-understanding.md` gained its first two at the port layer.) (After the
+  conversation worker increment: 23 of 27 specs, 409 assertions; `message-burst-aggregation.md` covers 10 of
+  12, `conversation-memory.md` 3 of 11 at the context layer.)
 
 ---
 
@@ -1459,12 +1479,11 @@ SMTP).
 
 ### Follow-ups the inbound gateway increment leaves open
 
-- **Conversation worker (next):** consume `INBOUND_QUEUE`/`INBOUND_JOB_KIND` jobs (payload `{ inboundMessageId }`),
-  set `maxInFlightPerTenant` (§4d), re-read the customer's pending messages ordered by `sent_at` (AC5 across
-  notifications — a late-arriving earlier message gets a later job), call `mayAutoRespond` and
-  `fallbackMessageFor` inside the sending transaction, and treat `unsupported` messages via fallback.
-  Track which messages have been answered (a per-message processed marker or a turn table) so a re-run job is
-  idempotent.
+- **Conversation worker:** delivered in §4s. Pull-based admission re-reads a customer's pending messages under
+  the conversation lock rather than trusting job order across notifications; `maxInFlightPerTenant` is set by
+  the worker; `unsupported` messages go to fallback with the new cause `not_understood`; idempotency comes from
+  `inbound_dispositions` (append-only per inbound message) and `conversation_turn_outcomes`' primary key (one
+  answer per turn, structurally).
 - **Outbound delivery receipts** (`statuses`) are acknowledged and ignored until the outbound path exists.
 - **Media ids expire.** The worker must fetch image/voice media promptly and store it in object storage; the
   gateway stores only the upstream id.
@@ -1480,6 +1499,77 @@ SMTP).
   (`whatsapp.number.in_use`). Accepted: Meta itself refuses one number to two apps' tenants.
 - Not yet verified against real Meta traffic; the envelope shape is from Meta's documentation. Run one live
   delivery through a tunnel before go-live, as §4p recommends for the AI adapters.
+
+---
+
+## 4s. Findings from the conversation worker increment
+
+- **Admission is pull-based, not push-based.** Any job for an end-customer admits *all* of that customer's
+  undecided messages, oldest arrival first, under the conversation row lock. That makes a re-run of the same
+  job idempotent for free and closes the §4r follow-up about ordering pending messages across notifications:
+  there is no job-order assumption left to violate.
+- **The aggregation window is judged by each message's stored `received_at` (gateway time), never by when the
+  worker happens to reach it** — a lagging worker groups a burst exactly like an idle one would have. A message
+  joins the open turn iff it arrived at or before that turn's `closes_at`, where `closes_at` = min(latest
+  arrival + window, first arrival + max turn duration). Whether a turn is *due* to close is judged separately,
+  by the worker's injected `Clock`, so clock skew between the worker host and the database shifts *when* a turn
+  closes but never *what it contains*.
+- **Turn jobs deliberately carry no partition key.** Inbound message jobs are partitioned per end-customer; a
+  delayed turn job sitting at the head of that same partition would block the very messages it is waiting to
+  aggregate. Ordering between an inbound job and its turn job is the conversation lock's job, not the queue's.
+- **A turn job that runs early because its window was extended reschedules itself at the new `closes_at`**
+  (the dedupe key includes the deadline), so extending a turn schedules nothing new — it just moves the one job
+  that already exists.
+- **Turns of one conversation are answered strictly in order.** A closed turn whose predecessor is unanswered
+  returns `behind` rather than being answered out of turn; recording an answer schedules the next closed turn
+  in the same transaction. Risk: if a turn's job is dead-lettered, every later turn of that conversation stays
+  `behind` forever — see the follow-up below.
+- **The model is called between two short transactions, never inside one.** `recordTurnOutcome` re-checks under
+  the lock: if the bot was switched off or the conversation was paused while the model was thinking, the
+  outcome is `withheld` and nothing is sent. Fallback text is resolved inside the recording transaction (the
+  literal client-authored text, per the §3 fallback-tone resolution). A `handoff` outcome pauses the
+  conversation and writes a `paused` event in the same transaction.
+- **Messages held while the bot is off or the conversation is paused are never answered retroactively** and are
+  excluded from the model's context entirely. After a resume, only new messages are answered.
+- **[DECISION]** Conversation memory is a fixed cap — `CONVERSATION_LIMITS.contextTurns` = 20 turns (the
+  customer's messages in sent order plus the bot's reply/fallback text) — because the reset policy that would
+  normally bound history is blocked on §4. Until that policy exists, a conversation never resets, so
+  `conversationStart` (the disclosure-opening flag) is true only until the bot has first spoken in that
+  conversation.
+- **Image/voice/unsupported messages become bracketed notes in the model's context** (e.g. "[The customer sent
+  a photo, which could not be viewed.]"). An image caption counts as understood text on its own. A turn in
+  which nothing was understood skips the model entirely and goes straight to fallback — `out_of_scope` if every
+  message in the turn was an unsupported type, `low_confidence` otherwise — via a new fallback cause,
+  `not_understood`, added to `FALLBACK_CAUSES` in `@zeddev/bot`.
+- **[DECISION]** Defaults: `WORKER_AGGREGATION_WINDOW` = 5 s, `WORKER_MAX_TURN_DURATION` = 30 s, per the burst
+  spec's v1 platform-wide assumption. Startup refuses a configured max shorter than the window.
+  `WORKER_CONCURRENCY` defaults to 4, `WORKER_MAX_IN_FLIGHT_PER_TENANT` to 2 (resolving that part of the §4d
+  follow-up), `WORKER_VISIBILITY_TIMEOUT` to 60 s, `WORKER_SHUTDOWN_GRACE` to 30 s.
+- **Queue fix in `@zeddev/queue`:** `waitForWork` in both `PostgresQueue` and `InMemoryQueue` now caps its sleep
+  at the next *delayed* ready job's due time (a query under the dispatch scope, once per wait, excluding jobs
+  already due to avoid a spin). Before this fix, delayed jobs — including every retry backoff — were only
+  reached at the consumer's idle timeout (30 s). A new conformance test ("a waiting consumer wakes when a
+  delayed job comes due") holds both adapters to it and was confirmed to fail without the fix.
+
+### Follow-ups the conversation worker increment leaves open
+
+- The outbound sender still has to drain the pending outbox: extend the `delivery_state` CHECK on
+  `conversation_turn_outcomes` in a new migration for its state machine, and the 24-hour customer-service-window
+  decision (§4) still blocks what to do with an outcome that falls outside it.
+- A dead-lettered turn job leaves every later turn of that conversation `behind` forever — needs either a
+  stale-turn rule or an operator replay path.
+- Handoff client notification (blocked on channel decision, §4), a system-side resumption condition, and a
+  conversation status listing (P3 visibility) are not built.
+- The memory reset policy must bound context by something other than a fixed count and define
+  `conversationStart` properly — blocked on the same §4 default-inactivity-window decision.
+- Media understanding (image/voice) replaces the "could not be viewed/listened to" bracketed notes with actual
+  derived content once it lands.
+- Worker/database clock skew shifts *when* a turn closes, as noted above — acceptable because it never changes
+  *what* the turn contains.
+- Typing indicator / read receipt behaviour is not implemented — the spec leaves it an open question.
+- `purgeSucceeded` (§4d) is still not called by anything, and every turn now adds at least one more job row to
+  what accumulates.
+- No live test against a real model yet for this path; §4p's recommended smoke test also covers the worker.
 
 ---
 

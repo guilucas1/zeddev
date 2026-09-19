@@ -31,6 +31,7 @@ Run from the repo root.
 | `npm run config-reference` | Regenerates `docs/configuration.md` from the config schemas. A test fails the build if the committed file is stale. |
 | `node src/services/api/main.ts` | Runs the API service. Reads every setting from the environment and refuses to start, listing every missing key. |
 | `node src/services/whatsapp-gateway/main.ts` | Runs the inbound WhatsApp webhook (`/v1/whatsapp/webhook`). Needs `DATABASE_*` and `WHATSAPP_*`. |
+| `node src/services/conversation-worker/main.ts` | Runs the conversation worker (no port; consumes the job queue). Needs `DATABASE_*` and `AI_*`. |
 | `node src/services/api/cli.ts create-operator --email <addr>` | Creates the platform operator. Password is read from stdin. |
 | `docker compose up -d` (add `--profile local-mail` on a laptop) | Runs the platform from `compose.yaml`. Needs a `.env` and `deploy/secrets/postgres-superuser-password` — see the header of `compose.yaml`. |
 
@@ -110,6 +111,13 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - **The API router matches exact paths only** — no path parameters. An operation on one item of a
   collection names it by an `id` in the JSON body (e.g. `PUT /v1/bot/behavior-rules/rule`), and a delete
   that needs an id is a `POST …/delete`, not a DELETE with a body.
+- **Every decision about one end-customer's messages** (admitting, closing a turn, recording its answer,
+  resuming) is taken under that customer's `conversations` row lock in `src/lib/conversation/turns.ts`; a
+  turn's answer is written only by `recordTurnOutcome`, and `conversation_turn_outcomes` is keyed by turn so a
+  second answer is impossible. Do not write turn outcomes elsewhere.
+- **`waitForWork` in both queue adapters must wake by the next delayed job's due time** (conformance-tested); a
+  consumer that only woke at its idle timeout would delay every turn close and every retry by up to that
+  timeout.
 
 ### Database-backed tests
 
@@ -216,3 +224,6 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   the Write tool (e.g. under `C:/Users/Guilherme/AppData/Local/Temp/`) and run it with `node`.
 - Python is not usable on this machine (pyenv shim with no version set). Script file edits with `node`: write the script to a file with a quoted heredoc (`<<'EOF'`) and run
   `node "$(cygpath -w /tmp/x.js)"`. Inline `node -e "…"` mangles backslash escapes and backticks.
+- Tests can insert `inbound_messages` rows with an explicit `received_at` (the insert policy allows it) to
+  drive aggregation windows deterministically with a `FakeClock` instead of sleeping — see
+  `src/lib/conversation/turns.test.ts`.

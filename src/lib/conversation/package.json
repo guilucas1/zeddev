@@ -1,0 +1,23 @@
+{
+  "name": "@zeddev/conversation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@zeddev/ai": "*",
+    "@zeddev/bot": "*",
+    "@zeddev/db": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/logging": "*",
+    "@zeddev/queue": "*",
+    "@zeddev/time": "*",
+    "@zeddev/whatsapp": "*"
+  },
+  "devDependencies": {
+    "@zeddev/schema": "*",
+    "@zeddev/testing": "*"
+  }
+}

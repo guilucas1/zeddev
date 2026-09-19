@@ -310,6 +310,13 @@ export class InMemoryQueue implements Queue {
       this.#woken = false;
       return;
     }
+    // Same rule as the real adapter: a delayed job notifies nobody when it comes
+    // due, so the wait ends no later than the next one does.
+    const now = this.#now();
+    const nextDue = this.#jobs
+      .filter((job) => job.state === 'ready' && job.runAtMs > now)
+      .reduce((soonest, job) => Math.min(soonest, job.runAtMs - now), Infinity);
+    const waitMs = Math.min(timeoutMs, nextDue);
     await new Promise<void>((resolvePromise) => {
       let settled = false;
       const finish = (): void => {
@@ -322,7 +329,7 @@ export class InMemoryQueue implements Queue {
         resolvePromise();
       };
       this.#waiters.add(finish);
-      const cancelTimer = this.#clock.setTimer(timeoutMs, finish);
+      const cancelTimer = this.#clock.setTimer(waitMs, finish);
       signal?.addEventListener('abort', finish, { once: true });
     });
   }

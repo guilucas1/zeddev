@@ -85,6 +85,7 @@ import {
   type BotStatus,
 } from '@zeddev/bot';
 import type { AiProvider } from '@zeddev/ai';
+import { parseResumeInput, resumeConversation, type ConversationHandoffStatus } from '@zeddev/conversation';
 import type { Connection, Pool } from '@zeddev/db';
 import { AuthenticationError, TransientTransportError, ValidationError } from '@zeddev/errors';
 import type { Action, ClientPrincipal, IdentityService } from '@zeddev/identity';
@@ -736,6 +737,24 @@ export function createApi(dependencies: ApiDependencies): Api {
     },
 
     // -----------------------------------------------------------------------
+    // Conversation handoff state — human-handoff.md AC9. The pause itself is set
+    // by the conversation worker when a turn's answer is a handoff; resuming is
+    // the client's. The end-customer is named in the body (the router has no
+    // path parameters), and the tenant only by the session, like every route.
+    // -----------------------------------------------------------------------
+    {
+      method: 'POST',
+      path: '/v1/conversations/handoff/resume',
+      handle: async (context) => {
+        const customerId = parseResumeInput(await context.body());
+        const status = await asClient(context, 'handoff.manage', 'conversation.handoff', (tx) =>
+          resumeConversation(tx, customerId),
+        );
+        return { status: 200, body: describeConversationHandoff(status) };
+      },
+    },
+
+    // -----------------------------------------------------------------------
     // Readiness and the go-live toggle — bot-activation-control.md. The rules
     // (what "ready" is, that an active bot must stay ready) live in the database
     // and @zeddev/bot; these routes only read them and carry the client's toggle.
@@ -1016,4 +1035,19 @@ export function createApi(dependencies: ApiDependencies): Api {
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.constructor.name : typeof error;
+}
+
+/** A conversation's handoff state as the client's screen shows it. */
+function describeConversationHandoff(status: ConversationHandoffStatus): {
+  readonly customerId: string;
+  readonly paused: boolean;
+  readonly pausedAt: string | null;
+  readonly reason: ConversationHandoffStatus['reason'] | null;
+} {
+  return {
+    customerId: status.customerId,
+    paused: status.paused,
+    pausedAt: status.pausedAt?.toISOString() ?? null,
+    reason: status.reason ?? null,
+  };
 }

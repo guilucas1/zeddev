@@ -207,6 +207,9 @@ export const FALLBACK_CAUSES = [
   'unusable_output',
   'declined',
   'handoff_unavailable',
+  // Nothing in the turn could be understood (an unsupported message type, media
+  // that could not be read), so there was nothing to put to the model.
+  'not_understood',
 ] as const;
 export type FallbackCause = (typeof FALLBACK_CAUSES)[number];
 

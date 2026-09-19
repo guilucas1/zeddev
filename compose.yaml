@@ -111,6 +111,25 @@ services:
       start_period: 20s
     stop_grace_period: 15s
 
+  # Answers stored messages. No port: it consumes the job queue in PostgreSQL, so
+  # more capacity is `docker compose up --scale conversation-worker=N`.
+  conversation-worker:
+    build:
+      context: .
+      dockerfile: src/services/conversation-worker/Dockerfile
+    image: zeddev-conversation-worker
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Longer than WORKER_SHUTDOWN_GRACE, so in-flight jobs can finish.
+    stop_grace_period: 40s
+
   # Catches outbound mail on a laptop, where there is no relay to send through.
   # Set MAIL_HOST=mailpit, MAIL_PORT=1025, MAIL_TLS=disable in .env; read the mail
   # at http://127.0.0.1:8025.

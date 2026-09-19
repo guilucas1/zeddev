@@ -11,6 +11,7 @@
     "@zeddev/ai": "*",
     "@zeddev/bot": "*",
     "@zeddev/config": "*",
+    "@zeddev/conversation": "*",
     "@zeddev/db": "*",
     "@zeddev/errors": "*",
     "@zeddev/http": "*",

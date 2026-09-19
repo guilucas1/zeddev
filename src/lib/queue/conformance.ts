@@ -444,6 +444,27 @@ export function runQueueConformance(harness: QueueHarness): void {
       });
     });
 
+    unitTest(`[${harness.label}] a waiting consumer wakes when a delayed job comes due, not at its idle timeout`, async () => {
+      await withFixture({}, async (fixture) => {
+        const { queue, tenants, timeUnitMs } = fixture;
+        await queue.enqueue(tenants[0]!, { kind: 'reply', payload: PAYLOAD, delayMs: timeUnitMs * 2 });
+        // What a consumer does: wait, look, repeat. A wait may return at once (the
+        // real adapter's first wait registers for notifications), so it loops.
+        const consumer = (async () => {
+          for (let round = 0; round < 5; round += 1) {
+            await queue.waitForWork(timeUnitMs * 1000);
+            const job = await queue.claim();
+            if (job !== undefined) return job;
+          }
+          return undefined;
+        })();
+        await fixture.advance(timeUnitMs * 4);
+        const outcome = await Promise.race([consumer, fixture.advance(timeUnitMs * 2).then(() => 'still asleep' as const)]);
+        assert.ok(outcome !== 'still asleep', 'the consumer slept past the delayed job');
+        assert.ok(outcome !== undefined, 'the consumer woke but found no job');
+      });
+    });
+
     // -----------------------------------------------------------------------
     // Idempotency and retention
     // -----------------------------------------------------------------------

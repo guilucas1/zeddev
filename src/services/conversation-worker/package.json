@@ -1,0 +1,26 @@
+{
+  "name": "@zeddev/conversation-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./config": "./config.ts"
+  },
+  "dependencies": {
+    "@zeddev/ai": "*",
+    "@zeddev/config": "*",
+    "@zeddev/conversation": "*",
+    "@zeddev/db": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/logging": "*",
+    "@zeddev/queue": "*",
+    "@zeddev/schema": "*",
+    "@zeddev/time": "*",
+    "@zeddev/whatsapp": "*"
+  },
+  "devDependencies": {
+    "@zeddev/bot": "*",
+    "@zeddev/testing": "*"
+  }
+}

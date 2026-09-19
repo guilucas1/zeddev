@@ -33,6 +33,7 @@
 import { AI_CONFIG_SCHEMA } from '@zeddev/ai';
 import { API_CONFIG_SCHEMA } from '@zeddev/api/config';
 import { renderEnvTemplate, renderReference, type ConfigSchema } from '@zeddev/config';
+import { WORKER_CONFIG_SCHEMA } from '@zeddev/conversation-worker/config';
 import { DATABASE_CONFIG_SCHEMA } from '@zeddev/db';
 import { IDENTITY_CONFIG_SCHEMA } from '@zeddev/identity';
 import { LOGGING_CONFIG_SCHEMA } from '@zeddev/logging';
@@ -110,6 +111,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       'The inbound webhook Meta delivers every message to, deployed apart from the API so that acknowledging a notification never waits on anything else the platform is doing — a slow acknowledgement makes Meta redeliver (message-delivery-reliability.md AC1). Meta only calls public HTTPS URLs, so on a laptop or VPS a TLS-terminating proxy or tunnel forwards to GATEWAY_HTTP_PORT; that forwarding is deployment plumbing, not a code path, so it is the same artifact on every tier.',
     schema: GATEWAY_CONFIG_SCHEMA,
+  },
+  {
+    title: 'Conversation worker service',
+    rationale:
+      "Turns stored inbound messages into answers: it groups an end-customer's rapid messages into one turn, puts the turn and the conversation before it to the AI provider, and records exactly one answer per turn. It listens on no port — its only input is the job queue in PostgreSQL — so more capacity is more worker processes, with nothing to route. The aggregation window and maximum turn duration are message-burst-aggregation.md's platform-wide timing, a trade between letting a customer finish a thought and answering quickly; the in-flight cap is what stops one business's surge from delaying every other's (message-delivery-reliability.md AC16).",
+    schema: WORKER_CONFIG_SCHEMA,
   },
 ];
 

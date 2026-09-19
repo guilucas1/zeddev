@@ -526,6 +526,7 @@ export class PostgresQueue implements Queue {
       this.#woken = false;
       return;
     }
+    const waitMs = Math.min(timeoutMs, await this.#nextDueInMs());
 
     await new Promise<void>((resolvePromise) => {
       let settled = false;
@@ -538,7 +539,7 @@ export class PostgresQueue implements Queue {
         resolvePromise();
       };
       const unsubscribe = this.#listener?.onNotification(() => finish()) ?? ((): void => {});
-      const cancelTimer = this.#clock.setTimer(timeoutMs, finish);
+      const cancelTimer = this.#clock.setTimer(waitMs, finish);
       signal?.addEventListener('abort', finish, { once: true });
       // Re-checked after subscribing, because a notification that arrived between
       // the check above and this subscription would otherwise be lost.
@@ -547,6 +548,39 @@ export class PostgresQueue implements Queue {
         finish();
       }
     });
+  }
+
+  /**
+   * Milliseconds until the next delayed job of this queue comes due, or
+   * `Infinity` if none is waiting.
+   *
+   * A job enqueued with a delay — a retry's backoff, a conversation turn's
+   * aggregation window — notifies when it is *inserted*, not when it becomes due,
+   * so without this a sleeping consumer would reach it only at its idle timeout:
+   * up to that long late for every delayed job. Asked once per wait rather than
+   * polled, so an idle queue still costs one query per idle timeout. Jobs already
+   * due are excluded: one that is due but not claimable (its partition is busy,
+   * its tenant is at the in-flight cap) is released by a job finishing, and
+   * counting it here would turn the wait into a spin.
+   */
+  async #nextDueInMs(): Promise<number> {
+    try {
+      const result = await withDispatchScope(this.#pool, (tx) =>
+        tx.query<{ due_in_ms: number | null }>(
+          `SELECT (EXTRACT(EPOCH FROM (min(run_at) - now())) * 1000)::float8 AS due_in_ms
+             FROM queue_jobs
+            WHERE queue = $1 AND state = 'ready' AND run_at > now()`,
+          [this.name],
+        ),
+      );
+      const dueInMs = result.rows[0]?.due_in_ms;
+      // The timer fires on this process's clock and the job becomes due on the
+      // database's, so land a little after it rather than a little before.
+      return dueInMs === null || dueInMs === undefined ? Infinity : Math.max(0, Math.ceil(dueInMs)) + 5;
+    } catch (error) {
+      this.#logger?.error('queue.next_due.failed', error, { queue: this.name });
+      return Infinity;
+    }
   }
 
   async #ensureListener(): Promise<'established' | 'present'> {

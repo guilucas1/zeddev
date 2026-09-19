@@ -1257,6 +1257,59 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   });
 
   // -------------------------------------------------------------------------
+  // Conversation handoff: resuming a paused conversation
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'human-handoff.md',
+    'AC9 a resumed conversation is auto-responded to again',
+    'a client resumes its own paused conversation; another tenant, an anonymous caller, and a cross-site request cannot',
+    async () => {
+      const alpha = await onboard();
+      const beta = await onboard();
+      const customerId = '15559870001';
+      await withTenant(db.pool, alpha.tenantId, (tx) =>
+        tx.query(
+          `INSERT INTO conversations (tenant_id, customer_id, handoff_paused_at, handoff_reason)
+           VALUES (app.current_tenant_id(), $1, now(), '{"kind":"trigger","trigger":"human_request"}'::jsonb)`,
+          [customerId],
+        ),
+      );
+      const paused = () =>
+        withTenant(db.pool, alpha.tenantId, async (tx) => {
+          const result = await tx.query<{ paused: boolean }>(
+            'SELECT handoff_paused_at IS NOT NULL AS paused FROM conversations WHERE customer_id = $1',
+            [customerId],
+          );
+          return result.rows[0]!.paused;
+        });
+
+      assert.equal((await call(served, 'POST', '/v1/conversations/handoff/resume', { json: { customerId } })).status, 401);
+      const forged = await call(served, 'POST', '/v1/conversations/handoff/resume', {
+        cookie: alpha.cookie,
+        headers: { origin: 'https://example.org' },
+        json: { customerId },
+      });
+      assert.equal(forged.status, 403);
+      // Beta naming alpha's end-customer reaches only its own (empty) conversation.
+      const other = await call(served, 'POST', '/v1/conversations/handoff/resume', { cookie: beta.cookie, json: { customerId } });
+      assert.equal(other.status, 200);
+      assert.equal(other.body.paused, false);
+      assert.equal(await paused(), true, "another tenant's request left the conversation paused");
+      const invalid = await call(served, 'POST', '/v1/conversations/handoff/resume', {
+        cookie: alpha.cookie,
+        json: { customerId: '+1 555', tenantId: beta.tenantId },
+      });
+      assert.equal(invalid.status, 400);
+
+      const resumed = await call(served, 'POST', '/v1/conversations/handoff/resume', { cookie: alpha.cookie, json: { customerId } });
+      assert.equal(resumed.status, 200);
+      assert.deepEqual(resumed.body, { customerId, paused: false, pausedAt: null, reason: null });
+      assert.equal(await paused(), false);
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // Readiness, the go-live toggle, and the connection state
   // -------------------------------------------------------------------------
 

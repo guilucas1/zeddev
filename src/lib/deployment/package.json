@@ -10,6 +10,7 @@
     "@zeddev/ai": "*",
     "@zeddev/api": "*",
     "@zeddev/config": "*",
+    "@zeddev/conversation-worker": "*",
     "@zeddev/db": "*",
     "@zeddev/identity": "*",
     "@zeddev/logging": "*",

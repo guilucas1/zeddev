@@ -167,6 +167,13 @@ export const OPERATIONAL_FIELDS = new Set<string>([
   'secretRef',
   'version',
 
+  // Conversation turns. `turnId` is a platform-minted UUID; `trigger` and `cause`
+  // are closed fallback vocabularies (`FALLBACK_TRIGGERS`, `FALLBACK_CAUSES`),
+  // never model output.
+  'turnId',
+  'trigger',
+  'cause',
+
   // Outcomes and access control.
   'outcome',
   'action',

@@ -159,6 +159,19 @@ The inbound webhook Meta delivers every message to, deployed apart from the API 
 | `GATEWAY_REQUEST_TIMEOUT` | duration | no | `10000` | How long one notification may take to arrive in full and be acknowledged before the connection is dropped. Meta treats a slow acknowledgement as a failure and redelivers, so this bounds a slow client, not the gateway: acknowledging is a signature check and one short transaction. |
 | `GATEWAY_SHUTDOWN_GRACE` | duration | no | `10000` | On a stop signal, how long in-flight notifications are given to be stored and acknowledged before connections are closed. One cut short is not lost: it was never acknowledged, so Meta redelivers it, and duplicate suppression makes the redelivery safe. |
 
+## Conversation worker service
+
+Turns stored inbound messages into answers: it groups an end-customer's rapid messages into one turn, puts the turn and the conversation before it to the AI provider, and records exactly one answer per turn. It listens on no port — its only input is the job queue in PostgreSQL — so more capacity is more worker processes, with nothing to route. The aggregation window and maximum turn duration are message-burst-aggregation.md's platform-wide timing, a trade between letting a customer finish a thought and answering quickly; the in-flight cap is what stops one business's surge from delaying every other's (message-delivery-reliability.md AC16).
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `WORKER_AGGREGATION_WINDOW` | duration | no | `5000` | How long the worker waits after an end-customer's latest message for another before answering them. Messages arriving within it of each other are one turn and get one reply (message-burst-aggregation.md). Longer lets a customer finish a thought split across messages; shorter answers sooner. Every reply waits at least this long. |
+| `WORKER_CONCURRENCY` | integer | no | `4` | Jobs this process runs at once. Most of a job is waiting on the AI provider, so this can exceed the CPU count; the database pool must have room for it plus one connection held for queue notifications. |
+| `WORKER_MAX_IN_FLIGHT_PER_TENANT` | integer | no | `2` | How many of one tenant's jobs may run at once across every worker. Keeps one business's traffic surge, or a provider hang on its requests, from occupying every worker while other businesses' customers wait (message-delivery-reliability.md AC16). Set it below WORKER_CONCURRENCY times the number of worker processes. |
+| `WORKER_MAX_TURN_DURATION` | duration | no | `30000` | The longest one turn stays open after its first message, however quickly more keep arriving, so a customer who never pauses is still answered. Must be at least WORKER_AGGREGATION_WINDOW. |
+| `WORKER_SHUTDOWN_GRACE` | duration | no | `30000` | On a stop signal, how long in-flight jobs are given to finish before the process exits. One cut short is not lost: its lease expires and it runs again, and a turn is answered at most once however many times its job runs. |
+| `WORKER_VISIBILITY_TIMEOUT` | duration | no | `60000` | How long a claimed job is held before another worker may take it over. The worker renews it while a job runs, so this bounds how long the job of a worker that died stays stuck, not how long a slow AI call may take. |
+
 ## Template
 
 ```sh
@@ -437,4 +450,28 @@ WHATSAPP_APP_SECRET=
 
 # A value you choose and enter in the Meta app dashboard when subscribing the webhook. Meta echoes it once in a GET handshake to prove the subscription request came from the dashboard you control; the gateway answers the handshake only when it matches.
 WHATSAPP_WEBHOOK_VERIFY_TOKEN=
+
+# How long the worker waits after an end-customer's latest message for another before answering them. Messages arriving within it of each other are one turn and get one reply (message-burst-aggregation.md). Longer lets a customer finish a thought split across messages; shorter answers sooner. Every reply waits at least this long.
+# default: 5000
+WORKER_AGGREGATION_WINDOW=5000
+
+# Jobs this process runs at once. Most of a job is waiting on the AI provider, so this can exceed the CPU count; the database pool must have room for it plus one connection held for queue notifications.
+# default: 4
+WORKER_CONCURRENCY=4
+
+# How many of one tenant's jobs may run at once across every worker. Keeps one business's traffic surge, or a provider hang on its requests, from occupying every worker while other businesses' customers wait (message-delivery-reliability.md AC16). Set it below WORKER_CONCURRENCY times the number of worker processes.
+# default: 2
+WORKER_MAX_IN_FLIGHT_PER_TENANT=2
+
+# The longest one turn stays open after its first message, however quickly more keep arriving, so a customer who never pauses is still answered. Must be at least WORKER_AGGREGATION_WINDOW.
+# default: 30000
+WORKER_MAX_TURN_DURATION=30000
+
+# On a stop signal, how long in-flight jobs are given to finish before the process exits. One cut short is not lost: its lease expires and it runs again, and a turn is answered at most once however many times its job runs.
+# default: 30000
+WORKER_SHUTDOWN_GRACE=30000
+
+# How long a claimed job is held before another worker may take it over. The worker renews it while a job runs, so this bounds how long the job of a worker that died stays stuck, not how long a slow AI call may take.
+# default: 60000
+WORKER_VISIBILITY_TIMEOUT=60000
 ```
