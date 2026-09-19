@@ -45,13 +45,18 @@ import {
   clearBehaviorInstructions,
   clearFreeformInstructions,
   createBehaviorRule,
+  createKnowledgeEntry,
   deleteBehaviorRule,
+  deleteKnowledgeEntry,
   describeBehaviorRule,
   describeBehaviorRules,
   describeBotStatus,
   describeDisclosureSetting,
   describeFallbackMessages,
   describeHandoffSettings,
+  describeKnowledge,
+  describeKnowledgeEntry,
+  describeKnowledgeStatus,
   describePersona,
   listBotStatuses,
   parseActivationInput,
@@ -62,6 +67,7 @@ import {
   readDisclosureSetting,
   readFallbackMessages,
   readHandoffSettings,
+  readKnowledge,
   readPersona,
   saveBehaviorInstructions,
   saveDisclosureSetting,
@@ -72,6 +78,8 @@ import {
   setBotActive,
   setHandoffEnabled,
   updateBehaviorRule,
+  updateKnowledgeEntry,
+  type BotStatus,
 } from '@zeddev/bot';
 import type { Connection, Pool } from '@zeddev/db';
 import { AuthenticationError, TransientTransportError, ValidationError } from '@zeddev/errors';
@@ -186,6 +194,15 @@ export function createApi(dependencies: ApiDependencies): Api {
     fn: (connection: Connection, principal: ClientPrincipal) => Promise<T>,
   ): Promise<T> {
     return identity.withClientAction(sessionToken(context, CLIENT_SESSION_COOKIE), action, resource, fn);
+  }
+
+  /**
+   * The bot status screen's body: readiness and activation, plus whether the
+   * optional business knowledge is configured. Read in the caller's transaction,
+   * so both halves describe the same moment.
+   */
+  async function statusBody(tx: Connection, status: BotStatus) {
+    return { ...describeBotStatus(status), businessKnowledge: describeKnowledgeStatus(await readKnowledge(tx)) };
   }
 
   const routes: readonly Route[] = [
@@ -506,6 +523,55 @@ export function createApi(dependencies: ApiDependencies): Api {
     },
 
     // -----------------------------------------------------------------------
+    // Business knowledge — business-knowledge-configuration.md. Freeform entries,
+    // each named by the `id` in the JSON body. Another tenant's entry id is "not
+    // found", indistinguishable from one that never existed.
+    // -----------------------------------------------------------------------
+    {
+      method: 'GET',
+      path: '/v1/bot/knowledge',
+      handle: async (context) => {
+        const configuration = await asClient(context, 'tenant.configuration.read', 'bot.knowledge', (tx) =>
+          readKnowledge(tx),
+        );
+        return { status: 200, body: describeKnowledge(configuration) };
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v1/bot/knowledge/entries',
+      handle: async (context) => {
+        const body = await context.body();
+        const entry = await asClient(context, 'tenant.configuration.write', 'bot.knowledge', (tx) =>
+          createKnowledgeEntry(tx, body),
+        );
+        return { status: 201, body: { entry: describeKnowledgeEntry(entry) } };
+      },
+    },
+    {
+      // PUT because an edit replaces the entry's whole text.
+      method: 'PUT',
+      path: '/v1/bot/knowledge/entries/entry',
+      handle: async (context) => {
+        const body = await context.body();
+        const entry = await asClient(context, 'tenant.configuration.write', 'bot.knowledge', (tx) =>
+          updateKnowledgeEntry(tx, body),
+        );
+        return { status: 200, body: { entry: describeKnowledgeEntry(entry) } };
+      },
+    },
+    {
+      // POST rather than DELETE-with-a-body, which intermediaries may drop.
+      method: 'POST',
+      path: '/v1/bot/knowledge/entries/entry/delete',
+      handle: async (context) => {
+        const body = await context.body();
+        await asClient(context, 'tenant.configuration.write', 'bot.knowledge', (tx) => deleteKnowledgeEntry(tx, body));
+        return { status: 204 };
+      },
+    },
+
+    // -----------------------------------------------------------------------
     // Fallback messages — fallback-response-behavior.md. Every view carries the
     // resolved preview, computed by the same function the reply path uses.
     // -----------------------------------------------------------------------
@@ -617,13 +683,18 @@ export function createApi(dependencies: ApiDependencies): Api {
     // Readiness and the go-live toggle — bot-activation-control.md. The rules
     // (what "ready" is, that an active bot must stay ready) live in the database
     // and @zeddev/bot; these routes only read them and carry the client's toggle.
+    // Both answer with the whole status, which also says whether the optional-but-
+    // recommended business knowledge is configured — beside the readiness
+    // conditions, never among them (business-knowledge-configuration.md AC9, AC10).
     // -----------------------------------------------------------------------
     {
       method: 'GET',
       path: '/v1/bot/status',
       handle: async (context) => {
-        const status = await asClient(context, 'tenant.configuration.read', 'bot.status', (tx) => readBotStatus(tx));
-        return { status: 200, body: describeBotStatus(status) };
+        const body = await asClient(context, 'tenant.configuration.read', 'bot.status', async (tx) =>
+          statusBody(tx, await readBotStatus(tx)),
+        );
+        return { status: 200, body };
       },
     },
     {
@@ -633,10 +704,10 @@ export function createApi(dependencies: ApiDependencies): Api {
       path: '/v1/bot/activation',
       handle: async (context) => {
         const active = parseActivationInput(await context.body());
-        const status = await asClient(context, 'tenant.activation.change', 'bot.activation', (tx) =>
-          setBotActive(tx, active),
+        const body = await asClient(context, 'tenant.activation.change', 'bot.activation', async (tx) =>
+          statusBody(tx, await setBotActive(tx, active)),
         );
-        return { status: 200, body: describeBotStatus(status) };
+        return { status: 200, body };
       },
     },
     {

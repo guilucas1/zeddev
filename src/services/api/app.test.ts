@@ -923,6 +923,124 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   });
 
   // -------------------------------------------------------------------------
+  // Bot configuration: business knowledge
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'business-knowledge-configuration.md',
+    'AC2 a saved freeform entry is confirmed and appears in the list',
+    'add, edit, and remove entries over HTTP: each save answers with the stored entry and shows on the next GET',
+    async () => {
+      const { cookie } = await onboard();
+      const empty = await call(served, 'GET', '/v1/bot/knowledge', { cookie });
+      assert.equal(empty.status, 200);
+      assert.deepEqual(empty.body.entries, []);
+      assert.equal(empty.body.configured, false);
+      assert.equal(empty.body.limits.entryMaxLength, 4000);
+
+      const created = await call(served, 'POST', '/v1/bot/knowledge/entries', {
+        cookie,
+        json: { content: 'We offer free delivery within 10km.' },
+      });
+      assert.equal(created.status, 201);
+      const id = created.body.entry.id;
+      assert.equal(created.body.entry.content, 'We offer free delivery within 10km.');
+      await call(served, 'POST', '/v1/bot/knowledge/entries', { cookie, json: { content: 'Open 9am-6pm.' } });
+
+      const edited = await call(served, 'PUT', '/v1/bot/knowledge/entries/entry', {
+        cookie,
+        json: { id, content: 'Free delivery within 15km.' },
+      });
+      assert.equal(edited.status, 200);
+      assert.equal(edited.body.entry.id, id);
+
+      const view = await call(served, 'GET', '/v1/bot/knowledge', { cookie });
+      assert.equal(view.body.configured, true);
+      assert.deepEqual(
+        view.body.entries.map((entry: { content: string }) => entry.content),
+        ['Free delivery within 15km.', 'Open 9am-6pm.'],
+      );
+
+      const deleted = await call(served, 'POST', '/v1/bot/knowledge/entries/entry/delete', { cookie, json: { id } });
+      assert.equal(deleted.status, 204);
+      assert.deepEqual(
+        (await call(served, 'GET', '/v1/bot/knowledge', { cookie })).body.entries.map(
+          (entry: { content: string }) => entry.content,
+        ),
+        ['Open 9am-6pm.'],
+      );
+    },
+  );
+
+  specTest(
+    'business-knowledge-configuration.md',
+    'AC11 each client’s bot reflects only its own knowledge',
+    'one client’s entry id is not found in another client’s session, for edit and removal',
+    async () => {
+      const alpha = await onboard();
+      const beta = await onboard();
+      const created = await call(served, 'POST', '/v1/bot/knowledge/entries', {
+        cookie: alpha.cookie,
+        json: { content: 'Alpha delivers on Sundays.' },
+      });
+      const id = created.body.entry.id;
+      const attempts = [
+        call(served, 'PUT', '/v1/bot/knowledge/entries/entry', { cookie: beta.cookie, json: { id, content: 'hijacked' } }),
+        call(served, 'POST', '/v1/bot/knowledge/entries/entry/delete', { cookie: beta.cookie, json: { id } }),
+      ];
+      for (const answer of await Promise.all(attempts)) {
+        assert.equal(answer.status, 404);
+        assert.equal(answer.body.error.code, 'resource.not_found');
+      }
+      assert.deepEqual((await call(served, 'GET', '/v1/bot/knowledge', { cookie: beta.cookie })).body.entries, []);
+      const alphaView = await call(served, 'GET', '/v1/bot/knowledge', { cookie: alpha.cookie });
+      assert.equal(alphaView.body.entries[0].content, 'Alpha delivers on Sundays.');
+    },
+  );
+
+  specTest(
+    'business-knowledge-configuration.md',
+    'AC10 unconfigured knowledge is shown as recommended but not required',
+    'the bot status reports knowledge beside, never among, the readiness conditions',
+    async () => {
+      const { cookie } = await onboard();
+      const fresh = await call(served, 'GET', '/v1/bot/status', { cookie });
+      assert.equal(fresh.body.businessKnowledge.configured, false);
+      assert.equal(fresh.body.businessKnowledge.required, false);
+      assert.match(fresh.body.businessKnowledge.recommendation, /not required/);
+      assert.ok(
+        fresh.body.unmetConditions.every((entry: { condition: string }) => !/knowledge/.test(entry.condition)),
+      );
+
+      await call(served, 'POST', '/v1/bot/knowledge/entries', { cookie, json: { content: 'Open 9am-6pm.' } });
+      const configured = await call(served, 'GET', '/v1/bot/status', { cookie });
+      assert.deepEqual(configured.body.businessKnowledge, { configured: true, required: false, recommendation: null });
+      // The toggle answers with the same shape.
+      const toggled = await call(served, 'PUT', '/v1/bot/activation', { cookie, json: { active: false } });
+      assert.equal(toggled.body.businessKnowledge.configured, true);
+    },
+  );
+
+  unitTest('knowledge routes refuse invalid input with every issue, and anonymous or cross-site callers', async () => {
+    const { cookie } = await onboard();
+    const invalid = await call(served, 'POST', '/v1/bot/knowledge/entries', { cookie, json: { content: '   ' } });
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(invalid.body.error.issues, [{ key: 'content', reason: 'is required' }]);
+
+    const badId = await call(served, 'POST', '/v1/bot/knowledge/entries/entry/delete', { cookie, json: { id: '1; DROP' } });
+    assert.equal(badId.status, 400);
+
+    assert.equal((await call(served, 'GET', '/v1/bot/knowledge')).status, 401);
+    const forged = await call(served, 'POST', '/v1/bot/knowledge/entries', {
+      cookie,
+      headers: { origin: 'https://example.org' },
+      json: { content: 'forged' },
+    });
+    assert.equal(forged.status, 403);
+    assert.deepEqual((await call(served, 'GET', '/v1/bot/knowledge', { cookie })).body.entries, []);
+  });
+
+  // -------------------------------------------------------------------------
   // Bot configuration: fallback messages
   // -------------------------------------------------------------------------
 

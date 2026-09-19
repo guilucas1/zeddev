@@ -12,8 +12,8 @@
  * that gates readiness (`bot-activation-control.md`). Readiness itself and the
  * go-live toggle are `activation.ts`; behaviour rules are `behavior.ts`;
  * fallback messages are `fallback.ts`; the disclosure setting is `disclosure.ts`;
- * human-handoff configuration is `handoff.ts`. Language and memory policy follow
- * in the same package.
+ * human-handoff configuration is `handoff.ts`; business knowledge is
+ * `knowledge.ts`. Language and memory policy follow in the same package.
  */
 
 export {
@@ -137,3 +137,23 @@ export {
   type HandoffSource,
   type HandoffTrigger,
 } from './handoff.ts';
+
+export {
+  createKnowledgeEntry,
+  deleteKnowledgeEntry,
+  describeKnowledge,
+  describeKnowledgeEntry,
+  describeKnowledgeStatus,
+  KNOWLEDGE_ENTRY_CREATE_FIELDS,
+  KNOWLEDGE_ENTRY_UPDATE_FIELDS,
+  KNOWLEDGE_LIMITS,
+  KNOWLEDGE_RECOMMENDATION,
+  knowledgeConfigured,
+  knowledgeDirectives,
+  parseKnowledgeEntryCreateInput,
+  parseKnowledgeEntryUpdateInput,
+  readKnowledge,
+  updateKnowledgeEntry,
+  type KnowledgeConfiguration,
+  type KnowledgeEntry,
+} from './knowledge.ts';

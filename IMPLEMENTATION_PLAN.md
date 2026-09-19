@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status as of 2026-09-18:** P0 is complete, including container definitions. The P1 control plane now has
+**Status as of 2026-09-19:** P0 is complete, including container definitions. The P1 control plane now has
 identity, mail, and `services/api`: identity is reachable over HTTP, verification and reset mail is
 actually delivered, and the platform operator can be bootstrapped. At the API increment, `src/` held fifteen
 workspace packages — fourteen dependency-free libraries (`@zeddev/errors`, `@zeddev/time`, `@zeddev/secrets`,
@@ -68,10 +68,17 @@ handoff-or-fallback decision `resolveHandoffSignal`. Migration `0011_bot_handoff
 routes. See §4n. That brings the totals to 683 passing tests, zero skipped, 18 of 27 specs with covering
 tests, 303 spec-linked assertions.
 
-The next unblocked P1 item is the freeform-entries half of business knowledge configuration. Language
-configuration is still blocked on the §4 supported-language-list decision; document upload is blocked on the
-§4 accepted-document-formats decision; memory reset policy is blocked on the §4 default-inactivity-window
-decision.
+The freeform-entries half of business knowledge configuration (`business-knowledge-configuration.md`) is done
+too: add/edit/remove of unstructured entries, the listing, the prompt section rendered by
+`knowledgeDirectives`, and a "recommended but not required" knowledge summary on the bot status. Migration
+`0012_bot_knowledge_entries` and four API routes. See §4o. That brings the totals to 702 passing tests, zero
+skipped, 18 of 27 specs with covering tests, 316 spec-linked assertions. (The "18 of 27" recorded after the
+handoff increment was an overcount by one: `npm run spec-coverage` reported 17 before this increment.)
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the
+supported-language list, document upload on accepted document formats and size limits, memory reset policy on
+the default inactivity window. The next unblocked work is P2: the `src/lib/ai` provider port (with two
+adapters, per §2) and the inbound webhook/dedup path are the best candidates, since neither needs a decision.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -418,12 +425,17 @@ call must never be able to cause Meta to redeliver.
 - **[DONE]** Human handoff enable/disable and trigger configuration: `@zeddev/bot` (`handoff.ts`) plus migration
   `0011_bot_handoff_settings` and `GET`/`PUT /v1/bot/handoff`, `PUT /v1/bot/handoff/enabled`. AC1–AC5 covered at
   the configuration and decision layer; AC6–AC13 are per-conversation behaviour and need P2. See §4n.
-> **P1 remaining scope.** Everything below this line — language configuration, business knowledge, and
-> conversation memory reset policy.
+- **[DONE]** Business knowledge, freeform half: `@zeddev/bot` (`knowledge.ts`) plus migration
+  `0012_bot_knowledge_entries` and `GET /v1/bot/knowledge`, `POST /v1/bot/knowledge/entries`,
+  `PUT /v1/bot/knowledge/entries/entry`, `POST /v1/bot/knowledge/entries/entry/delete`; `/v1/bot/status` now
+  carries `businessKnowledge`. AC1, AC2, AC5–AC12 covered for entries (AC5–AC8 at the instruction layer).
+  See §4o.
+> **P1 remaining scope.** Everything below this line — language configuration, document upload, and
+> conversation memory reset policy. All three are blocked on §4 decisions.
 
 - Language configuration with a platform default, per `language-configuration.md`.
-- Business knowledge configuration: freeform entries plus document upload, with upload failures surfaced
-  rather than silently dropped, and a combined listing view.
+- Business knowledge document upload, with upload failures surfaced rather than silently dropped, joining the
+  existing entry listing and the `knowledgeConfigured` answer (§4o). **Blocked** on accepted formats/size.
 - Conversation memory reset policy configuration (inactivity window plus manual reset).
 
 ### P2 — Data plane (the bot actually holds conversations)
@@ -519,8 +531,9 @@ call must never be able to cause Meta to redeliver.
   assertions; `behavior-rules-configuration.md` covers 15 of 16, AC16 preview pending the AI port.) (After
   the fallback increment: 16 of 27 specs, 288 assertions; `fallback-response-behavior.md` covers 9 of 13 at
   the configuration layer.) (After the disclosure increment: 17 of 27 specs, 297 assertions;
-  `bot-disclosure-setting.md` covers 8 of 9.) (After the handoff-configuration increment: 18 of 27 specs, 303
-  assertions; `human-handoff.md` covers AC1–AC5 of 13.)
+  `bot-disclosure-setting.md` covers 8 of 9.) (After the handoff-configuration increment: 303
+  assertions; `human-handoff.md` covers AC1–AC5 of 13.) (After the knowledge-entries increment: 18 of 27 specs,
+  316 assertions; `business-knowledge-configuration.md` covers 10 of 12 criteria — AC3/AC4 are document upload.)
 
 ---
 
@@ -1255,6 +1268,45 @@ SMTP).
   is not offered; handoff state is per conversation only.
 - The notification channel is still a §4 decision.
 - The web screen for handoff does not exist (`services/web`).
+
+---
+
+## 4o. Findings from the business knowledge (freeform entries) increment
+
+- **An entry is one block of text and nothing else.** **[DECISION]** No title, category, or tags: AC2 requires
+  "without any required structure", and an optional title would become a field the screen nags for. An edit
+  replaces the text in place and keeps the id and list position (`position` identity column, same reason as
+  §4k: two entries created in one transaction share `now()`).
+- **Limits: 4000 characters per entry, 100 entries per tenant.** **[DECISION]** The spec assumes no limit and
+  leaves any to implementation. Until retrieval exists, the reply path renders every entry into every prompt,
+  so the cap bounds prompt cost on a free-tier provider; bulk knowledge belongs in documents. The per-entry
+  limit is mirrored by the CHECK in migration 0012 (tested at the boundary with 4000 emoji), and the cap is
+  enforced under a per-tenant advisory lock, raced by five concurrent adds for the last slot.
+- **A blank entry cannot exist.** It would make knowledge read as "configured" while telling the bot nothing.
+  The validator refuses it and the CHECK refuses empty or untrimmed content. Removing an entry is what delete is for.
+- **"Recommended but not required" (AC10) sits beside readiness, never inside it.** `describeKnowledgeStatus`
+  is merged into `GET /v1/bot/status` and `PUT /v1/bot/activation` responses as `businessKnowledge` by one
+  helper (`statusBody` in `app.ts`), read in the same transaction as the readiness row. AC9 is structural:
+  no clause in `app.bot_readiness_unmet`, no readiness trigger on the table — a test goes ready with no
+  knowledge and adds/removes an entry without readiness changing.
+- **Entries render JSON-quoted.** An entry is multi-line; quoting keeps one entry from reading as the start of
+  the next, or as an instruction about the list. `knowledgeDirectives` returns `undefined` when nothing is
+  configured, so the section is absent rather than present and empty.
+- **Knowledge is the second area that must answer "configured" from two sources.** `knowledgeConfigured` is
+  the one place that answer is computed; when documents land it must count them too, or a client who only
+  uploads would be told knowledge is unconfigured.
+
+### Follow-ups the knowledge-entries increment leaves open
+
+- Document upload (AC3, AC4, and the document halves of AC5, AC8, AC12) — blocked on the §4 formats/size
+  decision. Needs a `bot_knowledge_documents` table (the authoritative index of stored objects under RLS, per
+  §1's object-storage decision), processing with a visible failed state, and inclusion in `describeKnowledge`,
+  `knowledgeConfigured`, and `knowledgeDirectives`' input. This is also the first service to hold an object
+  store, which puts MinIO in `compose.yaml` and requires calling `verifyAccess()` at startup (§4e).
+- Retrieval: if the reply path ever selects a subset of entries instead of all of them, it must pass the subset
+  through `knowledgeDirectives`, not render entries itself.
+- AC5–AC8 need output-level tests once P2's reply path and AI port exist.
+- The web screen for knowledge does not exist (`services/web`).
 
 ---
 
