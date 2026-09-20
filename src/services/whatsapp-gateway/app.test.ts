@@ -20,9 +20,11 @@ import { PostgresQueue } from '@zeddev/queue';
 import { specTest, unitTest } from '@zeddev/testing';
 import {
   assignPhoneNumber,
+  beginVerification,
   INBOUND_JOB_KIND,
   INBOUND_QUEUE,
   listInboundMessages,
+  readConnection,
   readInboundMessage,
   transitionConnection,
 } from '@zeddev/whatsapp';
@@ -43,6 +45,8 @@ function envFor(db: TestDatabase, overrides: Record<string, string> = {}): Recor
     DATABASE_SSL_MODE: 'disable',
     WHATSAPP_APP_SECRET: APP_SECRET,
     WHATSAPP_WEBHOOK_VERIFY_TOKEN: VERIFY_TOKEN,
+    WHATSAPP_APP_ID: '3090001111',
+    WHATSAPP_API_BASE_URL: 'https://example.com/v21.0',
     GATEWAY_HTTP_HOST: '127.0.0.1',
     GATEWAY_HTTP_PORT: '0',
     ...overrides,
@@ -87,6 +91,8 @@ unitTest('startup names every missing gateway key at once', async () => {
       'DATABASE_NAME',
       'DATABASE_PASSWORD',
       'DATABASE_USER',
+      'WHATSAPP_API_BASE_URL',
+      'WHATSAPP_APP_ID',
       'WHATSAPP_APP_SECRET',
       'WHATSAPP_WEBHOOK_VERIFY_TOKEN',
     ]);
@@ -392,6 +398,67 @@ describe('whatsapp gateway', { skip: testDatabaseConfigured() ? false : SKIP_REA
     },
   );
 
+  specTest(
+    'whatsapp-number-connection.md',
+    'AC1 a completed self-service flow with verified send and receive becomes connected',
+    'a reply carrying the connection code connects the number and is never stored as a conversation',
+    async () => {
+      counter += 1;
+      numberCounter += 1;
+      const phoneNumberId = String(numberCounter);
+      const owner = String(5511500000000 + numberCounter);
+      const code = '480913';
+
+      const tenant = await withIdentityScope(pool, async (tx) => {
+        const created = await tx.query<{ id: string }>(
+          `INSERT INTO tenants (business_name, provisioning_state) VALUES ($1, 'ready') RETURNING id`,
+          [`Gateway Verifier ${counter}`],
+        );
+        return created.rows[0]!.id;
+      });
+      await withTenant(pool, tenant, async (tx) => {
+        await transitionConnection(tx, 'connecting');
+        await assignPhoneNumber(tx, phoneNumberId);
+        await beginVerification(tx, {
+          recipient: owner,
+          code,
+          expiresAt: new Date(Date.now() + 15 * 60_000),
+        });
+      });
+
+      // The reply travels the real path: signed webhook, attributed by number,
+      // tenant-bound. That round trip is the whole proof the receive direction
+      // works, so nothing short of it may connect a number.
+      const body = envelope(phoneNumberId, [
+        textMessage('wamid.code-reply', `Code ${code}`, 1_760_000_000, owner),
+      ]);
+      const answer = await post(body);
+      assert.equal(answer.status, 200);
+
+      const status = await withTenant(pool, tenant, (tx) => readConnection(tx));
+      assert.equal(status.state, 'connected');
+
+      // And the code reply is not an end-customer message: storing it would put
+      // the client's own words in a transcript and, once the bot is on, have the
+      // bot answer them.
+      const stored = await withTenant(pool, tenant, (tx) => listInboundMessages(tx));
+      assert.deepEqual(stored, []);
+
+      // A redelivery of the same notification is recognised, not admitted.
+      assert.equal((await post(body)).status, 200);
+      assert.deepEqual(await withTenant(pool, tenant, (tx) => listInboundMessages(tx)), []);
+    },
+  );
+
+  unitTest('an end-customer message that merely contains digits is an ordinary message', async () => {
+    const { tenant, phoneNumberId } = await connectedTenant();
+    const body = envelope(phoneNumberId, [
+      textMessage('wamid.digits', 'my order number is 480913', 1_760_000_100),
+    ]);
+    assert.equal((await post(body)).status, 200);
+    const stored = await withTenant(pool, tenant, (tx) => listInboundMessages(tx));
+    assert.equal(stored.length, 1);
+  });
   unitTest('an oversized notification is refused before it is buffered, and unknown routes are 404/405', async () => {
     const huge = 'x'.repeat(gateway.settings.maxBodyBytes + 1);
     assert.equal((await post(huge, { 'x-hub-signature-256': signature(huge) })).status, 413);

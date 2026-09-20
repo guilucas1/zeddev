@@ -32,6 +32,8 @@ import { IdentityService, loadIdentityPolicy, type IdentityServiceOptions } from
 import { Logger, LOGGING_CONFIG_SCHEMA, type LogSink } from '@zeddev/logging';
 import { loadSmtpSettings, SmtpMailer, type Mailer } from '@zeddev/mail';
 import { migrateToLatest } from '@zeddev/schema';
+import { loadSealer } from '@zeddev/vault';
+import { GraphWhatsAppCloud, loadGraphCloudSettings, loadWhatsAppConfig, type WhatsAppCloud } from '@zeddev/whatsapp';
 import { createApi, type Api } from './app.ts';
 import { loadServerSettings, type ServerSettings } from './config.ts';
 
@@ -41,6 +43,8 @@ export interface StartOptions {
   readonly mailer?: Mailer | undefined;
   /** Replace the configured AI provider. Tests use this; a deployment never does. */
   readonly ai?: AiProvider | undefined;
+  /** Replace the WhatsApp Cloud API. Tests use this; a deployment never does. */
+  readonly cloud?: WhatsAppCloud | undefined;
   /** Test-only scrypt cost. See `IdentityServiceOptions.credentialParams` for why this is not configuration. */
   readonly credentialParams?: IdentityServiceOptions['credentialParams'];
 }
@@ -57,7 +61,7 @@ export interface RunningApi {
 }
 
 export async function startApi(env: RawEnv = process.env, options: StartOptions = {}): Promise<RunningApi> {
-  const [database, policy, smtp, ai, settings, logging] = loadAll([
+  const [database, policy, smtp, ai, settings, logging, sealer, whatsapp] = loadAll([
     () => loadDatabaseConfig(env),
     () => loadIdentityPolicy(env),
     // Parsed even when a test supplies its own mailer, so a deployment missing a
@@ -70,6 +74,12 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
     () => loadAiSettings(env),
     () => loadServerSettings(env),
     () => loadConfig(LOGGING_CONFIG_SCHEMA, env),
+    // The sealing keys. Built here, not inside `@zeddev/whatsapp`, so a missing
+    // or malformed key is one of the failures reported in this same list rather
+    // than a crash at the first connect — `credential-and-secret-handling.md`
+    // AC2 asks for exactly that.
+    () => loadSealer(env),
+    () => loadWhatsAppConfig(env),
   ] as const);
 
   const logger = new Logger({
@@ -101,6 +111,9 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
     identity,
     mailer,
     ai: options.ai ?? createAiProvider(ai),
+    cloud: options.cloud ?? new GraphWhatsAppCloud(loadGraphCloudSettings(env)),
+    sealer,
+    verificationTtlMs: whatsapp.WHATSAPP_VERIFICATION_TTL,
     pool,
     settings,
     logger,

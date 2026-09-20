@@ -18,12 +18,13 @@
  * `@zeddev/bot`, and must not need to: a path that changes the state without
  * going through here is still covered.
  *
- * ## What is not here yet
+ * ## What is not here
  *
  * Authorizing a number with Meta and verifying it can send and receive — the
- * part that earns `connecting → connected` — is the WhatsApp gateway's (P2).
- * `transitionConnection` records that outcome; it does not establish it, so no
- * client-facing surface may call it with `connected`.
+ * part that earns `connecting → connected` — is `onboarding.ts`'s, and the
+ * inbound reply that completes it arrives at the gateway.
+ * `transitionConnection` records that outcome; it does not establish it, which
+ * is why no client-facing surface may call it with `connected` directly.
  */
 
 import type { Connection } from '@zeddev/db';

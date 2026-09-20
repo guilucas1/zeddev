@@ -97,6 +97,15 @@ Carries the email-verification and password-reset links that client-signup-and-t
 | `MAIL_TLS` | enum(disable\|starttls\|implicit) | no | `starttls` | How TLS is reached: "starttls" upgrades an established cleartext connection and fails if the server does not offer it, "implicit" speaks TLS from the first byte, "disable" does not encrypt at all and is appropriate only over a trusted local network such as a container network on a single host. There is deliberately no opportunistic mode — a silent fallback to cleartext is a downgrade nothing observes. |
 | `MAIL_USERNAME` | string | no | `` | Account to authenticate as. Empty means do not authenticate, which is correct for a local relay that accepts mail from its own host and for nothing else. |
 
+## Secret sealing
+
+The keys that encrypt every stored credential the platform must be able to use, above all each tenant's WhatsApp access token. credential-and-secret-handling.md AC4 requires that reading the stored data alone be insufficient to use a credential, so the keys are supplied here and held nowhere the database is — a dump, a replica, or a backup is then useless on its own. A list rather than one key is what makes rotation a configuration change (AC8, AC9) instead of a flag day: values sealed under a retired id keep unsealing for as long as that id is still listed. A managed cloud KMS would satisfy AC4 too, but it exists on only one of the three tiers environment-portability.md names, and cost-efficient-operation.md rules out an always-on service besides.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `VAULT_ACTIVE_SEALING_KEY` | string | no | `` | Which of VAULT_SEALING_KEYS seals new and re-sealed values, by key id. Empty means the first entry. Rotation is: append the new key, set this to its id, restart — nothing is re-encrypted eagerly and nothing becomes unreadable. |
+| `VAULT_SEALING_KEYS` | string | yes | — | Comma-separated list of the keys that encrypt every stored credential the platform must be able to *use* — a tenant's WhatsApp access token above all. Each entry is "<key id>:<32 bytes, base64>". Generate one with `node -e "import('@zeddev/secrets').then(m => console.log(m.generateSealingKey('k1')))"`. More than one entry is how a key is rotated: values sealed under an older id keep unsealing for as long as that id is still listed. Without this the database alone would be enough to use every tenant's number (credential-and-secret-handling.md AC4). **(secret)** |
+
 ## AI provider
 
 The model that writes every bot reply, reads images, and transcribes voice notes. ai-provider-portability.md requires swapping it — and reverting the swap — be a configuration change, so these keys are the whole mechanism: one platform-wide selection, applied to every tenant at once, with no per-provider tenant state to migrate. The base URL is always stated rather than defaulted, so a deployment can point the same adapter at a vendor, a gateway, or a local model server without a code change. AI_CAPABILITIES records what the chosen model can do; a message needing anything else is answered with the fallback message the client wrote rather than sent to a model that cannot handle it.
@@ -114,11 +123,15 @@ The model that writes every bot reply, reads images, and transcribes voice notes
 
 ## WhatsApp
 
-The platform's one Meta app, which every client's number is authorized to. Platform-wide rather than per tenant: a client's own access token is a tenant secret and never an environment value. Both keys are secrets — the app secret is what proves an inbound notification came from Meta (message-delivery-reliability.md AC2), and without it anyone who found the webhook URL could inject messages into any tenant's conversations.
+The platform's one Meta app, which every client's number is authorized to. Platform-wide rather than per tenant: a client's own access token is a tenant secret and never an environment value. The app secret is what proves an inbound notification came from Meta (message-delivery-reliability.md AC2), and without it anyone who found the webhook URL could inject messages into any tenant's conversations. The app id is needed as well as the secret because connecting a number subscribes the client's WhatsApp Business Account to this app by id, and the connection flow checks that subscription. WHATSAPP_API_BASE_URL is stated rather than defaulted for the reason AI_BASE_URL is: an embedded vendor URL pins the deployment to one upstream and to one API version, so a version bump would stop being a configuration change.
 
 | Variable | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
+| `WHATSAPP_API_BASE_URL` | url | yes | — | Versioned Graph API root the adapter appends its paths to, including the version segment. Always stated, never defaulted: an embedded vendor URL pins the deployment to one upstream and to one API version, so it could be pointed at neither a sandbox nor a recorded stub without a code change, and a version bump would stop being a configuration change. |
+| `WHATSAPP_APP_ID` | string | yes | — | The Meta app's numeric id. A client's WhatsApp Business Account has to be subscribed to this app before Meta will deliver its messages here, and the connection flow both performs that subscription and checks it — which is why the id has to be known, not just the secret. |
 | `WHATSAPP_APP_SECRET` | string | yes | — | The Meta app's secret. Every inbound webhook notification carries an HMAC-SHA256 of its body keyed with it (X-Hub-Signature-256), and a notification whose signature does not verify is refused and recorded rather than processed — message-delivery-reliability.md AC2. Without it anyone who finds the webhook URL could inject messages into any tenant's conversations. **(secret)** |
+| `WHATSAPP_REQUEST_TIMEOUT` | duration | no | `15000` | How long one Graph API call may take, including reading the response. Exceeding it counts as a transient failure: a timeout is no evidence about the credentials, so it must never move a working connection to error. |
+| `WHATSAPP_VERIFICATION_TTL` | duration | no | `900000` | How long a client has to reply with the connection code before the attempt is abandoned and the connection reports verification_failed. Long enough to find the phone, short enough that a code seen over someone’s shoulder is not useful later. |
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | string | yes | — | A value you choose and enter in the Meta app dashboard when subscribing the webhook. Meta echoes it once in a GET handshake to prove the subscription request came from the dashboard you control; the gateway answers the handshake only when it matches. **(secret)** |
 
 ## Logging
@@ -445,8 +458,29 @@ STORAGE_SECRET_ACCESS_KEY=
 # default: true
 STORAGE_TLS=true
 
+# Which of VAULT_SEALING_KEYS seals new and re-sealed values, by key id. Empty means the first entry. Rotation is: append the new key, set this to its id, restart — nothing is re-encrypted eagerly and nothing becomes unreadable.
+# default: 
+VAULT_ACTIVE_SEALING_KEY=
+
+# Comma-separated list of the keys that encrypt every stored credential the platform must be able to *use* — a tenant's WhatsApp access token above all. Each entry is "<key id>:<32 bytes, base64>". Generate one with `node -e "import('@zeddev/secrets').then(m => console.log(m.generateSealingKey('k1')))"`. More than one entry is how a key is rotated: values sealed under an older id keep unsealing for as long as that id is still listed. Without this the database alone would be enough to use every tenant's number (credential-and-secret-handling.md AC4).
+VAULT_SEALING_KEYS=k1:REPLACE_WITH_32_RANDOM_BYTES_BASE64
+
+# Versioned Graph API root the adapter appends its paths to, including the version segment. Always stated, never defaulted: an embedded vendor URL pins the deployment to one upstream and to one API version, so it could be pointed at neither a sandbox nor a recorded stub without a code change, and a version bump would stop being a configuration change.
+WHATSAPP_API_BASE_URL=https://example.com/v21.0
+
+# The Meta app's numeric id. A client's WhatsApp Business Account has to be subscribed to this app before Meta will deliver its messages here, and the connection flow both performs that subscription and checks it — which is why the id has to be known, not just the secret.
+WHATSAPP_APP_ID=3090001111
+
 # The Meta app's secret. Every inbound webhook notification carries an HMAC-SHA256 of its body keyed with it (X-Hub-Signature-256), and a notification whose signature does not verify is refused and recorded rather than processed — message-delivery-reliability.md AC2. Without it anyone who finds the webhook URL could inject messages into any tenant's conversations.
 WHATSAPP_APP_SECRET=
+
+# How long one Graph API call may take, including reading the response. Exceeding it counts as a transient failure: a timeout is no evidence about the credentials, so it must never move a working connection to error.
+# default: 15000
+WHATSAPP_REQUEST_TIMEOUT=15000
+
+# How long a client has to reply with the connection code before the attempt is abandoned and the connection reports verification_failed. Long enough to find the phone, short enough that a code seen over someone’s shoulder is not useful later.
+# default: 900000
+WHATSAPP_VERIFICATION_TTL=900000
 
 # A value you choose and enter in the Meta app dashboard when subscribing the webhook. Meta echoes it once in a GET handshake to prove the subscription request came from the dashboard you control; the gateway answers the handshake only when it matches.
 WHATSAPP_WEBHOOK_VERIFY_TOKEN=

@@ -39,6 +39,7 @@ import { IDENTITY_CONFIG_SCHEMA } from '@zeddev/identity';
 import { LOGGING_CONFIG_SCHEMA } from '@zeddev/logging';
 import { MAIL_CONFIG_SCHEMA } from '@zeddev/mail';
 import { STORAGE_CONFIG_SCHEMA } from '@zeddev/storage';
+import { VAULT_CONFIG_SCHEMA } from '@zeddev/vault';
 import { WHATSAPP_CONFIG_SCHEMA } from '@zeddev/whatsapp';
 import { GATEWAY_CONFIG_SCHEMA } from '@zeddev/whatsapp-gateway/config';
 
@@ -83,6 +84,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     schema: MAIL_CONFIG_SCHEMA,
   },
   {
+    title: 'Secret sealing',
+    rationale:
+      "The keys that encrypt every stored credential the platform must be able to use, above all each tenant's WhatsApp access token. credential-and-secret-handling.md AC4 requires that reading the stored data alone be insufficient to use a credential, so the keys are supplied here and held nowhere the database is — a dump, a replica, or a backup is then useless on its own. A list rather than one key is what makes rotation a configuration change (AC8, AC9) instead of a flag day: values sealed under a retired id keep unsealing for as long as that id is still listed. A managed cloud KMS would satisfy AC4 too, but it exists on only one of the three tiers environment-portability.md names, and cost-efficient-operation.md rules out an always-on service besides.",
+    schema: VAULT_CONFIG_SCHEMA,
+  },
+  {
     title: 'AI provider',
     rationale:
       'The model that writes every bot reply, reads images, and transcribes voice notes. ai-provider-portability.md requires swapping it — and reverting the swap — be a configuration change, so these keys are the whole mechanism: one platform-wide selection, applied to every tenant at once, with no per-provider tenant state to migrate. The base URL is always stated rather than defaulted, so a deployment can point the same adapter at a vendor, a gateway, or a local model server without a code change. AI_CAPABILITIES records what the chosen model can do; a message needing anything else is answered with the fallback message the client wrote rather than sent to a model that cannot handle it.',
@@ -91,7 +98,7 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
   {
     title: 'WhatsApp',
     rationale:
-      "The platform's one Meta app, which every client's number is authorized to. Platform-wide rather than per tenant: a client's own access token is a tenant secret and never an environment value. Both keys are secrets — the app secret is what proves an inbound notification came from Meta (message-delivery-reliability.md AC2), and without it anyone who found the webhook URL could inject messages into any tenant's conversations.",
+      "The platform's one Meta app, which every client's number is authorized to. Platform-wide rather than per tenant: a client's own access token is a tenant secret and never an environment value. The app secret is what proves an inbound notification came from Meta (message-delivery-reliability.md AC2), and without it anyone who found the webhook URL could inject messages into any tenant's conversations. The app id is needed as well as the secret because connecting a number subscribes the client's WhatsApp Business Account to this app by id, and the connection flow checks that subscription. WHATSAPP_API_BASE_URL is stated rather than defaulted for the reason AI_BASE_URL is: an embedded vendor URL pins the deployment to one upstream and to one API version, so a version bump would stop being a configuration change.",
     schema: WHATSAPP_CONFIG_SCHEMA,
   },
   {

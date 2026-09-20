@@ -4,13 +4,16 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./index.ts"
+    ".": "./index.ts",
+    "./testing": "./testing.ts"
   },
   "dependencies": {
     "@zeddev/config": "*",
     "@zeddev/db": "*",
     "@zeddev/errors": "*",
-    "@zeddev/secrets": "*"
+    "@zeddev/secrets": "*",
+    "@zeddev/vault": "*",
+    "@zeddev/time": "*"
   },
   "devDependencies": {
     "@zeddev/schema": "*",

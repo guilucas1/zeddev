@@ -22,7 +22,8 @@
     "@zeddev/secrets": "*",
     "@zeddev/tenancy": "*",
     "@zeddev/time": "*",
-    "@zeddev/whatsapp": "*"
+    "@zeddev/whatsapp": "*",
+    "@zeddev/vault": "*"
   },
   "devDependencies": {
     "@zeddev/testing": "*"

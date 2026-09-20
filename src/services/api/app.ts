@@ -91,8 +91,34 @@ import { AuthenticationError, TransientTransportError, ValidationError } from '@
 import type { Action, ClientPrincipal, IdentityService } from '@zeddev/identity';
 import { Logger } from '@zeddev/logging';
 import type { Mailer } from '@zeddev/mail';
+import type { SecretSealer } from '@zeddev/secrets';
 import { SystemClock, type Clock } from '@zeddev/time';
-import { connectionHistory, describeConnection, disconnectWhatsApp, readConnection } from '@zeddev/whatsapp';
+import {
+  abandonVerification,
+  beginVerification,
+  businessVerificationBlocked,
+  CLOUD_RECOVERABLE_REASONS,
+  cloudFailureReason,
+  connectionCodeMessage,
+  connectionHistory,
+  describeCloudFailure,
+  describeConnection,
+  describeConnectionSetup,
+  disconnectNumber,
+  expireStaleVerification,
+  generateVerificationCode,
+  loadCloudCredentials,
+  parseCredentialSubmission,
+  parseVerificationRequest,
+  readConnectedNumber,
+  readConnection,
+  readVerification,
+  recordVerificationSent,
+  submitCredentials,
+  type CloudCredentials,
+  type ConnectionErrorReason,
+  type WhatsAppCloud,
+} from '@zeddev/whatsapp';
 import type { ApiSettings } from './config.ts';
 import {
   clientAddress,
@@ -118,6 +144,25 @@ export interface ApiDependencies {
   readonly mailer: Mailer;
   /** The platform's AI provider. Used by the reply preview, and described to the operator. */
   readonly ai: AiProvider;
+  /** Meta's Cloud API, used by the connection flow to prove a number works. */
+  readonly cloud: WhatsAppCloud;
+  /**
+   * Seals a tenant's WhatsApp access token before it is stored.
+   *
+   * Held by the service rather than reached for inside `@zeddev/whatsapp`
+   * because the keys are configuration: a library that loaded its own key could
+   * not be handed a different one in a test, and rotation would stop being
+   * expressible.
+   */
+  readonly sealer: SecretSealer;
+  /**
+   * How long a client has to reply with their connection code
+   * (`WHATSAPP_VERIFICATION_TTL`).
+   *
+   * Passed in rather than read from `ApiSettings` because it belongs to the
+   * WhatsApp schema, which the gateway loads too — one key, one definition.
+   */
+  readonly verificationTtlMs: number;
   /** Used only by the readiness probe. Every data access goes through `identity`. */
   readonly pool: Pool;
   readonly settings: ApiSettings;
@@ -150,7 +195,7 @@ interface Route {
 const ACCEPTED = { status: 'accepted' } as const;
 
 export function createApi(dependencies: ApiDependencies): Api {
-  const { identity, pool, settings, ai } = dependencies;
+  const { identity, pool, settings, ai, cloud, sealer, verificationTtlMs } = dependencies;
   const clock = dependencies.clock ?? new SystemClock();
   const logger = (dependencies.logger ?? new Logger()).child({ component: 'api' });
   const outbox = new MailOutbox(dependencies.mailer, logger);
@@ -201,6 +246,62 @@ export function createApi(dependencies: ApiDependencies): Api {
    * a transaction bound to that tenant opened. An operator's token presented in the
    * client cookie is refused at resolution (AC22) before any of that.
    */
+  /**
+   * Everything that has to hold at Meta before a connection code is worth
+   * sending, and then the send.
+   *
+   * Ordered so the client gets the most actionable diagnosis first. Business
+   * verification comes before anything technical because only Meta can resolve
+   * it (AC9), and the subscription check comes before the send because a code
+   * that goes out on an unsubscribed account leaves the client waiting for a
+   * reply that can never arrive — the failure would look like "my phone did not
+   * get it" rather than "this account does not deliver to the platform".
+   *
+   * Returns the failure rather than throwing it. A rejected token is the
+   * client’s situation to act on, not a server fault, and a 500 with no reason
+   * is exactly the opaque failure `whatsapp-number-connection.md` AC12 forbids.
+   */
+  async function probeAndSend(
+    credentials: CloudCredentials,
+    recipient: string,
+    code: string,
+  ): Promise<
+    | {
+        readonly sent: true;
+        readonly outboundMessageId: string;
+        readonly displayNumber: string;
+        readonly verifiedName: string;
+      }
+    | {
+        readonly sent: false;
+        readonly reason: ConnectionErrorReason | 'transient';
+        readonly description: string;
+      }
+  > {
+    const refuse = (reason: ConnectionErrorReason | 'transient') =>
+      ({ sent: false, reason, description: describeCloudFailure(reason) }) as const;
+    try {
+      const business = await cloud.describeBusinessAccount(credentials);
+      if (businessVerificationBlocked(business)) return refuse('business_verification_required');
+      const number = await cloud.describeNumber(credentials);
+      await cloud.subscribeApp(credentials);
+      const subscribed = await cloud.listSubscribedApps(credentials);
+      if (!subscribed.includes(cloud.descriptor.appId)) return refuse('configuration_invalid');
+      const sent = await cloud.sendText(credentials, { to: recipient, body: connectionCodeMessage(code) });
+      return {
+        sent: true,
+        outboundMessageId: sent.messageId,
+        displayNumber: number.displayNumber,
+        verifiedName: number.verifiedName,
+      };
+    } catch (error) {
+      const reason = cloudFailureReason(error);
+      // Anything this port did not classify is a defect here, not a connection
+      // problem the client can fix, and must not be dressed up as one.
+      if (reason === undefined) throw error;
+      return refuse(reason);
+    }
+  }
   function asClient<T>(
     context: RequestContext,
     action: Action,
@@ -806,16 +907,125 @@ export function createApi(dependencies: ApiDependencies): Api {
     },
 
     // -----------------------------------------------------------------------
-    // WhatsApp connection state — whatsapp-number-connection.md. Connecting a
-    // number needs the gateway (P2); what exists now is the state, its history,
-    // and the client's manual disconnect.
+    // WhatsApp connection — whatsapp-number-connection.md's self-service flow.
+    //
+    // Three routes, matching the three things a client actually does: submit the
+    // number and token, ask for the code, and disconnect. Replying with the code
+    // is the fourth step and deliberately has no route — it arrives at the
+    // gateway, because a reply that came back through this API would prove
+    // nothing about whether WhatsApp can reach the platform.
     // -----------------------------------------------------------------------
     {
       method: 'GET',
       path: '/v1/whatsapp/connection',
       handle: async (context) => {
-        const body = await asClient(context, 'tenant.configuration.read', 'whatsapp.connection', async (tx) =>
-          describeConnection(await readConnection(tx), await connectionHistory(tx)),
+        const body = await asClient(context, 'tenant.configuration.read', 'whatsapp.connection', async (tx) => {
+          // A read is the only moment the answer matters, so it is also where a
+          // verification that ran out of time is judged — see
+          // `expireStaleVerification`. The client's intent is still to read their
+          // connection; the bookkeeping is the platform's, not a write they asked
+          // for.
+          const status = await expireStaleVerification(tx);
+          return {
+            ...describeConnection(status, await connectionHistory(tx)),
+            setup: describeConnectionSetup(status, await readConnectedNumber(tx), await readVerification(tx)),
+          };
+        });
+        return { status: 200, body };
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v1/whatsapp/connection',
+      handle: async (context) => {
+        const body = await asClient(
+          context,
+          'whatsapp.connection.manage',
+          'whatsapp.connection',
+          async (tx, principal) => {
+            const payload = await context.body();
+            const submission = parseCredentialSubmission(payload);
+            const replace = payload['replace'] === true;
+            const status = await submitCredentials(tx, sealer, submission, {
+              principal: principal.accountId,
+              replace,
+            });
+            return {
+              ...describeConnection(status, await connectionHistory(tx)),
+              setup: describeConnectionSetup(status, await readConnectedNumber(tx), await readVerification(tx)),
+            };
+          },
+        );
+        return { status: 200, body };
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v1/whatsapp/connection/verification',
+      handle: async (context) => {
+        const code = generateVerificationCode();
+        const expiresAt = new Date(clock.now().getTime() + verificationTtlMs);
+
+        // Phase one: the credentials to call Meta with, and the attempt that will
+        // record the outcome. Committed before the call, so a send that succeeds
+        // and then loses the process still leaves the client an attempt they can
+        // see — the reverse order optimises for the case that never produces a
+        // support ticket.
+        const opened = await asClient(
+          context,
+          'whatsapp.connection.manage',
+          'whatsapp.connection',
+          async (tx, principal) => {
+            const { recipient } = parseVerificationRequest(await context.body());
+            const credentials = await loadCloudCredentials(tx, sealer, { principal: principal.accountId });
+            const attempt = await beginVerification(tx, { recipient, code, expiresAt });
+            return { credentials, attempt, recipient };
+          },
+        );
+
+        // Phase two: Meta. Outside any transaction, for the reason the worker
+        // never calls a model inside one — a network round trip must not hold a
+        // database connection or a row lock.
+        const probe = await probeAndSend(opened.credentials, opened.recipient, code);
+
+        // Phase three: what happened. A second authorization is the price of not
+        // holding a transaction open across phase two, and it is recorded as a
+        // second action, which is an accurate description of what took place.
+        const body = await asClient(
+          context,
+          'whatsapp.connection.manage',
+          'whatsapp.connection',
+          async (tx) => {
+            // Narrowed here rather than inline: `transient` is a classification,
+            // not a connection state, so it can never be an error reason.
+            const failureReason = probe.sent ? undefined : probe.reason;
+            const recoverable =
+              failureReason === undefined ||
+              failureReason === 'transient' ||
+              CLOUD_RECOVERABLE_REASONS.has(failureReason);
+            if (probe.sent) {
+              await recordVerificationSent(tx, opened.attempt.id, {
+                outboundMessageId: probe.outboundMessageId,
+                displayNumber: probe.displayNumber,
+                verifiedName: probe.verifiedName,
+              });
+            } else {
+              await abandonVerification(tx, opened.attempt.id, 'send_failed', {
+                // A recoverable failure leaves the connection in `connecting`: a
+                // rate limit or a Meta hiccup is no reason to make the client
+                // re-enter credentials that were never wrong.
+                errorReason: recoverable ? undefined : failureReason,
+              });
+            }
+            const status = await readConnection(tx);
+            return {
+              ...describeConnection(status, await connectionHistory(tx)),
+              setup: describeConnectionSetup(status, await readConnectedNumber(tx), await readVerification(tx)),
+              attempt: probe.sent
+                ? { sent: true, recipient: opened.recipient, expiresAt: expiresAt.toISOString() }
+                : { sent: false, reason: probe.reason, description: probe.description },
+            };
+          },
         );
         return { status: 200, body };
       },
@@ -824,10 +1034,18 @@ export function createApi(dependencies: ApiDependencies): Api {
       method: 'POST',
       path: '/v1/whatsapp/connection/disconnect',
       handle: async (context) => {
-        const body = await asClient(context, 'whatsapp.connection.manage', 'whatsapp.connection', async (tx) => {
-          await disconnectWhatsApp(tx);
-          return describeConnection(await readConnection(tx), await connectionHistory(tx));
-        });
+        const body = await asClient(
+          context,
+          'whatsapp.connection.manage',
+          'whatsapp.connection',
+          async (tx, principal) => {
+            const status = await disconnectNumber(tx, { principal: principal.accountId });
+            return {
+              ...describeConnection(status, await connectionHistory(tx)),
+              setup: describeConnectionSetup(status, await readConnectedNumber(tx), await readVerification(tx)),
+            };
+          },
+        );
         return { status: 200, body };
       },
     },

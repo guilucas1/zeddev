@@ -36,6 +36,7 @@ import { endCustomerRef, type Logger } from '@zeddev/logging';
 import type { EnqueueRequest, EnqueueResult } from '@zeddev/queue';
 import {
   attributeInboundNumber,
+  consumeVerificationReply,
   INBOUND_JOB_KIND,
   parseWebhookNotification,
   recordInboundMessage,
@@ -121,6 +122,29 @@ export function createGateway(dependencies: GatewayDependencies): Gateway {
     const inSentOrder = [...batch.messages].sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
     await withTenant(pool, tenantId, async (tx) => {
       for (const message of inSentOrder) {
+        // The receive half of connecting a number, before anything else looks at
+        // the message. A client replying with their connection code is proving the
+        // webhook path works, not talking to their own bot: storing it would put
+        // the client's own words in an end-customer transcript, and — once the
+        // number is connected and the bot switched on — have the bot answer them.
+        // `consumeVerificationReply` claims only a reply from the number the
+        // client nominated, so an ordinary customer is unaffected.
+        if (message.type === 'text' && 'text' in message.content) {
+          const verdict = await consumeVerificationReply(tx, {
+            customerId: message.customerId,
+            text: message.content.text,
+            externalId: message.externalId,
+          });
+          if (verdict === 'verified' || verdict === 'already_consumed') {
+            logger.info('gateway.verification.consumed', {
+              requestId,
+              tenantId,
+              externalId: message.externalId,
+              verdict,
+            });
+            continue;
+          }
+        }
         const stored = await recordInboundMessage(tx, batch.phoneNumberId, message);
         const fields = {
           requestId,

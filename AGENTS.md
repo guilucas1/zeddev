@@ -69,6 +69,13 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   `AI_PROVIDERS` (`src/lib/ai/registry.ts`). Adapters only encode and decode; validation, turn merging, retry,
   and failure classification live in `request.ts`/`attempts.ts` and are shared. Import `InMemoryAiProvider`
   only from `@zeddev/ai/testing`.
+- **A new `WhatsAppCloud` implementation must pass the shared conformance suite.**
+  `runWhatsAppCloudConformance(harness)` from `@zeddev/whatsapp/testing` is the single definition of the
+  port's semantics and runs against both the Graph adapter (over `startGraphStub`, a local server speaking
+  Meta's wire format) and the in-memory fake. Import `InMemoryWhatsAppCloud` only from
+  `@zeddev/whatsapp/testing`, never from `@zeddev/whatsapp`.
+- **`tenant_secrets` is read and written only through `@zeddev/vault`.** Every entry point there records a
+  `secret_access_records` row and refuses a connection with no bound tenant. Do not query the table directly.
 - **Message bytes are built in exactly one place**: `buildMessage` in `src/lib/mail/message.ts`.
   Both adapters call it, which is what makes the fake's validation and encoding identical to the
   real one's. Do not let an adapter assemble headers itself.

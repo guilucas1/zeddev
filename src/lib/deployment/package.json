@@ -17,7 +17,8 @@
     "@zeddev/mail": "*",
     "@zeddev/storage": "*",
     "@zeddev/whatsapp": "*",
-    "@zeddev/whatsapp-gateway": "*"
+    "@zeddev/whatsapp-gateway": "*",
+    "@zeddev/vault": "*"
   },
   "devDependencies": {
     "@zeddev/testing": "*"

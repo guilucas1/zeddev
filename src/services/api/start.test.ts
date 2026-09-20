@@ -25,6 +25,7 @@ import { IdentityService } from '@zeddev/identity';
 import { Logger, MemorySink } from '@zeddev/logging';
 import { InMemoryMailer } from '@zeddev/mail/testing';
 import { REPO_ROOT, specTest, unitTest } from '@zeddev/testing';
+import { generateSealingKey } from '@zeddev/secrets';
 import { runCli } from './cli.ts';
 import { startApi } from './start.ts';
 
@@ -42,6 +43,11 @@ const REQUIRED_KEYS = [
   'DATABASE_USER',
   'MAIL_FROM_ADDRESS',
   'MAIL_HOST',
+  'VAULT_SEALING_KEYS',
+  'WHATSAPP_API_BASE_URL',
+  'WHATSAPP_APP_ID',
+  'WHATSAPP_APP_SECRET',
+  'WHATSAPP_WEBHOOK_VERIFY_TOKEN',
 ];
 
 function envFor(db: TestDatabase, overrides: Record<string, string> = {}): Record<string, string> {
@@ -60,6 +66,13 @@ function envFor(db: TestDatabase, overrides: Record<string, string> = {}): Recor
     API_PUBLIC_BASE_URL: 'https://app.example.com',
     API_HTTP_HOST: '127.0.0.1',
     API_HTTP_PORT: '0',
+    // Generated, never written down: a literal sealing key in a source file is a
+    // credential-shaped literal, which `portability.test.ts` refuses.
+    VAULT_SEALING_KEYS: generateSealingKey('test'),
+    WHATSAPP_APP_SECRET: 'gateway-app-secret-0123456789',
+    WHATSAPP_WEBHOOK_VERIFY_TOKEN: 'gateway-verify-token-0123456789',
+    WHATSAPP_APP_ID: '3090001111',
+    WHATSAPP_API_BASE_URL: 'https://example.com/v21.0',
     ...overrides,
   };
 }
@@ -97,7 +110,9 @@ describe('startup configuration', () => {
       // needs to start Node at all.
       const env = Object.fromEntries(
         Object.entries(process.env).filter(
-          ([key]) => !/^(DATABASE|MAIL|API|IDENTITY|STORAGE|LOG|ZEDDEV|AI)_/.test(key) && key !== 'LOG_LEVEL',
+          ([key]) =>
+            !/^(DATABASE|MAIL|API|IDENTITY|STORAGE|LOG|ZEDDEV|AI|VAULT|WHATSAPP)_/.test(key) &&
+            key !== 'LOG_LEVEL',
         ),
       );
       const result = spawnSync(process.execPath, [join('src', 'services', 'api', 'main.ts')], {

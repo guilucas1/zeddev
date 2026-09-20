@@ -109,11 +109,22 @@ outbound sender drains), and `conversation_handoff_events`. A new route,
 which had been silently delaying every retry and turn close by up to 30 s. See §4s. That brings the totals to
 889 passing tests, zero skipped, 23 of 27 specs with covering tests, 409 spec-linked assertions.
 
+The WhatsApp connection flow is done too, which closes the last P2 item that nothing else could start
+without. `@zeddev/whatsapp` gained the Cloud API itself — a port (`cloud.ts`), Meta's Graph adapter
+(`graph.ts`), an in-memory fake, a local HTTP stub speaking Meta's wire format, and one conformance suite
+holding all of them to the same answers — and the four-step self-service flow that drives the state machine
+with it (`onboarding.ts`): authorize, submit, send a one-time code, and reply with it. Only the inbound reply
+earns `connected`. Alongside it, a new library, `@zeddev/vault`, makes `tenant_secrets` reachable from exactly
+one place, with a configured list of sealing keys so rotation is configuration. Migration
+`0015_whatsapp_connection_setup` adds the verification attempt table and the connection's Meta-side names;
+three API routes and one gateway hook complete the flow. See §4t. That brings the totals to 974 passing tests,
+zero skipped, 23 of 27 specs with covering tests, 445 spec-linked assertions.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the
 supported-language list, document upload on accepted document formats and size limits, memory reset policy on
-the default inactivity window. The next unblocked work is the WhatsApp connection flow — it stores the
-tenant's access token as a tenant secret, which both the outbound sender and media retrieval need — then the
-outbound sender that drains `conversation_turn_outcomes` rows with `delivery_state = 'pending'`, then image and
+the default inactivity window. The next unblocked work is the outbound sender that drains
+`conversation_turn_outcomes` rows with `delivery_state = 'pending'` — now unblocked, because the connection
+flow stores the tenant's access token as a tenant secret and `WhatsAppCloud.sendText` exists — then image and
 voice understanding, which replace the "could not be viewed/listened to" notes.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
@@ -477,16 +488,21 @@ call must never be able to cause Meta to redeliver.
 
 ### P2 — Data plane (the bot actually holds conversations)
 
-- WhatsApp connection flow: guided self-service authorization, send/receive verification before marking
-  connected, and rejection of a second concurrent number. `whatsapp-number-connection.md` is explicit that
-  submitted credentials alone must never produce a "connected" state.
+- **[DONE]** WhatsApp connection flow: guided self-service authorization (`CONNECTION_STEPS`), send/receive
+  verification by a one-time code the client must reply with before the number is marked connected, and
+  rejection of a second concurrent number with a 409. `whatsapp-number-connection.md` is explicit that
+  submitted credentials alone must never produce a "connected" state, and no edge into `connected` exists
+  except from `connecting`. AC1–AC3, AC7–AC10, AC12 covered. See §4t.
 - **[DONE]** The state, its fixed vocabulary (connecting / connected / reconnecting / error /
   disconnected), the legal-transition table, timestamped transition history, and surfaced error reasons —
   including Meta-side business-verification failure as a distinct condition
   (`business_verification_required`) — in `@zeddev/whatsapp` plus migration `0006_whatsapp_connection`. What
-  remains is *driving* it: the gateway observing Meta signals, bounded automatic reconnection in the
-  scheduler (attempt policy undecided), and offboarding transitioning to `disconnected`.
-- Number replacement as a distinct guided flow that structurally cannot produce a dual-active window.
+  remains is *driving* the two transitions the connection flow does not: bounded automatic reconnection from
+  an observed send failure (attempt policy undecided — the outbound sender's), and offboarding transitioning to
+  `disconnected` (P4).
+- **[DONE]** Number replacement as a distinct guided flow that structurally cannot produce a dual-active
+  window: `submitCredentials(..., { replace: true })` goes through `disconnected` — releasing the old number's
+  route — before assigning the new one. See §4t.
 - **[DONE]** Inbound webhook endpoint: `services/whatsapp-gateway` — signature verification, the subscription
   handshake, acknowledgement only after the message is committed and scheduled, tenant attribution from the
   receiving number, and rejection-with-record for anything unauthentic, unreadable, or unattributable. AC1–AC4,
@@ -519,9 +535,11 @@ call must never be able to cause Meta to redeliver.
   20 turns; the stored transcript itself is untouched. Inactivity and manual reset are still blocked on the §4
   default-inactivity-window decision. See §4s.
 - Knowledge retrieval grounding over configured freeform entries and ingested documents.
-- Outbound send with transient retry and backoff, exactly-once delivery from the end-customer's
+- **[NEXT]** Outbound send with transient retry and backoff, exactly-once delivery from the end-customer's
   perspective, terminal-failure recording feeding the operator metrics, and connection-state feedback when
-  a send failure indicates the connection itself is broken.
+  a send failure indicates the connection itself is broken. Unblocked as of §4t: `WhatsAppCloud.sendText`,
+  `loadCloudCredentials`, and `classifyCloudFailure` all exist. Needs a migration widening the
+  `delivery_state` CHECK on `conversation_turn_outcomes` past `pending`.
 - 24-hour customer service window detection and handling — **blocked on a product decision**, see §4.
 - **[PARTIAL]** Fallback execution across all three triggers, plus the new `not_understood` cause, are decided
   and recorded with literal text in the outbox (`conversation_turn_outcomes`); actually sending it is the
@@ -588,7 +606,11 @@ call must never be able to cause Meta to redeliver.
   (After the AI port increment: 20 of 27 specs, 347 assertions; `ai-provider-portability.md` covers AC1, AC2,
   AC3, AC5, AC8; `voice-message-understanding.md` gained its first two at the port layer.) (After the
   conversation worker increment: 23 of 27 specs, 409 assertions; `message-burst-aggregation.md` covers 10 of
-  12, `conversation-memory.md` 3 of 11 at the context layer.)
+  12, `conversation-memory.md` 3 of 11 at the context layer.) (After the connection flow increment: 23 of 27
+  specs, 445 assertions; `whatsapp-number-connection.md` covers 18 criteria and
+  `credential-and-secret-handling.md` 36 — the two specs `@zeddev/vault` and `@zeddev/whatsapp` jointly own.
+  The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
+  `language-configuration.md`, and `operator-proactive-alerting.md`.)
 
 ---
 
@@ -1570,6 +1592,103 @@ SMTP).
 - `purgeSucceeded` (§4d) is still not called by anything, and every turn now adds at least one more job row to
   what accumulates.
 - No live test against a real model yet for this path; §4p's recommended smoke test also covers the worker.
+
+---
+
+## 4t. Findings from the WhatsApp connection flow increment
+
+- **Connection is earned by a round trip, not by a form submission.** `whatsapp-number-connection.md`'s
+  strongest sentence is that submitted credentials must never produce "connected", so the flow is four steps
+  (`CONNECTION_STEPS` in `src/lib/whatsapp/onboarding.ts`): *authorize* the platform's Meta app on the
+  client's WhatsApp Business Account, *submit* the phone number id / business account id / access token,
+  *send* a one-time code from the number to a recipient the client nominates, and *reply* with that code from
+  the recipient's phone. Only the inbound reply moves the state to `connected`. The state machine backs this
+  structurally: `CONNECTION_TRANSITIONS` has no edge into `connected` except from `connecting`, so there is no
+  code path — not even a buggy one — that can promote a submission.
+- **The receive leg is proven by the gateway, which is the only component that can prove it.** The client's
+  reply arrives as an ordinary Meta webhook notification, so `consumeVerificationReply` runs in
+  `services/whatsapp-gateway` *before* the message is stored. A matching code is consumed and the message is
+  never written to `inbound_messages` — the code reply is not a conversation, and the worker must never answer
+  it. A non-matching message that merely contains digits falls through to the ordinary path untouched.
+- **One pending attempt per tenant, enforced by a partial unique index.** `whatsapp_connection_verifications`
+  has `UNIQUE (tenant_id) WHERE outcome = 'pending'`, which is what stops a stale code from staying valid
+  beside a newer one. Codes are stored only as a SHA-256 digest and compared in constant time; expiry is lazy
+  (`expireStaleVerification`, called on read) rather than scheduled, because a background sweeper for a
+  15-minute TTL is an always-on cost `cost-efficient-operation.md` does not want.
+- **Replacement goes through `disconnected` on purpose.** `submitCredentials(..., { replace: true })`
+  transitions the connection to `disconnected` — which fires the trigger that releases the old number's route —
+  and only then to `connecting` with the new number assigned. Adding a `connected → connecting` edge would have
+  been shorter and would have opened exactly the dual-active window the spec forbids. Without `replace`, a
+  second submission on a tenant that already holds a number is a `ConflictError` (409).
+- **[DECISION] Meta's Cloud API is a port with a wire-level stub, not a real upstream.** `@zeddev/storage` and
+  `@zeddev/mail` test against real servers because MinIO and Mailpit are free, local, and can be asked for any
+  answer. Meta is none of those: it needs a real business, a real number, and real money, and it cannot be told
+  to revoke a token or withdraw a business verification on demand — which is precisely what the acceptance
+  criteria are about. So `cloud.ts` is the port, `graph.ts` is the Graph adapter, `memory.ts` is the fake, and
+  `stubs.ts` is a local HTTP server that *decodes* Meta's documented wire shapes back into the port's
+  vocabulary before answering from the same scripted backend the fake uses. `runWhatsAppCloudConformance` then
+  holds fake and adapter to identical answers, so an assertion about "what the number was asked to send" is an
+  assertion about what went over the socket.
+- **Business verification is a first-class condition, checked before the send.** `businessVerificationBlocked`
+  reads Meta's `verification_status` / `account_review_status`; `CLOUD_ERROR_CODES` maps 131031 and 131042 to
+  the same `business_verification_required` reason the state machine already carried. A business Meta has not
+  verified is refused with its own reason and description rather than a generic failure, and without burning a
+  send attempt. `unknown` is deliberately not treated as blocked — Meta telling us nothing is not Meta telling
+  us no.
+- **The model call's shape, applied to the network.** `POST /v1/whatsapp/connection/verification` is three
+  phases: a short transaction that opens the attempt and unseals the credential, the Meta round trip outside
+  any transaction, then a second short transaction recording the outcome. The attempt row is written *before*
+  the send, so a send that succeeds and then crashes leaves a recoverable record rather than an invisible one.
+  This is the same rule the conversation worker follows for the model: never hold a database connection across
+  a network call to a third party.
+- **`@zeddev/vault` is new, and it is where tenant secrets stop being cryptography and become policy.**
+  `@zeddev/secrets` had the AES-256-GCM sealer already; what did not exist was a single place that decides
+  where a sealed value lives, who may read it, and what is written to the audit trail when anyone touches it.
+  `tenant_secrets` is now reachable through `@zeddev/vault` and nowhere else, every operation records a
+  `secret_access_records` row naming the principal and the secret class but never a value, and every entry
+  point refuses an unbound connection with a `DefectError` rather than silently matching zero rows.
+- **[DECISION] Sealing keys are a configured list, not one key.** `VAULT_SEALING_KEYS` carries
+  `<keyId>:<base64 32-byte key>` entries and `VAULT_ACTIVE_SEALING_KEY` names which one seals; a value sealed
+  under a retired id keeps unsealing for as long as that id is still listed. That is what makes rotation
+  (`credential-and-secret-handling.md` AC8, AC9) a configuration change rather than a flag day, and
+  `secretsAwaitingReseal` / `resealTenantSecrets` move stragglers to the active key in place. A managed cloud
+  KMS would satisfy AC4 too, but it exists on only one of the three tiers `environment-portability.md` names.
+- **[DECISION] `WHATSAPP_API_BASE_URL` is required, not defaulted.** For the reason `AI_BASE_URL` is: a
+  vendor URL embedded in source pins the deployment to one upstream *and one API version*, so a version bump
+  would stop being a configuration change. `WHATSAPP_APP_ID` joins it because connecting a number subscribes
+  the client's WhatsApp Business Account to this app by id, and the flow verifies that subscription.
+- **Known cost of "one key, one definition":** `services/whatsapp-gateway` loads the whole
+  `WHATSAPP_CONFIG_SCHEMA` for the app secret and verify token, so it now also requires `WHATSAPP_APP_ID` and
+  `WHATSAPP_API_BASE_URL` at startup despite never calling the Cloud API itself. Splitting the schema to avoid
+  this would create two places a WhatsApp key can be defined, which is the worse trade.
+- **Traceability fix made in passing:** three `specTest` criteria in `onboarding.test.ts` were labelled `AC4`,
+  `AC12`, and `AC13` against behavioural-requirement numbers rather than the spec's acceptance-criteria
+  numbers — and one of them collided with the real `AC12` under a different meaning. They now quote the
+  requirement they cover instead, which is the existing convention for a test that traces to a requirement
+  with no matching `- Given` bullet.
+
+### Follow-ups the connection flow increment leaves open
+
+- **Automatic reconnection is still not driven by anything.** `reconnecting` is reachable and legal, and the
+  Cloud port now classifies failures into recoverable and terminal (`CLOUD_RECOVERABLE_REASONS`), but no
+  component yet observes a live failure and moves the state. This belongs to the outbound sender, which is the
+  first component that will call Meta on a schedule: a send failing for a recoverable reason should move
+  `connected → reconnecting` and a later success should move it back, with a bounded attempt policy (still
+  undecided — see §4) before it falls to `error`.
+- **Sealed values are not bound to their row.** `SecretSealer` uses AES-256-GCM with no additional
+  authenticated data, so a ciphertext lifted from one `tenant_secrets` row and written into another tenant's
+  row would unseal cleanly. Row-level security already prevents that write, so this is defence in depth rather
+  than a live hole, but binding the seal to `(tenant_id, secret_class)` as AAD would make
+  `credential-and-secret-handling.md` AC7 a cryptographic guarantee instead of only a policy one. Worth doing
+  before there is any sealed data to migrate.
+- **Offboarding still owes `whatsapp-number-connection.md` AC11** (offboarding transitions the connection to
+  `disconnected`). `disconnectNumber` is the function it should call; nothing calls it from that direction yet.
+- **The access token is never re-validated after connection.** A token revoked at Meta is only discovered on
+  the next send. That is acceptable while the outbound sender is the only caller, but the operator health
+  surface (P3) will want a cheaper signal than "a customer's reply failed".
+- **No live test against real Meta.** The stub decodes Meta's documented shapes, but the first real number will
+  still be the first real proof. This is the §5 "Meta onboarding is the critical path" risk, and it is now the
+  only part of the flow that has not been exercised end to end.
 
 ---
 

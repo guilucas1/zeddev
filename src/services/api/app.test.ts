@@ -39,8 +39,10 @@ import {
   SKIP_REASON as MAIL_SKIP_REASON,
 } from '@zeddev/mail/testing';
 import { migrateToLatest } from '@zeddev/schema';
+import { generateSealingKey, parseSealingKey, SecretSealer } from '@zeddev/secrets';
 import { specTest, unitTest } from '@zeddev/testing';
-import { transitionConnection, type ConnectionState } from '@zeddev/whatsapp';
+import { InMemoryWhatsAppCloud } from '@zeddev/whatsapp/testing';
+import { consumeVerificationReply, transitionConnection, type ConnectionState } from '@zeddev/whatsapp';
 import { CLIENT_SESSION_COOKIE, createApi, OPERATOR_SESSION_COOKIE, type Api } from './app.ts';
 import { loadServerSettings, type ApiSettings } from './config.ts';
 
@@ -157,12 +159,25 @@ function tokenFromMailbox(mailer: InMemoryMailer, to: string): string {
   return decodeURIComponent(match[1]!);
 }
 
+/**
+ * Sealing keys and the Cloud API are dependencies of the service now, so every
+ * fixture needs one. The key is generated per run rather than written down: a
+ * literal 32-byte base64 value in a source file is exactly what
+ * `portability.test.ts` refuses, and it would be indistinguishable from a real
+ * deployment key to anyone reading the repository later.
+ */
+const SEALER = new SecretSealer([parseSealingKey(generateSealingKey('test'), 'VAULT_SEALING_KEYS')]);
+const TEST_APP_ID = '3090001111';
+/** The number a client nominates to receive their connection code. */
+const OWNER_PHONE = '5511555509999';
+
 describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }, () => {
   let db: TestDatabase;
   let identity: IdentityService;
   let mailer: InMemoryMailer;
   let sink: MemorySink;
   let ai: InMemoryAiProvider;
+  let cloud: InMemoryWhatsAppCloud;
   let api: Api;
   let served: Served;
   let counter = 0;
@@ -178,11 +193,15 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
     readonly identity?: IdentityService;
     readonly mailer?: Mailer;
     readonly ai?: InMemoryAiProvider;
+    readonly cloud?: InMemoryWhatsAppCloud;
   } = {}): Api {
     return createApi({
       identity: options.identity ?? identity,
       mailer: options.mailer ?? mailer,
       ai: options.ai ?? ai,
+      cloud: options.cloud ?? cloud,
+      sealer: SEALER,
+      verificationTtlMs: 15 * 60_000,
       pool: db.pool,
       settings: settingsWith(options.settings),
       logger: new Logger({ sink }),
@@ -217,6 +236,7 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
     sink = new MemorySink();
     mailer = new InMemoryMailer();
     ai = new InMemoryAiProvider();
+    cloud = new InMemoryWhatsAppCloud({ appId: TEST_APP_ID });
     identity = new IdentityService({
       pool: db.pool,
       policy: POLICY,
@@ -1410,6 +1430,203 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
     },
   );
 
+  // ---------------------------------------------------------------------
+  // The connection flow over HTTP. The library tests prove the state machine;
+  // what is asserted here is that the routes carry it faithfully and that no
+  // response ever contains the token or the code.
+  // ---------------------------------------------------------------------
+
+  /** Register an account at the fake Meta and return what a client would type. */
+  function metaAccount(label: string, overrides: { readonly verificationStatus?: string } = {}) {
+    counter += 1;
+    const phoneNumberId = String(15550000000 + counter);
+    const businessAccountId = String(20220000000 + counter);
+    const token = ['EAA', label, 'cccccccccccccccccccccccc'].join('');
+    cloud.backend.register({
+      token,
+      phoneNumberId,
+      businessAccountId,
+      appId: TEST_APP_ID,
+      displayNumber: '+55 11 5555-0100',
+      verifiedName: 'Padaria Aurora',
+      ...(overrides.verificationStatus === undefined ? {} : { verificationStatus: overrides.verificationStatus }),
+    });
+    return { phoneNumberId, businessAccountId, accessToken: token };
+  }
+
+  /** The code the fake Meta actually delivered, which is the only place it exists. */
+  function codeFromLastSend(): string {
+    const body = cloud.backend.sends.at(-1)?.body ?? '';
+    const code = /\b(\d{6})\b/.exec(body)?.[1];
+    assert.ok(code !== undefined, `no code in the delivered message: ${body}`);
+    return code;
+  }
+
+  /** The reply, arriving where it really arrives: through the gateway, tenant-bound. */
+  function replyWithCode(tenantId: string, code: string, from = OWNER_PHONE): Promise<string> {
+    counter += 1;
+    return withTenant(db.pool, tenantId, (tx) =>
+      consumeVerificationReply(tx, { customerId: from, text: code, externalId: `wamid.api.${counter}` }),
+    );
+  }
+
+  specTest(
+    'whatsapp-number-connection.md',
+    'AC1 a completed self-service flow with verified send and receive becomes connected',
+    'the three routes walk a client from nothing to connected, and the reply is what completes it',
+    async () => {
+      const { cookie, tenantId } = await onboard();
+      const account = metaAccount(`acct${counter}`);
+
+      const start = await call(served, 'GET', '/v1/whatsapp/connection', { cookie });
+      assert.equal(start.status, 200);
+      assert.equal(start.body.state, 'disconnected');
+      assert.equal(start.body.setup.currentStep, 'authorize');
+      assert.equal(start.body.setup.number, null);
+      assert.equal(start.body.setup.steps.length, 4);
+
+      const submitted = await call(served, 'POST', '/v1/whatsapp/connection', { cookie, json: account });
+      assert.equal(submitted.status, 200);
+      assert.equal(submitted.body.state, 'connecting', 'submitting credentials connected the number');
+      assert.equal(submitted.body.setup.currentStep, 'send');
+      assert.equal(submitted.body.setup.number.credentialConfigured, true);
+
+      const asked = await call(served, 'POST', '/v1/whatsapp/connection/verification', {
+        cookie,
+        json: { recipient: OWNER_PHONE },
+      });
+      assert.equal(asked.status, 200);
+      assert.equal(asked.body.attempt.sent, true);
+      assert.equal(asked.body.state, 'connecting');
+      assert.equal(asked.body.setup.currentStep, 'reply');
+      assert.equal(asked.body.setup.number.displayNumber, '+55 11 5555-0100');
+
+      const code = codeFromLastSend();
+      assert.equal(await replyWithCode(tenantId, code), 'verified');
+
+      const connected = await call(served, 'GET', '/v1/whatsapp/connection', { cookie });
+      assert.equal(connected.body.state, 'connected');
+      assert.equal(connected.body.setup.currentStep, null);
+      assert.equal(connected.body.setup.verification.outcome, 'passed');
+      assert.equal(typeof connected.body.lastKnownGoodAt, 'string');
+    },
+  );
+
+  specTest(
+    'credential-and-secret-handling.md',
+    'AC6 a client sees that a credential is configured and when, never its value',
+    'no response on the connection routes contains the token or the one-time code',
+    async () => {
+      const { cookie, tenantId } = await onboard();
+      const account = metaAccount(`acct${counter}`);
+      const submitted = await call(served, 'POST', '/v1/whatsapp/connection', { cookie, json: account });
+      const asked = await call(served, 'POST', '/v1/whatsapp/connection/verification', {
+        cookie,
+        json: { recipient: OWNER_PHONE },
+      });
+      const code = codeFromLastSend();
+      await replyWithCode(tenantId, code);
+      const seen = await call(served, 'GET', '/v1/whatsapp/connection', { cookie });
+
+      for (const answer of [submitted, asked, seen]) {
+        const rendered = JSON.stringify(answer.body);
+        assert.equal(rendered.includes(account.accessToken), false, `the token appeared in ${answer.status}`);
+        assert.equal(rendered.includes(code), false, `the code appeared in ${answer.status}`);
+      }
+      // Nor in the log the request produced.
+      const logged = sink.records.map((record) => JSON.stringify(record)).join();
+      assert.equal(logged.includes(account.accessToken), false);
+      assert.equal(logged.includes(code), false);
+    },
+  );
+
+  specTest(
+    'whatsapp-number-connection.md',
+    'AC3 a tenant with a connected number cannot add a second one',
+    'a second submission is refused with 409, and a replacement is the way through',
+    async () => {
+      const { cookie, tenantId } = await onboard();
+      await call(served, 'POST', '/v1/whatsapp/connection', { cookie, json: metaAccount(`acct${counter}`) });
+      await call(served, 'POST', '/v1/whatsapp/connection/verification', { cookie, json: { recipient: OWNER_PHONE } });
+      await replyWithCode(tenantId, codeFromLastSend());
+
+      const second = metaAccount(`acct${counter}`);
+      const refused = await call(served, 'POST', '/v1/whatsapp/connection', { cookie, json: second });
+      assert.equal(refused.status, 409);
+      assert.equal(refused.body.error.code, 'whatsapp.connection.already_connected');
+      assert.equal((await call(served, 'GET', '/v1/whatsapp/connection', { cookie })).body.state, 'connected');
+
+      const replaced = await call(served, 'POST', '/v1/whatsapp/connection', {
+        cookie,
+        json: { ...second, replace: true },
+      });
+      assert.equal(replaced.status, 200);
+      assert.equal(replaced.body.state, 'connecting');
+    },
+  );
+
+  specTest(
+    'whatsapp-number-connection.md',
+    'AC12 a connection in error displays a specific reason',
+    'a business Meta has not verified is answered with its own reason and description, not a 500',
+    async () => {
+      const { cookie } = await onboard();
+      const account = metaAccount(`acct${counter}`, { verificationStatus: 'pending_submission' });
+      await call(served, 'POST', '/v1/whatsapp/connection', { cookie, json: account });
+
+      const asked = await call(served, 'POST', '/v1/whatsapp/connection/verification', {
+        cookie,
+        json: { recipient: OWNER_PHONE },
+      });
+      assert.equal(asked.status, 200);
+      assert.equal(asked.body.attempt.sent, false);
+      assert.equal(asked.body.attempt.reason, 'business_verification_required');
+      assert.match(asked.body.attempt.description, /Meta/);
+      assert.equal(asked.body.state, 'error');
+      assert.equal(asked.body.error.reason, 'business_verification_required');
+      assert.match(asked.body.error.description, /verification/);
+    },
+  );
+
+  unitTest('the connection routes refuse a malformed submission field by field', async () => {
+    const { cookie } = await onboard();
+    const bad = await call(served, 'POST', '/v1/whatsapp/connection', {
+      cookie,
+      json: { phoneNumberId: 'abc', businessAccountId: '12', accessToken: 'tiny' },
+    });
+    assert.equal(bad.status, 400);
+    assert.deepEqual(
+      bad.body.error.issues.map((issue: { key: string }) => issue.key),
+      ['accessToken', 'phoneNumberId'],
+    );
+
+    const noNumber = await call(served, 'POST', '/v1/whatsapp/connection/verification', {
+      cookie,
+      json: { recipient: 'not a number' },
+    });
+    assert.equal(noNumber.status, 400);
+  });
+
+  unitTest('asking for a code before submitting credentials is a 404, not a crash', async () => {
+    const { cookie } = await onboard();
+    const asked = await call(served, 'POST', '/v1/whatsapp/connection/verification', {
+      cookie,
+      json: { recipient: OWNER_PHONE },
+    });
+    assert.equal(asked.status, 404);
+  });
+
+  unitTest('every connection route requires a session', async () => {
+    for (const [method, path] of [
+      ['GET', '/v1/whatsapp/connection'],
+      ['POST', '/v1/whatsapp/connection'],
+      ['POST', '/v1/whatsapp/connection/verification'],
+      ['POST', '/v1/whatsapp/connection/disconnect'],
+    ] as const) {
+      const answer = await call(served, method, path, method === 'GET' ? {} : { json: {} });
+      assert.equal(answer.status, 401, `${method} ${path} answered without a session`);
+    }
+  });
   unitTest('the activation toggle refuses a body that is not exactly { active: boolean }', async () => {
     const { cookie } = await onboard();
     const answer = await call(served, 'PUT', '/v1/bot/activation', { cookie, json: { active: 'on' } });
@@ -1702,6 +1919,9 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
         identity,
         mailer,
         ai,
+        cloud,
+        sealer: SEALER,
+        verificationTtlMs: 15 * 60_000,
         pool: { query: async () => Promise.reject(new Error('connect ECONNREFUSED')) } as never,
         settings: settingsWith(),
         logger: new Logger({ sink }),
@@ -1800,6 +2020,9 @@ describe('api service over real SMTP', {
         identity,
         mailer,
         ai: new InMemoryAiProvider(),
+        cloud: new InMemoryWhatsAppCloud({ appId: TEST_APP_ID }),
+        sealer: SEALER,
+        verificationTtlMs: 15 * 60_000,
         pool: db.pool,
         settings: settingsWith(),
         logger: new Logger({ sink: new MemorySink() }),

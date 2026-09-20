@@ -1,13 +1,17 @@
 /**
  * `@zeddev/whatsapp` — a tenant's WhatsApp number connection.
  *
- * A domain library with no HTTP and, so far, no Meta client. It owns the
- * connection health state that `whatsapp-number-connection.md` defines and that
- * readiness, operator monitoring, and alerting all read: the fixed vocabulary,
- * which moves between states are legal, the reason an `error` must carry, and the
- * timestamped history. The WhatsApp gateway (P2) will drive transitions from what
- * it observes at Meta; today the client's manual disconnect is the only caller
- * that can.
+ * A domain library with no HTTP of its own. It owns the connection health state
+ * that `whatsapp-number-connection.md` defines and that readiness, operator
+ * monitoring, and alerting all read: the fixed vocabulary, which moves between
+ * states are legal, the reason an `error` must carry, and the timestamped
+ * history.
+ *
+ * It also owns the Cloud API itself — a port (`cloud.ts`) with Meta's Graph API
+ * behind it (`graph.ts`), an in-memory fake, and one conformance suite holding
+ * both to the same answers — and the self-service flow that drives the state
+ * machine with it (`onboarding.ts`): submit, verify by a real send-and-reply
+ * round trip, replace, disconnect.
  *
  * It also owns the inbound half of `message-delivery-reliability.md` below the
  * HTTP layer (`inbound.ts`): webhook authenticity, attribution of a notification
@@ -32,7 +36,65 @@ export {
   type ConnectionStatus,
   type ConnectionTransition,
 } from './connection.ts';
-export { loadWhatsAppConfig, WHATSAPP_CONFIG_SCHEMA, type WhatsAppConfig } from './config.ts';
+export {
+  assertCloudCredentials,
+  assertSendableText,
+  businessVerificationBlocked,
+  classifyCloudFailure,
+  cloudFailure,
+  cloudFailureReason,
+  describeCloudFailure,
+  CLOUD_ERROR_CODES,
+  CLOUD_RECOVERABLE_REASONS,
+  META_ID,
+  TRANSIENT_FAILURE_DESCRIPTION,
+  WHATSAPP_ADDRESS,
+  type BusinessAccountProfile,
+  type CloudCredentials,
+  type CloudDescriptor,
+  type NumberProfile,
+  type SentMessage,
+  type WhatsAppCloud,
+} from './cloud.ts';
+export {
+  loadGraphCloudSettings,
+  loadWhatsAppConfig,
+  WHATSAPP_CONFIG_SCHEMA,
+  type WhatsAppConfig,
+} from './config.ts';
+export { GraphWhatsAppCloud, type GraphCloudDependencies, type GraphCloudSettings } from './graph.ts';
+export {
+  abandonVerification,
+  beginVerification,
+  CONNECTION_LIMITS,
+  connectionCodeMessage,
+  CONNECTION_STEPS,
+  consumeVerificationReply,
+  currentStep,
+  describeConnectionSetup,
+  digestVerificationCode,
+  disconnectNumber,
+  expireStaleVerification,
+  generateVerificationCode,
+  loadCloudCredentials,
+  parseCredentialSubmission,
+  parseVerificationRequest,
+  readConnectedNumber,
+  readVerification,
+  recordVerificationSent,
+  submitCredentials,
+  VERIFICATION_FAILURES,
+  VERIFICATION_OUTCOMES,
+  type ConnectedNumber,
+  type ConnectionStepKey,
+  type CredentialSubmission,
+  type PendingVerification,
+  type SubmitOptions,
+  type VerificationFailure,
+  type VerificationOutcome,
+  type VerificationReplyOutcome,
+  type VerificationSummary,
+} from './onboarding.ts';
 export {
   assignPhoneNumber,
   attributeInboundNumber,
