@@ -12,6 +12,13 @@
  * The model is `InMemoryAiProvider`, and what the tests assert about it is what
  * it was *shown*: that three messages reached it as one turn, in send order, with
  * the earlier conversation before them. What the model then says is scripted.
+ *
+ * WhatsApp is `InMemoryWhatsAppCloud`, for the reason its conformance suite gives:
+ * a revoked token and a rate limit cannot be provoked against the real Cloud API
+ * on demand, and both adapters are held to identical answers elsewhere. Every
+ * live tenant here is given a real sealed access token, so a test that asserts a
+ * reply was *delivered* is asserting about the same code path production runs,
+ * down to the unsealing.
  */
 
 import assert from 'node:assert/strict';
@@ -24,9 +31,18 @@ import { ValidationError } from '@zeddev/errors';
 import { Logger, MemorySink } from '@zeddev/logging';
 import type { ClaimedJob, EnqueueRequest, EnqueueResult } from '@zeddev/queue';
 import { migrateToLatest } from '@zeddev/schema';
+import { generateSealingKey, parseSealingKey, SecretSealer } from '@zeddev/secrets';
 import { specTest, unitTest } from '@zeddev/testing';
 import { FakeClock } from '@zeddev/time';
-import { assignPhoneNumber, INBOUND_JOB_KIND, INBOUND_QUEUE, listInboundMessages, transitionConnection } from '@zeddev/whatsapp';
+import {
+  INBOUND_JOB_KIND,
+  INBOUND_QUEUE,
+  listInboundMessages,
+  readConnection,
+  submitCredentials,
+  transitionConnection,
+} from '@zeddev/whatsapp';
+import { InMemoryWhatsAppCloud, ScriptedCloudBackend } from '@zeddev/whatsapp/testing';
 import {
   CONVERSATION_LIMITS,
   INBOUND_DISPOSITIONS,
@@ -43,6 +59,7 @@ import {
   type AggregationPolicy,
   type TurnScheduler,
 } from './turns.ts';
+import { DELIVERY_FAILURES, DELIVERY_JOB_KIND, DELIVERY_LIMITS, DELIVERY_STATES, readDelivery } from './delivery.ts';
 import { conversationHandlers } from './worker.ts';
 
 const BURST = 'message-burst-aggregation.md';
@@ -54,6 +71,21 @@ const ACTIVATION = 'bot-activation-control.md';
 
 const POLICY: AggregationPolicy = { windowMs: 5_000, maxTurnMs: 30_000 };
 const T0 = new Date('2026-03-02T10:00:00.000Z');
+
+/** The Meta app every tenant's number is authorized to, as the platform's one app. */
+const APP_ID = '3090001111';
+const BUSINESS_ACCOUNT_ID = '20220002222';
+
+/**
+ * One backend for the whole file, one adapter per world.
+ *
+ * Shared because a tenant is created before its world is, and keyed by token, so
+ * two tenants can never reach each other's account. `sends` is therefore
+ * cumulative across the file: every assertion about it is a delta or a filter,
+ * never a total.
+ */
+const cloudBackend = new ScriptedCloudBackend();
+const sealer = new SecretSealer([parseSealingKey(generateSealingKey('turns'), 'VAULT_SEALING_KEYS')]);
 
 function at(offsetMs: number): Date {
   return new Date(T0.getTime() + offsetMs);
@@ -67,12 +99,27 @@ interface BoardJob {
   done: boolean;
 }
 
+interface RunOptions {
+  /** Record a handler's failure instead of rethrowing it. */
+  readonly tolerateFailures?: boolean | undefined;
+  /** Job kinds to leave unrun, so the test can act between two stages. */
+  readonly hold?: readonly string[] | undefined;
+}
+
+interface BoardFailure {
+  readonly jobId: string;
+  readonly kind: string;
+  readonly error: unknown;
+}
+
 /**
  * A scheduler that remembers what it was asked to run and when. Honours
  * `dedupeKey` the way the real queue does, because the handlers rely on it.
  */
 class JobBoard implements TurnScheduler {
   readonly jobs: BoardJob[] = [];
+  /** What a tolerated handler failure left behind, for the test to inspect. */
+  readonly failures: BoardFailure[] = [];
   readonly #clock: FakeClock;
   #next = 1;
 
@@ -140,22 +187,70 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
     const provider = new InMemoryAiProvider();
     const sink = new MemorySink();
     const logger = new Logger({ level: 'debug', sink });
-    const handlers = conversationHandlers({ pool, provider, scheduler: board, policy: POLICY, clock, logger });
+    const cloud = new InMemoryWhatsAppCloud({ appId: APP_ID, backend: cloudBackend });
+    const handlers = conversationHandlers({
+      pool,
+      provider,
+      scheduler: board,
+      policy: POLICY,
+      clock,
+      logger,
+      cloud,
+      sealer,
+    });
 
-    /** Run every job that is due now, including ones those jobs schedule, until none is. */
-    async function runDue(): Promise<void> {
-      for (let job = board.due()[0]; job !== undefined; job = board.due()[0]) {
+    /**
+     * Run every job that is due now, including ones those jobs schedule, until
+     * none is.
+     *
+     * A handler that raises is rethrown unless the caller asked otherwise, so a
+     * defect in the turn path fails the test that provoked it rather than being
+     * absorbed. Delivery tests opt out because a failed send *is* the subject:
+     * the failure goes to `board.failures` and the job is left for the test to
+     * re-drive with the next attempt number, which is what the real queue does
+     * after its backoff.
+     */
+    async function runDue(options: RunOptions = {}): Promise<void> {
+      const held = new Set(options.hold ?? []);
+      for (
+        let job = board.due().find((entry) => !held.has(entry.request.kind));
+        job !== undefined;
+        job = board.due().find((entry) => !held.has(entry.request.kind))
+      ) {
         job.done = true;
-        await handlers[job.request.kind]!(claimed(job));
+        try {
+          await handlers[job.request.kind]!(claimed(job));
+        } catch (error) {
+          if (options.tolerateFailures !== true) throw error;
+          board.failures.push({ jobId: job.id, kind: job.request.kind, error });
+        }
       }
     }
 
     /** Move the clock to `offsetMs` after T0 and run what is due. */
-    async function advanceTo(offsetMs: number): Promise<void> {
+    async function advanceTo(offsetMs: number, options: RunOptions = {}): Promise<void> {
       const target = at(offsetMs).getTime();
       const delta = target - clock.now().getTime();
       if (delta > 0) await clock.advance(delta);
-      await runDue();
+      await runDue(options);
+    }
+
+    /**
+     * Re-drive this tenant's delivery job as attempt `attempt`, and hand back
+     * whatever it raised.
+     *
+     * The board is not a queue and has no backoff; what matters to these tests is
+     * that the handler sees the attempt number the queue would have given it,
+     * because that is what decides whether the allowance is exhausted.
+     */
+    async function deliverAgain(tenant: string, attempt: number): Promise<unknown> {
+      const job = board.jobs.find((entry) => entry.tenantId === tenant && entry.request.kind === DELIVERY_JOB_KIND);
+      assert.ok(job !== undefined, 'no delivery job was scheduled for this tenant');
+      job.done = true;
+      return handlers[DELIVERY_JOB_KIND]!(claimed(job, attempt)).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
     }
 
     /**
@@ -220,7 +315,7 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
       return provider.backend.requests.filter((r): r is ObservedGeneration => r.operation === 'generate');
     }
 
-    return { clock, board, provider, sink, handlers, runDue, advanceTo, receive, generations };
+    return { clock, board, provider, sink, handlers, runDue, advanceTo, deliverAgain, receive, generations };
   }
 
   /** A tenant whose bot is live: connected number, a persona, switched on. */
@@ -234,9 +329,27 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
       );
       return created.rows[0]!.id;
     });
+    // Registered at "Meta" first, then submitted here, which is the order the
+    // real flow has: the number exists on Meta's side before the client hands
+    // the platform a token for it.
+    const token = ['turns', String(counter), 'token'].join('-');
+    cloudBackend.register({
+      token,
+      phoneNumberId: String(numberCounter),
+      businessAccountId: BUSINESS_ACCOUNT_ID,
+      appId: APP_ID,
+    });
     await withTenant(pool, tenant, async (tx) => {
-      await transitionConnection(tx, 'connecting');
-      await assignPhoneNumber(tx, String(numberCounter));
+      await submitCredentials(
+        tx,
+        sealer,
+        {
+          phoneNumberId: String(numberCounter),
+          businessAccountId: BUSINESS_ACCOUNT_ID,
+          accessToken: token,
+        },
+        { principal: 'turns-test' },
+      );
       await transitionConnection(tx, 'connected');
       await savePersona(tx, { botName: `Ana ${counter}` });
       await setBotActive(tx, true);
@@ -332,7 +445,13 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
     assert.equal(outcomes.length, 1);
     assert.equal(outcomes[0]!.outcome, 'reply');
     assert.equal(outcomes[0]!.message, 'We open at nine, and yes, we deliver.');
-    assert.equal(outcomes[0]!.delivery_state, 'pending');
+    // The whole path, not just the decision: one turn produced one answer and the
+    // customer was sent it exactly once.
+    assert.equal(outcomes[0]!.delivery_state, 'sent');
+    assert.deepEqual(
+      cloudBackend.sends.filter((send) => send.to === customer).map((send) => send.body),
+      ['We open at nine, and yes, we deliver.'],
+    );
     assert.equal(w.generations().length, 1, 'one model call for the whole turn');
     assert.deepEqual(shown(w.generations()[0]!), ['customer: hi\n\nwhen do you open\n\nand do you deliver?']);
     assert.deepEqual(
@@ -852,7 +971,13 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
     assert.equal(outcome!.fallback_trigger, 'ai_error');
     assert.equal(outcome!.fallback_cause, 'generation_failed');
     assert.equal(outcome!.fallback_source, 'trigger');
-    assert.equal(outcome!.delivery_state, 'pending');
+    // The client's own fallback text is what went out, verbatim — the §3
+    // resolution that a fallback is never rewritten by the model.
+    assert.equal(outcome!.delivery_state, 'sent');
+    assert.deepEqual(
+      cloudBackend.sends.filter((send) => send.to === customer).map((send) => send.body),
+      ['Our assistant is having trouble — we will reply soon.'],
+    );
     assert.match(w.sink.serialized(), /conversation\.turn\.generation_failed/);
   });
 
@@ -931,6 +1056,268 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
   });
 
   // -------------------------------------------------------------------------
+  // Delivery — message-delivery-reliability.md's outbound half
+  // -------------------------------------------------------------------------
+
+  /** What this customer was actually sent, in order. */
+  function sentTo(customer: string): string[] {
+    return cloudBackend.sends.filter((send) => send.to === customer).map((send) => send.body);
+  }
+
+  /** The tenant's connection as the client and operator would see it. */
+  async function connectionOf(tenant: string): Promise<{ state: string; errorReason: string | null }> {
+    return withTenant(pool, tenant, async (tx) => {
+      const status = await readConnection(tx);
+      return { state: status.state, errorReason: status.errorReason };
+    });
+  }
+
+  async function deliveryOf(tenant: string, customer: string): Promise<ReturnType<typeof readDelivery>> {
+    const [outcome] = await outcomesOf(tenant, customer);
+    assert.ok(outcome !== undefined, 'no outcome was recorded');
+    return withTenant(pool, tenant, (tx) => readDelivery(tx, outcome.turn_id));
+  }
+
+  specTest(
+    DELIVERY,
+    'AC7 a transient send failure is retried and the end customer receives exactly one copy',
+    'a rejection Meta answered is retried, and the retry that succeeds is the only message sent',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const customer = '15550000050';
+      w.provider.backend.script({ kind: 'text', text: '[reply]\nWe are open until six.' });
+      cloudBackend.failNext('sendText', { status: 429, code: 130429, message: 'Rate limit hit' });
+
+      await w.receive(tenant, customer, { text: 'are you open?' }, { receivedMs: 0 });
+      await w.advanceTo(6_000, { tolerateFailures: true });
+
+      // The first attempt failed for a reason a retry can fix, so the row is back
+      // to pending — not failed — and the handler raised so the queue will retry.
+      assert.equal((await deliveryOf(tenant, customer))?.state, 'pending');
+      assert.equal(w.board.failures.length, 1);
+      assert.deepEqual(sentTo(customer), []);
+
+      assert.equal(await w.deliverAgain(tenant, 2), undefined, 'the retry should succeed');
+      const delivery = await deliveryOf(tenant, customer);
+      assert.equal(delivery?.state, 'sent');
+      assert.equal(delivery?.attempts, 2, 'both attempts are counted against the allowance');
+      assert.ok(delivery?.messageId !== null);
+      assert.deepEqual(sentTo(customer), ['We are open until six.'], 'exactly one copy reached the customer');
+    },
+  );
+
+  specTest(
+    DELIVERY,
+    'AC7 a transient send failure is retried and the end customer receives exactly one copy',
+    'a send whose answer never came back is recorded and never repeated, because it may have arrived',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const customer = '15550000051';
+      w.provider.backend.script({ kind: 'text', text: '[reply]\nYes, we deliver.' });
+      cloudBackend.loseNext('sendText');
+
+      await w.receive(tenant, customer, { text: 'do you deliver?' }, { receivedMs: 0 });
+      await w.advanceTo(6_000, { tolerateFailures: true });
+
+      // It did in fact reach Meta. Nothing here can know that, which is the point:
+      // the only safe reading of "no answer" is "do not send it again".
+      assert.deepEqual(sentTo(customer), ['Yes, we deliver.']);
+      const delivery = await deliveryOf(tenant, customer);
+      assert.equal(delivery?.state, 'failed');
+      assert.equal(delivery?.failure, 'indeterminate');
+      assert.equal(w.board.failures.length, 0, 'an unknowable outcome is settled, not retried');
+
+      // And a job that runs again — the queue is at-least-once — still sends nothing.
+      assert.equal(await w.deliverAgain(tenant, 2), undefined);
+      assert.deepEqual(sentTo(customer), ['Yes, we deliver.']);
+    },
+  );
+
+  specTest(
+    DELIVERY,
+    'AC7 a transient send failure is retried and the end customer receives exactly one copy',
+    'a process that dies mid-send leaves the row claimed, and the next attempt records rather than repeats',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const customer = '15550000052';
+      w.provider.backend.script({ kind: 'text', text: '[reply]\nSee you then.' });
+      await w.receive(tenant, customer, { text: 'tomorrow?' }, { receivedMs: 0 });
+
+      // Stop the world between claiming the row and sending: exactly the state a
+      // killed worker leaves behind.
+      await w.advanceTo(6_000, { tolerateFailures: true });
+      const [outcome] = await outcomesOf(tenant, customer);
+      await withTenant(pool, tenant, async (tx) => {
+        await tx.query(
+          `UPDATE conversation_turn_outcomes
+              SET delivery_state = 'sending', delivery_message_id = NULL
+            WHERE tenant_id = app.current_tenant_id() AND turn_id = $1`,
+          [outcome!.turn_id],
+        );
+      });
+      const before = sentTo(customer).length;
+
+      assert.equal(await w.deliverAgain(tenant, 2), undefined);
+      const delivery = await deliveryOf(tenant, customer);
+      assert.equal(delivery?.state, 'failed');
+      assert.equal(delivery?.failure, 'indeterminate');
+      assert.equal(sentTo(customer).length, before, 'a claimed row is never sent a second time');
+    },
+  );
+
+  specTest(
+    DELIVERY,
+    'AC8 an exhausted retry allowance is recorded against the tenant, not silently discarded',
+    'the last attempt records the failure with its reason and count instead of dropping the reply',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const customer = '15550000053';
+      w.provider.backend.script({ kind: 'text', text: '[reply]\nWe will be in touch.' });
+      for (let i = 0; i < DELIVERY_LIMITS.maxAttempts; i += 1) {
+        cloudBackend.failNext('sendText', { status: 429, code: 130429, message: 'Rate limit hit' });
+      }
+
+      await w.receive(tenant, customer, { text: 'hello' }, { receivedMs: 0 });
+      await w.advanceTo(6_000, { tolerateFailures: true });
+      for (let attempt = 2; attempt <= DELIVERY_LIMITS.maxAttempts; attempt += 1) {
+        await w.deliverAgain(tenant, attempt);
+      }
+
+      const delivery = await deliveryOf(tenant, customer);
+      assert.equal(delivery?.state, 'failed');
+      assert.equal(delivery?.failure, 'attempts_exhausted');
+      assert.equal(delivery?.reason, 'rate_limited', 'the operator is told which limit it was');
+      assert.equal(delivery?.attempts, DELIVERY_LIMITS.maxAttempts);
+      assert.deepEqual(sentTo(customer), []);
+
+      // The reply itself is still there. AC8 forbids discarding it, not failing it.
+      const [outcome] = await outcomesOf(tenant, customer);
+      assert.equal(outcome!.message, 'We will be in touch.');
+    },
+  );
+
+  specTest(
+    DELIVERY,
+    'AC9 a send failure indicating revoked authorization moves the connection, not only the message',
+    'a revoked token puts the connection into error with its own reason, where the client can see it',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const customer = '15550000054';
+      w.provider.backend.script({ kind: 'text', text: '[reply]\nCertainly.' });
+      cloudBackend.failNext('sendText', { status: 401, code: 190, message: 'Session invalidated' });
+
+      await w.receive(tenant, customer, { text: 'hi' }, { receivedMs: 0 });
+      await w.advanceTo(6_000, { tolerateFailures: true });
+
+      assert.deepEqual(await connectionOf(tenant), { state: 'error', errorReason: 'authorization_revoked' });
+      const delivery = await deliveryOf(tenant, customer);
+      assert.equal(delivery?.state, 'failed');
+      assert.equal(delivery?.failure, 'rejected', 'a revoked token is not worth a retry');
+      assert.equal(w.board.failures.length, 0);
+    },
+  );
+
+  specTest(
+    'whatsapp-number-connection.md',
+    'AC4 an interruption the platform can recover from moves the connection to reconnecting',
+    'a rate limit moves a connected number to reconnecting rather than error, and a later send restores it',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const customer = '15550000055';
+      w.provider.backend.script(
+        { kind: 'text', text: '[reply]\nOne moment.' },
+        { kind: 'text', text: '[reply]\nAll set.' },
+      );
+      cloudBackend.failNext('sendText', { status: 429, code: 130429, message: 'Rate limit hit' });
+
+      await w.receive(tenant, customer, { text: 'hi' }, { receivedMs: 0 });
+      await w.advanceTo(6_000, { tolerateFailures: true });
+      assert.deepEqual(await connectionOf(tenant), { state: 'reconnecting', errorReason: null });
+
+      // The retry is the recovery attempt: it succeeding is the only evidence the
+      // platform gets that the link is back.
+      await w.deliverAgain(tenant, 2);
+      assert.deepEqual(await connectionOf(tenant), { state: 'connected', errorReason: null });
+      assert.deepEqual(sentTo(customer), ['One moment.']);
+    },
+  );
+
+  specTest(
+    DELIVERY,
+    'AC10 a reply outside the 24-hour customer service window is detected and recorded, not silently dropped',
+    'a reply decided more than 24 hours after the customer last wrote is recorded as expired and never sent',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const customer = '15550000056';
+      w.provider.backend.script({ kind: 'text', text: '[reply]\nSorry for the delay.' });
+
+      // The message arrives now but was *sent* over a day ago — which is what the
+      // window is measured from, and what a long enough outage produces.
+      await w.receive(tenant, customer, { text: 'still there?' }, {
+        receivedMs: 0,
+        sentMs: -(DELIVERY_LIMITS.customerServiceWindowMs + 60_000),
+      });
+      await w.advanceTo(6_000);
+
+      const delivery = await deliveryOf(tenant, customer);
+      assert.equal(delivery?.state, 'expired');
+      assert.equal(delivery?.failure, 'window_expired');
+      assert.equal(delivery?.attempts, 0, 'nothing was attempted, so nothing is counted');
+      assert.deepEqual(sentTo(customer), []);
+
+      // The answer is still on the row. AC10 asks for the occurrence to be
+      // recorded, which is not the same as the reply ceasing to exist.
+      const [outcome] = await outcomesOf(tenant, customer);
+      assert.equal(outcome!.message, 'Sorry for the delay.');
+    },
+  );
+
+  specTest(
+    DELIVERY,
+    'AC17 delivery diagnostics contain operational information only',
+    'the delivery log carries states, reasons, and references — never the reply text or the customer number',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const customer = '15550000057';
+      w.provider.backend.script({ kind: 'text', text: '[reply]\nJuniper-lantern delivery marker' });
+      await w.receive(tenant, customer, { text: 'Obsidian-kettle question marker' }, { receivedMs: 0 });
+      await w.advanceTo(6_000);
+
+      const log = w.sink.serialized();
+      assert.match(log, /conversation\.delivery\.settled/);
+      assert.doesNotMatch(log, /Juniper|Obsidian/);
+      assert.doesNotMatch(log, new RegExp(customer));
+    },
+  );
+
+  unitTest('a tenant that disconnected before its answer went out records the failure rather than retrying forever', async () => {
+    const w = world();
+    const tenant = await liveTenant();
+    const customer = '15550000058';
+    w.provider.backend.script({ kind: 'text', text: '[reply]\nToo late.' });
+    await w.receive(tenant, customer, { text: 'hello' }, { receivedMs: 0 });
+
+    // Decided while connected, disconnected before the send — an ordinary race
+    // between a client on a settings screen and a worker on a queue.
+    await w.advanceTo(6_000, { hold: [DELIVERY_JOB_KIND] });
+    await withTenant(pool, tenant, (tx) => transitionConnection(tx, 'disconnected'));
+    await w.runDue();
+
+    const delivery = await deliveryOf(tenant, customer);
+    assert.equal(delivery?.state, 'failed');
+    assert.equal(delivery?.reason, 'not_connected');
+    assert.deepEqual(sentTo(customer), []);
+  });
+
+  // -------------------------------------------------------------------------
   // The vocabularies and the CHECK constraints agree
   // -------------------------------------------------------------------------
 
@@ -954,5 +1341,7 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
     assert.deepEqual(await checkValues('conversation_turn_outcomes', 'withheld_reason'), [...WITHHELD_REASONS].sort());
     assert.deepEqual(await checkValues('conversation_turn_outcomes', 'fallback_trigger'), [...FALLBACK_TRIGGERS].sort());
     assert.deepEqual(await checkValues('conversation_turn_outcomes', 'fallback_cause'), [...FALLBACK_CAUSES].sort());
+    assert.deepEqual(await checkValues('conversation_turn_outcomes', 'delivery_state'), [...DELIVERY_STATES].sort());
+    assert.deepEqual(await checkValues('conversation_turn_outcomes', 'delivery_failure'), [...DELIVERY_FAILURES].sort());
   });
 });

@@ -15,10 +15,12 @@
  * criterion about them is otherwise untestable.
  */
 
+import { TransientTransportError } from '@zeddev/errors';
 import {
   assertCloudCredentials,
   assertSendableText,
   cloudFailure,
+  unreachableContext,
   type BusinessAccountProfile,
   type CloudCredentials,
   type CloudDescriptor,
@@ -96,6 +98,7 @@ interface AccountState extends ScriptedAccount {
 export class ScriptedCloudBackend {
   readonly #accounts = new Map<string, AccountState>();
   readonly #failures = new Map<CloudOperation, ScriptedFailure[]>();
+  readonly #lost = new Map<CloudOperation, number>();
   readonly sends: ObservedSend[] = [];
   #messageCounter = 0;
 
@@ -111,6 +114,17 @@ export class ScriptedCloudBackend {
     this.#failures.set(operation, queued);
   }
 
+  /**
+   * The next call to `operation` takes effect, and then its answer is lost.
+   *
+   * The distinction from `failNext` is the whole point: after `failNext` nothing
+   * happened, and after `loseNext` something did. A caller that cannot tell them
+   * apart will either duplicate the effect or discard it.
+   */
+  loseNext(operation: CloudOperation): void {
+    this.#lost.set(operation, (this.#lost.get(operation) ?? 0) + 1);
+  }
+
   /** Which app ids an account is currently subscribed to, for assertions. */
   subscribersOf(token: string): readonly string[] {
     return [...(this.#accounts.get(token)?.subscribedApps ?? [])];
@@ -120,6 +134,14 @@ export class ScriptedCloudBackend {
     const queued = this.#failures.get(operation);
     const next = queued?.shift();
     if (next !== undefined) throw next;
+  }
+
+  /** Called *after* the work, so the effect stands and only the answer is gone. */
+  #loseAnswer(operation: CloudOperation): void {
+    const remaining = this.#lost.get(operation) ?? 0;
+    if (remaining === 0) return;
+    this.#lost.set(operation, remaining - 1);
+    throw ANSWER_LOST;
   }
 
   #account(token: string): AccountState {
@@ -186,8 +208,23 @@ export class ScriptedCloudBackend {
     this.#messageCounter += 1;
     const messageId = `wamid.scripted.${this.#messageCounter}`;
     this.sends.push({ phoneNumberId: account.phoneNumberId, to, body, messageId });
+    this.#loseAnswer('sendText');
     return { messageId };
   }
+}
+
+/**
+ * The backend did the work and the answer never came back.
+ *
+ * Not a `ScriptedFailure`: a scripted failure is something Meta *said*, and this
+ * is the case where Meta said nothing. It exists because it is the only way to
+ * exercise `message-delivery-reliability.md` AC7's hard half — a send whose
+ * outcome cannot be known — and because the two adapters must agree about it.
+ */
+const ANSWER_LOST = Symbol('whatsapp.cloud.answer_lost');
+
+export function isAnswerLost(value: unknown): boolean {
+  return value === ANSWER_LOST;
 }
 
 export function isScriptedFailure(value: unknown): value is ScriptedFailure {
@@ -224,6 +261,12 @@ export class InMemoryWhatsAppCloud implements WhatsAppCloud {
     try {
       return fn();
     } catch (error) {
+      if (isAnswerLost(error)) {
+        throw new TransientTransportError(`WhatsApp Cloud API ${operation} did not complete.`, {
+          code: 'whatsapp.cloud.unreachable',
+          context: unreachableContext(operation, 'unknown'),
+        });
+      }
       if (!isScriptedFailure(error)) throw error;
       throw cloudFailure(operation, { status: error.status, code: error.code, subcode: error.subcode });
     }

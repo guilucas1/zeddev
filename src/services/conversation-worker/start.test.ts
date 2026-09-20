@@ -8,6 +8,12 @@
  * answer, with nobody calling a handler by hand — including the turn's delayed
  * job, which has to wake a sleeping consumer when its window runs out rather than
  * whenever the consumer's idle timeout next lets it look.
+ *
+ * WhatsApp is faked at the port, not at the process: the worker builds its own
+ * sealer from `VAULT_SEALING_KEYS` and unseals the tenant's real access token to
+ * send, so what this file proves is the whole outbound path bar the socket to
+ * Meta — which `@zeddev/whatsapp`'s conformance suite covers against a wire-level
+ * stub.
  */
 
 import assert from 'node:assert/strict';
@@ -19,16 +25,22 @@ import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatab
 import { ConfigurationError } from '@zeddev/errors';
 import { MemorySink } from '@zeddev/logging';
 import { PostgresQueue } from '@zeddev/queue';
+import { generateSealingKey, parseSealingKey, SecretSealer } from '@zeddev/secrets';
 import { specTest, unitTest } from '@zeddev/testing';
 import {
-  assignPhoneNumber,
   INBOUND_JOB_KIND,
   INBOUND_QUEUE,
   recordInboundMessage,
+  submitCredentials,
   transitionConnection,
 } from '@zeddev/whatsapp';
+import { InMemoryWhatsAppCloud, ScriptedCloudBackend } from '@zeddev/whatsapp/testing';
 import { loadWorkerSettings } from './config.ts';
 import { startWorker, type RunningWorker } from './start.ts';
+
+const APP_ID = '3090001111';
+const BUSINESS_ACCOUNT_ID = '20220002222';
+const SEALING_KEY = generateSealingKey('worker');
 
 function envFor(db: TestDatabase, overrides: Record<string, string> = {}): Record<string, string> {
   const options = db.options;
@@ -41,6 +53,11 @@ function envFor(db: TestDatabase, overrides: Record<string, string> = {}): Recor
     DATABASE_SSL_MODE: 'disable',
     AI_BASE_URL: 'https://example.com/v1beta',
     AI_MODEL: 'gemini-2.5-flash',
+    VAULT_SEALING_KEYS: SEALING_KEY,
+    WHATSAPP_API_BASE_URL: 'https://example.com/v21.0',
+    WHATSAPP_APP_ID: APP_ID,
+    WHATSAPP_APP_SECRET: ['worker', 'app', 'secret'].join('-'),
+    WHATSAPP_WEBHOOK_VERIFY_TOKEN: ['worker', 'verify', 'token'].join('-'),
     WORKER_AGGREGATION_WINDOW: '600ms',
     WORKER_MAX_TURN_DURATION: '3s',
     ...overrides,
@@ -50,6 +67,9 @@ function envFor(db: TestDatabase, overrides: Record<string, string> = {}): Recor
 unitTest('startup names every missing worker key at once', async () => {
   await assert.rejects(startWorker({}), (error: unknown) => {
     assert.ok(error instanceof ConfigurationError);
+    // The WhatsApp keys are here because the worker sends replies, and the
+    // schema is loaded whole rather than split — one key, one definition. The
+    // cost is that the worker also demands the two the gateway alone uses.
     assert.deepEqual(error.keys, [
       'AI_BASE_URL',
       'AI_MODEL',
@@ -57,6 +77,11 @@ unitTest('startup names every missing worker key at once', async () => {
       'DATABASE_NAME',
       'DATABASE_PASSWORD',
       'DATABASE_USER',
+      'VAULT_SEALING_KEYS',
+      'WHATSAPP_API_BASE_URL',
+      'WHATSAPP_APP_ID',
+      'WHATSAPP_APP_SECRET',
+      'WHATSAPP_WEBHOOK_VERIFY_TOKEN',
     ]);
     return true;
   });
@@ -76,7 +101,11 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
   let pool: Pool;
   let worker: RunningWorker;
   const provider = new InMemoryAiProvider();
+  const cloudBackend = new ScriptedCloudBackend();
   const sink = new MemorySink();
+  // The same keys the worker will build its own sealer from, so a token sealed
+  // by this fixture is one the worker can actually unseal.
+  const sealer = new SecretSealer([parseSealingKey(SEALING_KEY, 'VAULT_SEALING_KEYS')]);
   let counter = 0;
 
   before(async () => {
@@ -84,7 +113,12 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
     pool = db.pool;
     // The idle wait is left long on purpose: a turn must be answered because its
     // delayed job woke the consumer, not because the consumer happened to look.
-    worker = await startWorker(envFor(db), { ai: provider, sink, idleWaitMs: 60_000 });
+    worker = await startWorker(envFor(db), {
+      ai: provider,
+      cloud: new InMemoryWhatsAppCloud({ appId: APP_ID, backend: cloudBackend }),
+      sink,
+      idleWaitMs: 60_000,
+    });
   });
 
   after(async () => {
@@ -102,9 +136,15 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
       );
       return created.rows[0]!.id;
     });
+    const token = ['worker', String(counter), 'token'].join('-');
+    cloudBackend.register({ token, phoneNumberId, businessAccountId: BUSINESS_ACCOUNT_ID, appId: APP_ID });
     await withTenant(pool, tenant, async (tx) => {
-      await transitionConnection(tx, 'connecting');
-      await assignPhoneNumber(tx, phoneNumberId);
+      await submitCredentials(
+        tx,
+        sealer,
+        { phoneNumberId, businessAccountId: BUSINESS_ACCOUNT_ID, accessToken: token },
+        { principal: 'worker-test' },
+      );
       await transitionConnection(tx, 'connected');
       await savePersona(tx, { botName: 'Vera' });
       await setBotActive(tx, true);
@@ -133,6 +173,11 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
         });
       }
     });
+  }
+
+  /** What this customer was actually sent, in order. */
+  function sentTo(customer: string): string[] {
+    return cloudBackend.sends.filter((send) => send.to === customer).map((send) => send.body);
   }
 
   function outcomes(tenant: string) {
@@ -173,6 +218,14 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
       // Nothing more arrives for it, however long we wait.
       await new Promise((resolve) => setTimeout(resolve, 800));
       assert.equal((await outcomes(tenant)).length, 1);
+      // And it was actually sent — by the running process, over the port, with
+      // the tenant's own token unsealed on the way. One copy, for two messages.
+      await eventually(
+        async () => sentTo('15551230001'),
+        (sends) => sends.length > 0,
+        'the reply to be delivered',
+      );
+      assert.deepEqual(sentTo('15551230001'), ['Happy to help with both!']);
     },
   );
 

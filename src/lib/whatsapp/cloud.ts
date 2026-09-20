@@ -170,6 +170,25 @@ export function classifyCloudFailure(input: {
 const REASON_FIELD = 'connectionReason';
 
 /**
+ * Whether a failed call could still have taken effect at Meta.
+ *
+ * `none` — Meta answered, or the request never left this process. Whatever it
+ * asked for definitely did not happen, so repeating it is safe.
+ * `unknown` — the request may have been received and acted on, but its answer
+ * never arrived: a timeout, an abort, a success whose body could not be read.
+ *
+ * Only `sendText` makes this distinction load-bearing, and it is the whole of
+ * `message-delivery-reliability.md` AC7. The Cloud API has no idempotency key,
+ * so "retry until it works" and "never deliver twice" cannot both hold over an
+ * unanswered request. Carrying the distinction on the error lets the caller
+ * retry the large, ordinary case — Meta said no — and stop on the small one.
+ */
+export const SEND_DETERMINACY = ['none', 'unknown'] as const;
+export type SendDeterminacy = (typeof SEND_DETERMINACY)[number];
+
+const DETERMINACY_FIELD = 'sendDeterminacy';
+
+/**
  * Raise the right error for a classified cloud failure.
  *
  * Transient failures become `TransientTransportError` (retryable) and everything
@@ -211,6 +230,8 @@ export function cloudFailure(
     status: input.status,
     metaCode: input.code ?? null,
     [REASON_FIELD]: reason,
+    // Meta answered with a rejection, so it did not act on the request.
+    [DETERMINACY_FIELD]: 'none' satisfies SendDeterminacy,
   };
   if (CLOUD_RECOVERABLE_REASONS.has(reason)) {
     return new TransientTransportError(`WhatsApp Cloud API ${operation} failed and may succeed on retry.`, {
@@ -238,6 +259,26 @@ export function cloudFailureReason(error: unknown): ConnectionErrorReason | 'tra
   if (!(error instanceof TransientTransportError) && !(error instanceof TerminalTransportError)) return undefined;
   const value = error.context[REASON_FIELD];
   return typeof value === 'string' ? (value as ConnectionErrorReason | 'transient') : undefined;
+}
+
+/**
+ * Whether the call behind this error could still have taken effect.
+ *
+ * Defaults to `unknown` for anything this port did not raise, which is the safe
+ * direction: a caller that cannot tell what happened must not assume nothing did.
+ */
+export function cloudFailureDeterminacy(error: unknown): SendDeterminacy {
+  if (!(error instanceof TransientTransportError) && !(error instanceof TerminalTransportError)) return 'unknown';
+  const value = error.context[DETERMINACY_FIELD];
+  return value === 'none' ? 'none' : 'unknown';
+}
+
+/**
+ * Build the context an adapter attaches to a failure it raises itself — one that
+ * never reached Meta's error body, so there is no code to classify.
+ */
+export function unreachableContext(operation: string, determinacy: SendDeterminacy): ErrorContext {
+  return { operation, [REASON_FIELD]: 'transient', [DETERMINACY_FIELD]: determinacy };
 }
 
 /**

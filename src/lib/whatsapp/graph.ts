@@ -18,10 +18,12 @@ import {
   assertCloudCredentials,
   assertSendableText,
   cloudFailure,
+  unreachableContext,
   type BusinessAccountProfile,
   type CloudCredentials,
   type CloudDescriptor,
   type NumberProfile,
+  type SendDeterminacy,
   type SentMessage,
   type WhatsAppCloud,
 } from './cloud.ts';
@@ -67,6 +69,47 @@ function asText(value: unknown, fallback = ''): string {
  */
 function normalizeEnum(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.trim() !== '' ? value.trim().toLowerCase() : fallback;
+}
+
+/**
+ * The failure codes that prove the request was never written.
+ *
+ * Name resolution, a refused connection, an unreachable host, and a rejected
+ * certificate all happen before any byte Meta could act on leaves this process.
+ * Anything else — a reset mid-exchange, a timeout, an undici socket error — may
+ * have been received and acted on before the answer was lost.
+ */
+const NEVER_SENT_CODES = new Set([
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_HAS_EXPIRED',
+  'ERR_INVALID_URL',
+]);
+
+/**
+ * Could Meta have acted on a request that `fetch` rejected?
+ *
+ * `unknown` unless proven otherwise, deliberately. `fetch` reports "I could not
+ * complete this" for two very different situations, and the error shape does not
+ * separate them: one where nothing was sent, and one where something was sent and
+ * the answer was lost. Only the first is safe to repeat, so only the first is
+ * claimed, and only on the evidence of a cause code that cannot occur after the
+ * request was written. Guessing the other way is how an end customer gets the
+ * same reply twice.
+ */
+function determinacyOf(cause: unknown): SendDeterminacy {
+  for (let node: unknown = cause, depth = 0; node !== undefined && node !== null && depth < 8; depth += 1) {
+    const record = node as { readonly code?: unknown; readonly cause?: unknown };
+    if (typeof record.code === 'string' && NEVER_SENT_CODES.has(record.code)) return 'none';
+    node = record.cause;
+  }
+  return 'unknown';
 }
 
 function parseRetryAfter(header: string | null): number | undefined {
@@ -125,7 +168,7 @@ export class GraphWhatsAppCloud implements WhatsAppCloud {
     } catch (cause) {
       throw new TransientTransportError(`WhatsApp Cloud API ${operation} did not complete.`, {
         code: 'whatsapp.cloud.unreachable',
-        context: { operation, connectionReason: 'transient' },
+        context: unreachableContext(operation, determinacyOf(cause)),
         cause,
       });
     }
@@ -158,9 +201,13 @@ export class GraphWhatsAppCloud implements WhatsAppCloud {
       return JSON.parse(text) as unknown;
     } catch (cause) {
       if (response.ok) {
+        // A 2xx means Meta accepted the request, so whatever it asked for has
+        // very likely happened — the body simply could not be read back. Never
+        // `none`: repeating a send on this footing is how a duplicate reply
+        // reaches an end customer.
         throw new TransientTransportError(`WhatsApp Cloud API ${operation} returned a response that was not JSON.`, {
           code: 'whatsapp.cloud.malformed_response',
-          context: { operation, status: response.status, connectionReason: 'transient' },
+          context: { ...unreachableContext(operation, 'unknown'), status: response.status },
           cause,
         });
       }

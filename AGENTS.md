@@ -31,7 +31,7 @@ Run from the repo root.
 | `npm run config-reference` | Regenerates `docs/configuration.md` from the config schemas. A test fails the build if the committed file is stale. |
 | `node src/services/api/main.ts` | Runs the API service. Reads every setting from the environment and refuses to start, listing every missing key. |
 | `node src/services/whatsapp-gateway/main.ts` | Runs the inbound WhatsApp webhook (`/v1/whatsapp/webhook`). Needs `DATABASE_*` and `WHATSAPP_*`. |
-| `node src/services/conversation-worker/main.ts` | Runs the conversation worker (no port; consumes the job queue). Needs `DATABASE_*` and `AI_*`. |
+| `node src/services/conversation-worker/main.ts` | Runs the conversation worker (no port; consumes the job queue, and sends the replies it decides). Needs `DATABASE_*`, `AI_*`, `VAULT_*`, and `WHATSAPP_*`. |
 | `node src/services/api/cli.ts create-operator --email <addr>` | Creates the platform operator. Password is read from stdin. |
 | `docker compose up -d` (add `--profile local-mail` on a laptop) | Runs the platform from `compose.yaml`. Needs a `.env` and `deploy/secrets/postgres-superuser-password` — see the header of `compose.yaml`. |
 
@@ -74,6 +74,10 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   port's semantics and runs against both the Graph adapter (over `startGraphStub`, a local server speaking
   Meta's wire format) and the in-memory fake. Import `InMemoryWhatsAppCloud` only from
   `@zeddev/whatsapp/testing`, never from `@zeddev/whatsapp`.
+- **An answer is sent in exactly one place**: `delivery.ts` in `@zeddev/conversation`. `recordTurnOutcome`
+  writes the outbox row and enqueues its delivery job in the same transaction; nothing else may call
+  `WhatsAppCloud.sendText` for a reply. A send that Meta answered is retryable; one whose answer was lost
+  is not, and `cloudFailureDeterminacy` is the only thing that decides which — do not re-derive it.
 - **`tenant_secrets` is read and written only through `@zeddev/vault`.** Every entry point there records a
   `secret_access_records` row and refuses a connection with no bound tenant. Do not query the table directly.
 - **Message bytes are built in exactly one place**: `buildMessage` in `src/lib/mail/message.ts`.

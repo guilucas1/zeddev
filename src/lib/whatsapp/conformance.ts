@@ -18,7 +18,13 @@ import { after, before, describe } from 'node:test';
 import { TerminalTransportError, TransientTransportError, ValidationError } from '@zeddev/errors';
 import { Secret } from '@zeddev/secrets';
 import { specTest, unitTest } from '@zeddev/testing';
-import { businessVerificationBlocked, cloudFailureReason, type CloudCredentials, type WhatsAppCloud } from './cloud.ts';
+import {
+  businessVerificationBlocked,
+  cloudFailureDeterminacy,
+  cloudFailureReason,
+  type CloudCredentials,
+  type WhatsAppCloud,
+} from './cloud.ts';
 import type { ScriptedCloudBackend } from './memory.ts';
 
 export interface CloudFixture {
@@ -245,6 +251,46 @@ export function runWhatsAppCloudConformance(harness: CloudHarness): void {
       assert.ok(error instanceof TransientTransportError);
       assert.equal(cloudFailureReason(error), 'transient');
     });
+
+    specTest(
+      'message-delivery-reliability.md',
+      'AC7 a retried transient failure still leaves the end customer exactly one copy',
+      'a rejection Meta answered is reported as not sent, so a retry cannot duplicate anything',
+      async () => {
+        const credentials = account();
+        const before = fixture.backend.sends.length;
+        fixture.backend.failNext('sendText', { status: 429, code: 130429, message: 'Rate limit hit' });
+        const error = await fixture.cloud
+          .sendText(credentials, { to: CUSTOMER, body: 'hello' })
+          .then(() => undefined, (thrown: unknown) => thrown);
+        assert.equal(cloudFailureDeterminacy(error), 'none');
+        assert.equal(fixture.backend.sends.length - before, 0, 'a rejected send must not have happened');
+      },
+    );
+
+    specTest(
+      'message-delivery-reliability.md',
+      'AC7 a retried transient failure still leaves the end customer exactly one copy',
+      'a send whose answer is lost is reported as indeterminate, because it did in fact happen',
+      async () => {
+        const credentials = account();
+        const before = fixture.backend.sends.length;
+        fixture.backend.loseNext('sendText');
+        const error = await fixture.cloud
+          .sendText(credentials, { to: CUSTOMER, body: 'hello' })
+          .then(() => undefined, (thrown: unknown) => thrown);
+        assert.ok(error instanceof TransientTransportError);
+        assert.equal(cloudFailureReason(error), 'transient');
+        // The distinction the whole retry policy rests on: this attempt is
+        // retryable in the queue's sense and un-repeatable in the customer's.
+        assert.equal(cloudFailureDeterminacy(error), 'unknown');
+        assert.equal(
+          fixture.backend.sends.length - before,
+          1,
+          'the message reached Meta even though the answer did not return',
+        );
+      },
+    );
 
     specTest(
       'credential-and-secret-handling.md',

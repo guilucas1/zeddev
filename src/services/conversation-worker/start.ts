@@ -22,7 +22,13 @@ import { Logger, LOGGING_CONFIG_SCHEMA, type LogSink } from '@zeddev/logging';
 import { PostgresQueue, runConsumer } from '@zeddev/queue';
 import { migrateToLatest } from '@zeddev/schema';
 import { SystemClock, type Clock } from '@zeddev/time';
-import { INBOUND_QUEUE } from '@zeddev/whatsapp';
+import { loadSealer } from '@zeddev/vault';
+import {
+  GraphWhatsAppCloud,
+  INBOUND_QUEUE,
+  loadGraphCloudSettings,
+  type WhatsAppCloud,
+} from '@zeddev/whatsapp';
 import { loadWorkerSettings, type WorkerSettings } from './config.ts';
 
 export interface StartWorkerOptions {
@@ -30,6 +36,8 @@ export interface StartWorkerOptions {
   /** Replaces the configured provider. Tests only; the configuration is still required and validated. */
   readonly ai?: AiProvider | undefined;
   readonly clock?: Clock | undefined;
+  /** Replaces the Cloud API. Tests only; the configuration is still required and validated. */
+  readonly cloud?: WhatsAppCloud | undefined;
   /** Longest the consumer sleeps with nothing to do. Tests shorten it. */
   readonly idleWaitMs?: number | undefined;
 }
@@ -42,11 +50,17 @@ export interface RunningWorker {
 }
 
 export async function startWorker(env: RawEnv = process.env, options: StartWorkerOptions = {}): Promise<RunningWorker> {
-  const [database, ai, settings, logging] = loadAll([
+  // The sealing keys and the Cloud API settings are loaded here, with everything
+  // else, so a worker missing either is told at startup alongside every other
+  // missing key rather than on the first reply it tries to send
+  // (`credential-and-secret-handling.md` AC2, `environment-portability.md` AC7).
+  const [database, ai, settings, logging, sealer] = loadAll([
     () => loadDatabaseConfig(env),
     () => loadAiSettings(env),
     () => loadWorkerSettings(env),
     () => loadConfig(LOGGING_CONFIG_SCHEMA, env),
+    () => loadSealer(env),
+    () => loadGraphCloudSettings(env),
   ] as const);
 
   const logger = new Logger({
@@ -79,6 +93,8 @@ export async function startWorker(env: RawEnv = process.env, options: StartWorke
     policy: { windowMs: settings.aggregationWindowMs, maxTurnMs: settings.maxTurnDurationMs },
     clock,
     logger,
+    cloud: options.cloud ?? new GraphWhatsAppCloud(loadGraphCloudSettings(env)),
+    sealer,
   });
 
   const controller = new AbortController();

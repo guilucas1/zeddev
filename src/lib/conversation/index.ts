@@ -11,10 +11,31 @@
  * `conversation-worker` service runs `conversationHandlers` under `runConsumer`;
  * the API calls `resumeConversation`.
  *
- * Sending the recorded answer to WhatsApp is not here. An answer is recorded with
- * `delivery_state = 'pending'` — the outbox the outbound sender drains.
+ * Sending the recorded answer is here too (`delivery.ts`): an answer is recorded
+ * with `delivery_state = 'pending'`, and the delivery handler drains that outbox,
+ * detects the 24-hour customer service window, retries what Meta definitively
+ * refused, refuses to repeat what it cannot know the fate of, and feeds a send
+ * failure back into the connection state.
  */
 
+export {
+  claimDelivery,
+  DELIVERY_FAILURES,
+  DELIVERY_JOB_KIND,
+  DELIVERY_LIMITS,
+  DELIVERY_PRINCIPAL,
+  DELIVERY_STATES,
+  deliveryJob,
+  readDelivery,
+  scheduleDelivery,
+  settleDelivery,
+  type DeliveryAttemptOutcome,
+  type DeliveryClaim,
+  type DeliveryFailure,
+  type DeliveryScheduler,
+  type DeliverySettlement,
+  type DeliveryState,
+} from './delivery.ts';
 export {
   renderConversation,
   renderMessage,

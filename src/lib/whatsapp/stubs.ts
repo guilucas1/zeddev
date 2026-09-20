@@ -18,7 +18,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { isScriptedFailure, ScriptedCloudBackend, type ScriptedFailure } from './memory.ts';
+import { isAnswerLost, isScriptedFailure, ScriptedCloudBackend, type ScriptedFailure } from './memory.ts';
 
 /** Every HTTP request as it arrived, for assertions about the wire itself. */
 export interface WireRecord {
@@ -183,7 +183,12 @@ export async function startGraphStub(): Promise<GraphStub> {
         const segments = url.pathname.slice(BASE_PATH.length + 1).split('/');
         send(res, 200, route(backend, token, req.method ?? 'GET', segments, url.searchParams.get('fields') ?? '', body));
       } catch (error) {
-        if (isScriptedFailure(error)) sendFailure(res, error);
+        // The backend did the work and then declared its answer lost, so the
+        // wire has to lose it too: the socket goes away with nothing written on
+        // it. Answering with an error instead would tell the adapter the send
+        // did not happen, which is exactly the thing that is not known.
+        if (isAnswerLost(error)) res.socket?.destroy();
+        else if (isScriptedFailure(error)) sendFailure(res, error);
         // A decoding failure in the stub is a test failure and should read like one.
         else send(res, 500, { stubError: error instanceof Error ? error.message : String(error) });
       }

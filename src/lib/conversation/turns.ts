@@ -53,6 +53,7 @@ import { DefectError, ValidationError } from '@zeddev/errors';
 import type { EnqueueRequest, EnqueueResult } from '@zeddev/queue';
 import type { InboundContent, InboundMessageType } from '@zeddev/whatsapp';
 import { renderConversation, type ContextTurn, type RenderedConversation } from './context.ts';
+import { scheduleDelivery } from './delivery.ts';
 
 /** What became of an inbound message. Mirrored by a CHECK in migration 0014. */
 export const INBOUND_DISPOSITIONS = ['aggregated', 'held_bot_inactive', 'held_handoff_paused'] as const;
@@ -578,6 +579,12 @@ export async function recordTurnOutcome(
           ? { outcome: 'fallback', trigger: decision.trigger, cause: decision.cause }
           : { outcome: 'handoff', reason: decision.reason };
   const outcome = await insertOutcome(connection, conversation, row.id, input, usage);
+  // The outbox and the job that drains it commit together, so an answer that
+  // exists always has something coming to send it, and a rolled-back answer
+  // leaves no job behind to send an answer that was never recorded.
+  if ('message' in outcome) {
+    await scheduleDelivery(connection, scheduler, { turnId: row.id, customerId: conversation.customer_id });
+  }
   await scheduleNext(connection, conversation.id, row, scheduler);
   return { recorded: true, outcome };
 }

@@ -2,12 +2,22 @@
  * The conversation worker's job handlers — what runs when an inbound message or
  * a turn's timer comes due.
  *
- * Two kinds, on the queue the gateway schedules onto (`INBOUND_QUEUE`):
+ * Three kinds, on the queue the gateway schedules onto (`INBOUND_QUEUE`):
  *
  * - `INBOUND_JOB_KIND` — a message was stored. Admit this end-customer's pending
  *   messages: aggregate them into the open turn, open a new one, or hold them.
  * - `TURN_JOB_KIND` — a turn's window may have run out. Close it, generate its
  *   answer, record it.
+ * - `DELIVERY_JOB_KIND` — an answer was recorded. Send it, and let what Meta says
+ *   about it reach the connection state.
+ *
+ * Delivery shares this queue and this process rather than getting its own,
+ * despite IMPLEMENTATION_PLAN.md's component map having placed outbound send with
+ * the gateway. Two reasons decided it: the outbox is this library's table, and the
+ * gateway's one hard requirement is to acknowledge a webhook fast — which is a
+ * poor thing to ask of a process that also holds retrying, rate-limited sends. The
+ * queue's per-tenant fairness and in-flight cap are what keep the two kinds of
+ * work from starving each other here.
  *
  * Each handler is idempotent, because the queue is at-least-once: admission pulls
  * whatever is still undecided, and a turn's answer is recorded only if none
@@ -20,8 +30,15 @@ import { withTenant, type Pool } from '@zeddev/db';
 import { DefectError } from '@zeddev/errors';
 import { endCustomerRef, type Logger } from '@zeddev/logging';
 import type { ClaimedJob, JobHandler } from '@zeddev/queue';
+import type { SecretSealer } from '@zeddev/secrets';
 import type { Clock } from '@zeddev/time';
-import { INBOUND_JOB_KIND, readInboundMessage } from '@zeddev/whatsapp';
+import { assertSendableText, INBOUND_JOB_KIND, readInboundMessage, type WhatsAppCloud } from '@zeddev/whatsapp';
+import {
+  claimDelivery,
+  settleDelivery,
+  DELIVERY_JOB_KIND,
+  type DeliveryAttemptOutcome,
+} from './delivery.ts';
 import {
   admitPendingMessages,
   prepareTurn,
@@ -39,6 +56,10 @@ export interface ConversationWorkerDependencies {
   readonly policy: AggregationPolicy;
   readonly clock: Clock;
   readonly logger: Logger;
+  /** Sends the recorded answer. */
+  readonly cloud: WhatsAppCloud;
+  /** Unseals the tenant's access token. */
+  readonly sealer: SecretSealer;
 }
 
 function payloadId(job: ClaimedJob, key: 'inboundMessageId' | 'turnId'): string {
@@ -60,6 +81,7 @@ export function conversationHandlers(dependencies: ConversationWorkerDependencie
   return {
     [INBOUND_JOB_KIND]: (job) => handleInbound(dependencies, job),
     [TURN_JOB_KIND]: (job) => handleTurn(dependencies, job),
+    [DELIVERY_JOB_KIND]: (job) => handleDelivery(dependencies, job),
   };
 }
 
@@ -161,6 +183,68 @@ async function handleTurn(dependencies: ConversationWorkerDependencies, job: Cla
       tokenCount: usage === undefined ? undefined : usage.inputTokens + usage.outputTokens,
     });
   }
+}
+
+/**
+ * Send one recorded answer.
+ *
+ * Shaped like `handleTurn`: a short transaction that takes the row, the network
+ * call outside any transaction, then a short transaction recording what happened.
+ * The difference is what the middle step costs if it is repeated — a second reply
+ * to a real person — which is why the claim leaves the row in `sending` and why a
+ * later attempt that finds it there records a failure instead of sending again.
+ */
+async function handleDelivery(dependencies: ConversationWorkerDependencies, job: ClaimedJob): Promise<void> {
+  const { pool, cloud, sealer, clock, logger } = dependencies;
+  const turnId = payloadId(job, 'turnId');
+  const fields = { tenantId: job.tenantId, turnId, jobId: job.id, attempt: job.attempt };
+
+  const claim = await withTenant(pool, job.tenantId, (tx) => claimDelivery(tx, sealer, turnId, clock.now()));
+  switch (claim.status) {
+    case 'settled':
+      logger.debug('conversation.delivery.settled', { ...fields, state: claim.state });
+      return;
+    case 'indeterminate':
+      // Recorded by `claimDelivery` itself, because the decision not to re-send
+      // has to be taken under the same lock that observed the state.
+      logger.warn('conversation.delivery.indeterminate', fields);
+      return;
+    case 'expired':
+      logger.warn('conversation.delivery.window_expired', fields);
+      return;
+    case 'disconnected':
+      logger.warn('conversation.delivery.not_connected', fields);
+      return;
+    case 'ready':
+      break;
+  }
+
+  const started = clock.monotonicMs();
+  let outcome: DeliveryAttemptOutcome;
+  try {
+    // Checked here as well as in the adapters, because a body this port would
+    // refuse is a defect in reply generation, and spending the whole retry
+    // allowance rediscovering that would delay every other tenant's work behind it.
+    assertSendableText({ to: claim.to, body: claim.body });
+    const sent = await cloud.sendText(claim.credentials, { to: claim.to, body: claim.body });
+    outcome = { status: 'sent', messageId: sent.messageId };
+  } catch (error) {
+    outcome = { status: 'failed', error, attemptsRemaining: job.maxAttempts - job.attempt };
+  }
+
+  const settlement = await withTenant(pool, job.tenantId, (tx) => settleDelivery(tx, turnId, outcome));
+  logger.info('conversation.delivery.settled', {
+    ...fields,
+    endCustomerRef: endCustomerRef(job.tenantId, claim.to),
+    state: settlement.state,
+    failure: settlement.failure,
+    reason: settlement.reason,
+    durationMs: clock.monotonicMs() - started,
+  });
+
+  // Raised only after the row is settled, so the queue's backoff is what spaces
+  // the retries and the row already says the attempt is over.
+  if (settlement.retry && outcome.status === 'failed') throw outcome.error;
 }
 
 function withheldOf(outcome: { readonly outcome: string; readonly reason?: unknown }): string | undefined {

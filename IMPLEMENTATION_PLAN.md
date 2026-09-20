@@ -120,12 +120,20 @@ one place, with a configured list of sealing keys so rotation is configuration. 
 three API routes and one gateway hook complete the flow. See §4t. That brings the totals to 974 passing tests,
 zero skipped, 23 of 27 specs with covering tests, 445 spec-linked assertions.
 
+The outbound sender is done too, which means a message now makes the whole round trip: a customer writes,
+the gateway stores and schedules, the worker aggregates and answers, and the answer is sent back over the
+Cloud API. Migration `0016_outbound_delivery` gives `conversation_turn_outcomes.delivery_state` the rest of
+its vocabulary, and `delivery.ts` in `@zeddev/conversation` drains it: the 24-hour customer service window,
+retry for what Meta definitively refused, a refusal to repeat what it cannot know the fate of, the
+attempts-exhausted record, and connection-state feedback — which is also what finally drives automatic
+reconnection. See §4u. That brings the totals to 987 passing tests, zero skipped, 23 of 27 specs with
+covering tests, 457 spec-linked assertions.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the
 supported-language list, document upload on accepted document formats and size limits, memory reset policy on
-the default inactivity window. The next unblocked work is the outbound sender that drains
-`conversation_turn_outcomes` rows with `delivery_state = 'pending'` — now unblocked, because the connection
-flow stores the tenant's access token as a tenant secret and `WhatsAppCloud.sendText` exists — then image and
-voice understanding, which replace the "could not be viewed/listened to" notes.
+the default inactivity window. The next unblocked work is image and voice understanding, which
+replace the "could not be viewed/listened to" notes — the AI port already declares vision and audio
+capabilities, and media retrieval is the piece that has to be built for them.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -353,9 +361,12 @@ These are load-bearing — most items below assume them. Recorded here so they a
 - `object-storage` — uploaded knowledge documents and fetched WhatsApp media. S3-compatible port so a
   local container and a cloud bucket are the same adapter.
 - `services/whatsapp-gateway` — inbound webhook verification, acknowledgement, deduplication, tenant
-  attribution, enqueue; outbound send with retry; owns the connection state machine.
+  attribution, enqueue; consumes the connection-verification reply. **Revised (§4u):** outbound send moved
+  to the conversation worker, because the outbox is that library's table and this process's one hard
+  requirement is to acknowledge a webhook fast.
 - `services/conversation-worker` — burst aggregation, memory assembly, prompt construction, AI calls,
-  rule enforcement, handoff decisions, fallback execution.
+  rule enforcement, handoff decisions, fallback execution, and outbound send with retry — which is also
+  where a send failure feeds back into the connection state.
 - `services/api` — client and operator HTTP API: auth, configuration, transcripts, metrics.
 - `services/scheduler` — timer-driven work: reconnection attempts, stalled-reconnect detection, alert
   evaluation and suppression, retention-window deletion, memory reset evaluation.
@@ -497,9 +508,9 @@ call must never be able to cause Meta to redeliver.
   disconnected), the legal-transition table, timestamped transition history, and surfaced error reasons —
   including Meta-side business-verification failure as a distinct condition
   (`business_verification_required`) — in `@zeddev/whatsapp` plus migration `0006_whatsapp_connection`. What
-  remains is *driving* the two transitions the connection flow does not: bounded automatic reconnection from
-  an observed send failure (attempt policy undecided — the outbound sender's), and offboarding transitioning to
-  `disconnected` (P4).
+  remains is bounding it: a send failure now moves `connected → reconnecting` and a later success moves it
+  back (§4u), but a tenant with no traffic never attempts a recovery, so exhausting attempts into `error`
+  still needs `services/scheduler`. Offboarding transitioning to `disconnected` is P4.
 - **[DONE]** Number replacement as a distinct guided flow that structurally cannot produce a dual-active
   window: `submitCredentials(..., { replace: true })` goes through `disconnected` — releasing the old number's
   route — before assigning the new one. See §4t.
@@ -535,12 +546,13 @@ call must never be able to cause Meta to redeliver.
   20 turns; the stored transcript itself is untouched. Inactivity and manual reset are still blocked on the §4
   default-inactivity-window decision. See §4s.
 - Knowledge retrieval grounding over configured freeform entries and ingested documents.
-- **[NEXT]** Outbound send with transient retry and backoff, exactly-once delivery from the end-customer's
+- **[DONE]** Outbound send with transient retry and backoff, exactly-once delivery from the end-customer's
   perspective, terminal-failure recording feeding the operator metrics, and connection-state feedback when
-  a send failure indicates the connection itself is broken. Unblocked as of §4t: `WhatsAppCloud.sendText`,
-  `loadCloudCredentials`, and `classifyCloudFailure` all exist. Needs a migration widening the
-  `delivery_state` CHECK on `conversation_turn_outcomes` past `pending`.
-- 24-hour customer service window detection and handling — **blocked on a product decision**, see §4.
+  a send failure indicates the connection itself is broken. `delivery.ts` in `@zeddev/conversation` plus
+  migration `0016_outbound_delivery`; AC7, AC8, AC9, AC17 covered. See §4u.
+- **[PARTIAL]** 24-hour customer service window: detection and recording are done (AC10) — a reply outside
+  the window is marked `expired` and never sent. What to send *instead* — an approved template, which costs
+  money — is still **blocked on a product decision**, see §4.
 - **[PARTIAL]** Fallback execution across all three triggers, plus the new `not_understood` cause, are decided
   and recorded with literal text in the outbox (`conversation_turn_outcomes`); actually sending it is the
   outbound sender's. See §4s.
@@ -610,7 +622,9 @@ call must never be able to cause Meta to redeliver.
   specs, 445 assertions; `whatsapp-number-connection.md` covers 18 criteria and
   `credential-and-secret-handling.md` 36 — the two specs `@zeddev/vault` and `@zeddev/whatsapp` jointly own.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
-  `language-configuration.md`, and `operator-proactive-alerting.md`.)
+  `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
+  457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
+  sender, and `whatsapp-number-connection.md` 20.)
 
 ---
 
@@ -1689,6 +1703,85 @@ SMTP).
 - **No live test against real Meta.** The stub decodes Meta's documented shapes, but the first real number will
   still be the first real proof. This is the §5 "Meta onboarding is the critical path" risk, and it is now the
   only part of the flow that has not been exercised end to end.
+
+---
+
+## 4u. Findings from the outbound sender increment
+
+- **The hard requirement is not "retry", it is "retry without duplicating".**
+  `message-delivery-reliability.md` AC7 asks for both in one sentence, and the Cloud API offers no
+  idempotency key and no way to ask after the fact whether a message was accepted. The two are therefore
+  not jointly achievable by retrying harder; they are achieved by knowing which failures left nothing
+  behind. `cloudFailureDeterminacy(error)` is that knowledge: `none` when Meta answered (so the send
+  provably did not happen and repeating it is safe), `unknown` for everything else.
+- **[DECISION] Determinacy defaults to `unknown`, and `none` is claimed only on evidence.** `fetch`
+  reports "I could not complete this" for both "nothing was sent" and "something was sent and the answer
+  was lost", and its error shape does not separate them. The Graph adapter walks the cause chain for a
+  code that cannot occur after the request was written — `ENOTFOUND`, `ECONNREFUSED`, a TLS rejection —
+  and claims `none` only then. Guessing the other way is precisely how an end customer gets the same
+  reply twice.
+- **The outbox's `sending` state is what makes a crash recoverable.** The row moves to `sending` in its
+  own committed transaction *before* the call, so an attempt that finds it already there knows a previous
+  attempt reached Meta and never came back to say what happened. It records `failed` / `indeterminate`
+  rather than sending again. A lost reply is recorded and visible — AC8 explicitly provides for that — and
+  a duplicate reply is neither.
+- **Both fakes learned to lose an answer.** `ScriptedCloudBackend.loseNext(operation)` performs the work
+  and *then* destroys the answer: the in-memory adapter raises the same unreachable error the real one
+  does, and the HTTP stub destroys the socket with nothing written on it. Two new conformance assertions
+  hold the fake and the Graph adapter to the same verdict, which is what stops "we never duplicate" from
+  being a property of the fake alone.
+- **[DECISION] A reply outside the 24-hour customer service window is recorded `expired` and not sent.**
+  AC10 requires detection, no silent failure, and a record; it does not say what to send instead. The
+  alternative — an approved template — costs money per send and is still an open §4 decision, so the
+  conservative half is implemented and the other half stays a configuration change rather than a rewrite.
+  The window is measured from the end customer's own `sent_at`, not from when the platform stored the
+  message, so a delay in the pipeline cannot make the window look wider than Meta will treat it as.
+- **Automatic reconnection now has something driving it**, which closes the §4t follow-up. A send failing
+  for a recoverable reason (`transient`, `rate_limited`) moves `connected → reconnecting`; a terminal Meta
+  reason moves the connection to `error` carrying that reason (AC9); and a send that succeeds while
+  `reconnecting` moves it back to `connected` — the only evidence of recovery the platform gets.
+  Transitions are checked for legality rather than caught, because a send failing while the client happens
+  to be disconnecting is an ordinary race, not a conflict anyone needs told about.
+- **[DECISION] Delivery runs in the conversation worker, not the gateway**, revising the §1 component map.
+  Two reasons: the outbox is `@zeddev/conversation`'s own table, and the gateway's one hard requirement is
+  to acknowledge a webhook fast — a poor thing to ask of a process that also holds retrying, rate-limited
+  sends. The queue's per-tenant fairness and its in-flight cap are what keep turn work and send work from
+  starving each other in one process. Revisit if send volume and AI latency start competing for the same
+  slots: the fix is a second queue and a second consumer, not a different table.
+- **[DECISION] Five attempts, with the queue's own backoff between them, and no configuration key.** The
+  handler records the row's terminal state itself and returns normally on the last attempt rather than
+  letting the job dead-letter, because AC8 asks for the failure to be recorded *against the tenant* — the
+  outbox row is where a per-tenant failed-delivery metric will read it, not the dead-letter table.
+- **Credentials are loaded before the row is claimed, not after.** A tenant that disconnected between
+  deciding an answer and sending it settles as `failed` / `not_connected` instead of rolling the whole
+  attempt back and reaching the same answer on every retry. `connected` being the only state messages may
+  be exchanged in makes this a correct outcome rather than a workaround.
+- **The turn tests now prove delivery, not just decision.** Every live tenant in
+  `src/lib/conversation/turns.test.ts` is given a real sealed access token and a registered account, so the
+  existing burst and fallback tests assert what the customer was *sent*, down to the unsealing. The two
+  assertions that read `delivery_state = 'pending'` now read `'sent'`, which is the visible shape of this
+  increment.
+
+### Follow-ups the outbound sender increment leaves open
+
+- **The 24-hour window policy is still half-decided** (§4). Today the reply is recorded `expired`; whether
+  an approved template should be sent instead is a cost decision, and `expired` is the state a template
+  path would branch from.
+- **A reconnect is only attempted when there is something to send.** A tenant with no traffic sits in
+  `reconnecting` until its next reply, and `whatsapp-number-connection.md` AC6 wants recovery attempts to
+  be *exhausted* before `error`. That bound — a stalled-reconnect sweep with an attempt policy — belongs to
+  `services/scheduler`, which does not exist yet; `recovery_exhausted` is the reason waiting for it.
+- **`delivery_updated_at` and `delivery_attempts` are written but nothing reads them yet.** They exist for
+  the per-tenant failed-delivery metric `operator-health-monitoring.md` requires (P3).
+- **A send that succeeds and then fails to record leaves the row `sending`**, and the next attempt calls it
+  indeterminate — the right conservative answer, but it loses Meta's message id for a message that did
+  arrive. Nothing can recover that without a delivery-receipt webhook, which the spec explicitly does not
+  let the requirements depend on.
+- **Delivery receipts are not consumed.** Meta reports `sent`/`delivered`/`read` on the same webhook the
+  gateway already receives; wiring them would turn `sent` from "Meta accepted it" into "it arrived", and is
+  the cheapest available upgrade to the indeterminate case.
+- **Media retrieval has its own retry allowance** (AC14, AC15) and is not built; it lands with image and
+  voice understanding.
 
 ---
 
