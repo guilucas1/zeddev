@@ -234,3 +234,9 @@ coverage/
 
 # Deployment secrets referenced by compose.yaml. Never committed.
 /deploy/secrets/
+
+# graphify: graph.json/GRAPH_REPORT.md/graph.html/manifest.json are tracked (the
+# post-commit hook keeps them current); these are machine-local/regenerable.
+/graphify-out/.graphify_python
+/graphify-out/.graphify_root
+/graphify-out/cache/

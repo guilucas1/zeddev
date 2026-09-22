@@ -165,6 +165,15 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - What *is* faked, via the injectable `transport` option on `S3ObjectStore`, is only what a
   real server will not produce on demand: throttling, corruption at rest, a truncated listing.
 
+## Graph
+
+`graphify-out/graph.json` is a structural map of `specs/*` and `src/*` (nodes, communities,
+cross-references). Query it before re-reading files cold: `graphify query "<topic>"`,
+`graphify explain "<name>"`, or read `graphify-out/GRAPH_REPORT.md`. A `graphify hook install`
+post-commit hook keeps code nodes current automatically after every commit (AST only, no LLM
+cost); after editing `specs/*.md`, run `/graphify --update .` so semantic content stays current
+too. See PROMPT_build.md/PROMPT_plan.md Step 0 for how the build/plan loops use this.
+
 ## Gotchas
 
 - `.gitignore` is Python-derived. Its `lib/`, `lib64/`, `parts/`, `var/` rules are
