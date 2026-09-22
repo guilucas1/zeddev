@@ -236,7 +236,8 @@ coverage/
 /deploy/secrets/
 
 # graphify: graph.json/GRAPH_REPORT.md/graph.html/manifest.json are tracked (the
-# post-commit hook keeps them current); these are machine-local/regenerable.
+# post-commit hook keeps them current); these are machine-local/regenerable/backups.
 /graphify-out/.graphify_python
 /graphify-out/.graphify_root
 /graphify-out/cache/
+/graphify-out/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
