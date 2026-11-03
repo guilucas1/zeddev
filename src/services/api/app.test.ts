@@ -28,7 +28,7 @@ import { after, before, describe } from 'node:test';
 import { InMemoryAiProvider, type ObservedGeneration } from '@zeddev/ai/testing';
 import { withTenant } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
-import { IdentityService, TOKEN_PREFIXES, type IdentityPolicy, type TenantProvisioning } from '@zeddev/identity';
+import { actionPrincipalType, IdentityService, TOKEN_PREFIXES, type IdentityPolicy, type TenantProvisioning } from '@zeddev/identity';
 import { Logger, MemorySink } from '@zeddev/logging';
 import { SmtpMailer, type Mailer } from '@zeddev/mail';
 import {
@@ -1326,6 +1326,177 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
       assert.equal(resumed.status, 200);
       assert.deepEqual(resumed.body, { customerId, paused: false, pausedAt: null, reason: null });
       assert.equal(await paused(), false);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Reading conversations
+  // -------------------------------------------------------------------------
+
+  /** A customer message as the gateway stores it, and the reply recorded for it. */
+  async function seedConversation(tenantId: string, customerId: string, text: string, reply: string): Promise<void> {
+    counter += 1;
+    const externalId = `wamid.api-${counter}`;
+    await withTenant(db.pool, tenantId, async (tx) => {
+      const message = await tx.query<{ id: string }>(
+        `INSERT INTO inbound_messages
+           (tenant_id, external_id, phone_number_id, customer_id, message_type, upstream_type, content, sent_at)
+         VALUES (app.current_tenant_id(), $1, '4400000009', $2, 'text', 'text', $3::jsonb, now() - interval '1 minute')
+         RETURNING id`,
+        [externalId, customerId, JSON.stringify({ text })],
+      );
+      const conversation = await tx.query<{ id: string }>(
+        `INSERT INTO conversations (tenant_id, customer_id) VALUES (app.current_tenant_id(), $1) RETURNING id`,
+        [customerId],
+      );
+      const conversationId = conversation.rows[0]!.id;
+      const turn = await tx.query<{ id: string }>(
+        `INSERT INTO conversation_turns (tenant_id, conversation_id, state, opened_at, closes_at, deadline_at, closed_at)
+         VALUES (app.current_tenant_id(), $1, 'closed', now(), now(), now(), now()) RETURNING id`,
+        [conversationId],
+      );
+      const turnId = turn.rows[0]!.id;
+      await tx.query(
+        `INSERT INTO inbound_dispositions (inbound_message_id, tenant_id, conversation_id, turn_id, disposition)
+         VALUES ($1, app.current_tenant_id(), $2, $3, 'aggregated')`,
+        [message.rows[0]!.id, conversationId, turnId],
+      );
+      await tx.query(
+        `INSERT INTO conversation_turn_outcomes (turn_id, tenant_id, conversation_id, outcome, message, delivery_state)
+         VALUES ($1, app.current_tenant_id(), $2, 'reply', $3, 'pending')`,
+        [turnId, conversationId, reply],
+      );
+    });
+  }
+
+  specTest(
+    'client-conversation-visibility.md',
+    'AC2 a transcript shows every message in chronological order, attributed',
+    'a client lists their conversations and reads one over HTTP, as JSON a browser can use',
+    async () => {
+      const { cookie, tenantId } = await onboard();
+      const customerId = '15559871001';
+      await seedConversation(tenantId, customerId, 'do you open on sundays?', 'Yes, from ten.');
+
+      const listed = await call(served, 'POST', '/v1/conversations/list', { cookie, json: {} });
+      assert.equal(listed.status, 200);
+      assert.equal(listed.body.nextCursor, null);
+      assert.equal(listed.body.conversations.length, 1);
+      const [entry] = listed.body.conversations;
+      assert.equal(entry.customerId, customerId);
+      assert.equal(entry.paused, false);
+      assert.equal(typeof entry.lastActivityAt, 'string');
+
+      const read = await call(served, 'POST', '/v1/conversations/transcript', { cookie, json: { customerId } });
+      assert.equal(read.status, 200);
+      assert.equal(read.body.customerId, customerId);
+      assert.equal(read.body.paused, false);
+      assert.deepEqual(read.body.handoffHistory, []);
+      assert.deepEqual(
+        read.body.entries.map((item: { from: string; text: string }) => [item.from, item.text]),
+        [
+          ['customer', 'do you open on sundays?'],
+          ['bot', 'Yes, from ten.'],
+        ],
+      );
+      assert.equal(read.body.earlierCursor, null);
+
+      const fresh = await call(served, 'POST', '/v1/conversations/transcript', {
+        cookie,
+        json: { customerId, after: read.body.laterCursor },
+      });
+      assert.equal(fresh.status, 200);
+      assert.deepEqual(fresh.body.entries, []);
+    },
+  );
+
+  specTest(
+    'client-conversation-visibility.md',
+    "AC8 access to another client's conversation is denied or returns no data",
+    'another client reads nothing, a stranger and a cross-site request are refused, and the number stays out of the log and the audit trail',
+    async () => {
+      const alpha = await onboard();
+      const beta = await onboard();
+      const customerId = '15559871002';
+      await seedConversation(alpha.tenantId, customerId, 'private question', 'private answer');
+      const routes = [
+        ['/v1/conversations/list', {}],
+        ['/v1/conversations/transcript', { customerId }],
+      ] as const;
+      const logged = sink.records.length;
+
+      for (const [path, json] of routes) {
+        assert.equal((await call(served, 'POST', path, { json })).status, 401, `${path} without a session`);
+        const forged = await call(served, 'POST', path, {
+          cookie: alpha.cookie,
+          headers: { origin: 'https://example.org' },
+          json,
+        });
+        assert.equal(forged.status, 403, `${path} from another site`);
+        const named = await call(served, 'POST', path, { cookie: alpha.cookie, json: { ...json, tenantId: beta.tenantId } });
+        assert.equal(named.status, 400, 'a caller cannot name a tenant');
+      }
+
+      const stolen = await call(served, 'POST', '/v1/conversations/transcript', { cookie: beta.cookie, json: { customerId } });
+      assert.equal(stolen.status, 404);
+      assert.ok(!stolen.text.includes('private'));
+      const empty = await call(served, 'POST', '/v1/conversations/list', { cookie: beta.cookie, json: { customer: customerId } });
+      assert.deepEqual(empty.body.conversations, []);
+
+      assert.equal((await call(served, 'POST', '/v1/conversations/transcript', { cookie: alpha.cookie, json: { customerId } })).status, 200);
+      const logs = JSON.stringify(sink.records.slice(logged));
+      assert.ok(!logs.includes(customerId), 'the end-customer number reached the log');
+      const access = await withTenant(db.pool, alpha.tenantId, async (tx) => {
+        const rows = await tx.query<{ action: string; resource: string }>(
+          `SELECT action, resource FROM access_records WHERE action = 'conversation.read' ORDER BY id DESC LIMIT 1`,
+        );
+        return rows.rows[0]!;
+      });
+      assert.deepEqual({ ...access }, { action: 'conversation.read', resource: 'conversation.transcript' });
+    },
+  );
+
+  specTest(
+    'client-conversation-visibility.md',
+    'AC9 no conversation content is visible to the operator',
+    'an operator has no route to a conversation, and their token is not a client session',
+    async () => {
+      const client = await onboard();
+      const customerId = '15559871003';
+      await seedConversation(client.tenantId, customerId, 'operator must not read this', 'nor this');
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const token = cookieValue(login, OPERATOR_SESSION_COOKIE)!;
+      const asOperator = `${OPERATOR_SESSION_COOKIE}=${token}`;
+      const asClientCookie = `${CLIENT_SESSION_COOKIE}=${token}`;
+
+      for (const cookie of [asOperator, asClientCookie]) {
+        const read = await call(served, 'POST', '/v1/conversations/transcript', { cookie, json: { customerId } });
+        assert.equal(read.status, 401);
+        assert.equal((await call(served, 'POST', '/v1/conversations/list', { cookie, json: {} })).status, 401);
+      }
+      for (const path of ['/v1/operator/conversations/list', '/v1/operator/conversations/transcript']) {
+        assert.equal((await call(served, 'POST', path, { cookie: asOperator, json: { customerId } })).status, 404);
+      }
+      const statuses = await call(served, 'GET', '/v1/operator/bot-statuses', { cookie: asOperator });
+      assert.equal(statuses.status, 200);
+      assert.ok(!statuses.text.includes(customerId) && !statuses.text.includes('operator must not read this'));
+    },
+  );
+
+  specTest(
+    'authentication-and-access.md',
+    'AC15 an operator retrieving a transcript or message content is denied through any surface',
+    'an authenticated operator token is refused at the transcript route, and conversation.read is client-only',
+    async () => {
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const cookie = `${CLIENT_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+      const refused = await call(served, 'POST', '/v1/conversations/transcript', { cookie, json: { customerId: '15559871004' } });
+      assert.equal(refused.status, 401);
+      assert.equal(actionPrincipalType('conversation.read'), 'client');
     },
   );
 

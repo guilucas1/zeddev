@@ -85,7 +85,17 @@ import {
   type BotStatus,
 } from '@zeddev/bot';
 import type { AiProvider } from '@zeddev/ai';
-import { parseResumeInput, resumeConversation, type ConversationHandoffStatus } from '@zeddev/conversation';
+import {
+  describeConversationHandoff,
+  describeConversationSummary,
+  describeTranscript,
+  listConversations,
+  parseConversationListInput,
+  parseResumeInput,
+  parseTranscriptInput,
+  readTranscript,
+  resumeConversation,
+} from '@zeddev/conversation';
 import type { Connection, Pool } from '@zeddev/db';
 import { AuthenticationError, TransientTransportError, ValidationError } from '@zeddev/errors';
 import type { Action, ClientPrincipal, IdentityService } from '@zeddev/identity';
@@ -856,6 +866,34 @@ export function createApi(dependencies: ApiDependencies): Api {
     },
 
     // -----------------------------------------------------------------------
+    // Reading conversations — client-conversation-visibility.md. POST, because the
+    // filter and the end-customer are phone numbers and a URL is written to every
+    // proxy's access log; the resource label names the kind of thing read and never
+    // which customer, because access records reach the operator.
+    // -----------------------------------------------------------------------
+    {
+      method: 'POST',
+      path: '/v1/conversations/list',
+      handle: async (context) => {
+        const query = parseConversationListInput(await context.body());
+        const page = await asClient(context, 'conversation.read', 'conversation.list', (tx) => listConversations(tx, query));
+        return {
+          status: 200,
+          body: { conversations: page.conversations.map(describeConversationSummary), nextCursor: page.nextCursor ?? null },
+        };
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v1/conversations/transcript',
+      handle: async (context) => {
+        const query = parseTranscriptInput(await context.body());
+        const page = await asClient(context, 'conversation.read', 'conversation.transcript', (tx) => readTranscript(tx, query));
+        return { status: 200, body: describeTranscript(page) };
+      },
+    },
+
+    // -----------------------------------------------------------------------
     // Readiness and the go-live toggle — bot-activation-control.md. The rules
     // (what "ready" is, that an active bot must stay ready) live in the database
     // and @zeddev/bot; these routes only read them and carry the client's toggle.
@@ -1256,16 +1294,3 @@ function errorName(error: unknown): string {
 }
 
 /** A conversation's handoff state as the client's screen shows it. */
-function describeConversationHandoff(status: ConversationHandoffStatus): {
-  readonly customerId: string;
-  readonly paused: boolean;
-  readonly pausedAt: string | null;
-  readonly reason: ConversationHandoffStatus['reason'] | null;
-} {
-  return {
-    customerId: status.customerId,
-    paused: status.paused,
-    pausedAt: status.pausedAt?.toISOString() ?? null,
-    reason: status.reason ?? null,
-  };
-}

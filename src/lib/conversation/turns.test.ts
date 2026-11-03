@@ -68,6 +68,7 @@ import {
   MEDIA_UNDERSTANDING_FAILURES,
   readMediaUnderstandings,
 } from './media.ts';
+import { listConversations, readTranscript } from './transcript.ts';
 import { conversationHandlers } from './worker.ts';
 
 const BURST = 'message-burst-aggregation.md';
@@ -78,6 +79,7 @@ const FALLBACK = 'fallback-response-behavior.md';
 const ACTIVATION = 'bot-activation-control.md';
 const IMAGE = 'image-message-understanding.md';
 const VOICE = 'voice-message-understanding.md';
+const VISIBILITY = 'client-conversation-visibility.md';
 
 const POLICY: AggregationPolicy = { windowMs: 5_000, maxTurnMs: 30_000 };
 const T0 = new Date('2026-03-02T10:00:00.000Z');
@@ -1102,6 +1104,53 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
   function understandingsOf(tenant: string, customer: string) {
     return withTenant(pool, tenant, (tx) => readMediaUnderstandings(tx, customer));
   }
+
+  specTest(VISIBILITY, 'AC5 an image shows what the bot understood from it', 'through the real worker: a photo and its reply both reach the transcript, with what was seen and that it was sent', async () => {
+    const w = world();
+    const tenant = await liveTenant();
+    const customer = '15550000190';
+    mediaAt(tenant, '9190', 'image/jpeg', PHOTO);
+    w.provider.backend.script(
+      { kind: 'text', text: 'A cracked phone screen.' },
+      { kind: 'text', text: '[reply]\nWe can replace that screen today.' },
+    );
+    await w.receive(tenant, customer, { image: { mediaId: '9190', caption: 'how much?' } }, { receivedMs: 0 });
+    await w.receive(tenant, customer, { text: 'it fell' }, { receivedMs: 1_000 });
+
+    // Visible as soon as it is stored, before any job has run for it.
+    const early = await withTenant(pool, tenant, (tx) =>
+      readTranscript(tx, { customerId: customer, before: undefined, after: undefined, limit: 10 }),
+    );
+    assert.deepEqual(early.entries.map((entry) => entry.from), ['customer', 'customer']);
+    const unseen = early.entries[0]!;
+    assert.ok(unseen.from === 'customer' && unseen.type === 'image');
+    assert.deepEqual(unseen.understanding, { status: 'not_examined' });
+
+    await w.advanceTo(7_000);
+
+    const page = await withTenant(pool, tenant, (tx) =>
+      readTranscript(tx, { customerId: customer, before: undefined, after: undefined, limit: 10 }),
+    );
+    assert.deepEqual(page.entries.map((entry) => entry.from), ['customer', 'customer', 'bot']);
+    const [photo, words, bot] = page.entries;
+    assert.ok(photo?.from === 'customer' && photo.type === 'image');
+    assert.equal(photo.caption, 'how much?');
+    assert.deepEqual(photo.understanding, { status: 'understood', text: 'A cracked phone screen.' });
+    assert.ok(words?.from === 'customer' && words.type === 'text');
+    assert.equal(words.text, 'it fell');
+    assert.ok(bot?.from === 'bot');
+    assert.equal(bot.kind, 'reply');
+    assert.equal(bot.text, 'We can replace that screen today.');
+    assert.deepEqual(bot.delivery, { state: 'sent', failure: null });
+
+    const [summary] = (
+      await withTenant(pool, tenant, (tx) =>
+        listConversations(tx, { customer: undefined, activeSince: undefined, pausedOnly: false, limit: 10, cursor: undefined }),
+      )
+    ).conversations;
+    assert.equal(summary!.customerId, customer);
+    assert.deepEqual(summary!.lastActivityAt, bot.at);
+  });
 
   specTest(IMAGE, 'AC1 a photo with no caption gets a response reflecting its visible content', 'an uncaptioned photo is looked at once, and the reply is written from what was seen', async () => {
     const w = world();

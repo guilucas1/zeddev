@@ -131,7 +131,9 @@ covering tests, 457 spec-linked assertions.
 
 Image and voice understanding are done too: a customer's photo or voice note now reaches the model as what it showed or said. `WhatsAppCloud.fetchMedia` retrieves the bytes (port, Graph adapter, fake, wire stub, conformance), `media.ts` in `@zeddev/conversation` turns each message into text once, when its turn is about to be answered, and migration `0017_inbound_media_understanding` keeps that text and never the bytes. Retrieval has its own retry allowance through the queue and ends in the fallback rather than a dead letter. See §4v. That brings the totals to 1054 passing tests, zero skipped, 24 of 27 specs with covering tests, 494 spec-linked assertions. Neither path has yet run against a live model or against Meta: see the follow-ups in §4v.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is P3 client conversation visibility, which can now show the understood content this increment stores, then `services/scheduler` (bounded reconnection, `purgeSucceeded`) and knowledge retrieval grounding.
+Client conversation visibility is done too: a client can now list their conversations and read any of them, with what each photo showed, what each voice note said, why anything went unanswered, and whether each answer was actually delivered. `transcript.ts` in `@zeddev/conversation` reads what the reply path already stores, migration `0018_conversation_visibility` adds one index and no table, and `POST /v1/conversations/list` and `POST /v1/conversations/transcript` expose it. See §4w. That brings the totals to 1088 passing tests, zero skipped, 25 of 27 specs with covering tests, 516 spec-linked assertions. There is still no dashboard to read it in: `services/web` is not built.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is `services/scheduler` (bounded reconnection, `purgeSucceeded`), then P3 metrics collection and knowledge retrieval grounding.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -556,17 +558,13 @@ call must never be able to cause Meta to redeliver.
 - **[DONE]** Image understanding, including captions, multiple images per turn, and text visible within images, persisted as `inbound_media_understandings`. All 8 acceptance criteria of `image-message-understanding.md` have tests, at the port and turn layers; prompt quality against a live model is unverified. See §4v.
 - **[DONE]** Voice note transcription, with transcription artifacts stripped and the transcript persisted. `voice-message-understanding.md` AC1–AC9 have tests. The language hint is not sent until language configuration exists (blocked on §4). See §4v.
 - **[PARTIAL]** Human handoff: trigger detection via the reply protocol, per-conversation pause, held
-  messages, client-initiated resume (`POST /v1/conversations/handoff/resume`), and history are done. Client
-  notification (blocked on channel decision), a system-side resumption condition, and a status listing (P3
-  visibility) remain. See §4s.
+  messages, client-initiated resume (`POST /v1/conversations/handoff/resume`), and history are done. Client notification (blocked on channel decision) and a system-side resumption condition remain; the status listing is `POST /v1/conversations/list` with `pausedOnly` (§4w). See §4s.
 
 ### P3 — Visibility
 
 - Metrics collection: per-tenant message volume, error rate, response time, and failed deliveries, at a
   granularity that supports the selectable time windows the operator dashboard needs.
-- Client conversation visibility: conversation list, full chronological transcript with attribution,
-  representations of image and voice content, search/filter by end-customer identity and recency, and
-  handoff status with trigger reason.
+- **[DONE]** Client conversation visibility: conversation list, full chronological transcript with attribution, representations of image and voice content, search/filter by end-customer identity and recency, and handoff status with trigger reason. All 9 acceptance criteria covered, at the library and over HTTP; the screens are `services/web`'s and are not built. See §4w.
 - Operator health dashboard: consolidated all-tenant view, per-tenant detail with transition history,
   last-known-good timestamps, error reasons, sorting and filtering by state and metric, historical
   metrics within a retention window with explicit unavailability beyond it, and state updates propagating
@@ -618,7 +616,7 @@ call must never be able to cause Meta to redeliver.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
   `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
   457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
-  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.)
+  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.)
 
 ---
 
@@ -1588,8 +1586,7 @@ SMTP).
   decision (§4) still blocks what to do with an outcome that falls outside it.
 - A dead-lettered turn job leaves every later turn of that conversation `behind` forever — needs either a
   stale-turn rule or an operator replay path.
-- Handoff client notification (blocked on channel decision, §4), a system-side resumption condition, and a
-  conversation status listing (P3 visibility) are not built.
+- Handoff client notification (blocked on channel decision, §4) and a system-side resumption condition are not built.
 - The memory reset policy must bound context by something other than a fixed count and define
   `conversationStart` properly — blocked on the same §4 default-inactivity-window decision.
 - Worker/database clock skew shifts *when* a turn closes, as noted above — acceptable because it never changes
@@ -1796,7 +1793,33 @@ SMTP).
 - **No language hint is sent, and the description language is a guess.** Both wait on language configuration (§4). The image prompt uses the caption's language or the photo's, else English, and a client reads this text in the future transcript.
 - **The number of media calls in a turn is unbounded**, one per message, in sequence. The spec requires all images be considered, so there is no cap, but a large album costs its size in free-tier quota. Metrics (P3) should make this visible; `input_tokens` and `output_tokens` on `inbound_media_understandings` exist for that and nothing reads them yet.
 - **A sealer failure while loading credentials still raises and can dead-letter the turn**, leaving the conversation `behind` as in §4s. That is an operator misconfiguration affecting everything else too, so it was left as is.
-- **`readMediaUnderstandings` is the read path waiting for the transcript view** (P3); only tests call it today.
+- **`readMediaUnderstandings` is still only called by tests.** The transcript reads understandings in its own timeline query (§4w), so this function is a test helper in practice.
+
+---
+
+## 4w. Findings from the client conversation visibility increment
+
+- **A conversation exists once a message does.** Both reads start from `inbound_messages`, not `conversations`, because that row is created when the worker first looks at a customer. Starting there would hide a customer who just wrote until a job had run, and for as long as the worker was down, which is when a client most wants to look.
+- **[DECISION] The transcript is ordered by one key: send time for a customer's message, decision time for the bot's, but never earlier than the latest message of the turn it answers, with the customer first on a tie.** The two clocks are different (Meta's, truncated to the second, and the database's), and a reply shown above its question is simply wrong. A reply is deliberately not placed directly under its own turn: a message written while the model was thinking really did come first. The position does not depend on delivery, so a reply does not move down the page when it is finally sent.
+- **Known imprecision: within the second a reply was decided, a customer's message sorts above it even if it was sent just after,** because Meta's timestamp has one-second resolution. Harmless, and there is no signal left to do better with.
+- **[DECISION] An undelivered answer is shown, with its delivery state.** Hiding it would make a failed send look like the bot never answered; showing it bare would tell the client a customer received something they did not. A client reading this has to act on `delivery.state`, so the future dashboard must not render every bot entry as delivered.
+- **Cursors are compared as whole microseconds and built in SQL.** `decided_at` has microseconds and a JavaScript `Date` has milliseconds, so a cursor built from a `Date` sits before its own row and either repeats it or skips a neighbour. A mutation building the cursor from a `Date` is caught by the paging tests.
+- **[DECISION] With no cursor, a transcript opens on its latest page, and `after` the last cursor returns only what is new.** Opening a long conversation wants where it has got to. An empty refresh keeps its place, which is what makes "new messages appear on next view" cheap to poll. `earlierCursor` is null at the start, and a forward walk ends on an empty page.
+- **[DECISION] Both routes are POST with the customer in the body,** like resume, and not `GET ?customerId=`, because a phone number in a URL lands in every proxy's access log. The `Origin` check therefore applies to these reads too, which is harmless. The access record's resource is a fixed label, never the customer, because access records reach the operator; a test asserts the number stays out of the log and the record.
+- **Another tenant's customer is a 404, identical to a number that never wrote.** It is not refused by a check: the read runs on a connection bound to the caller's tenant, and row-level security means the row is not there. A cursor is only a position, so one lifted from another tenant's page selects within the caller's own rows.
+- **[DECISION] `pausedOnly` is added to the list though the spec does not ask for it,** because until `human-handoff.md` AC6's notification exists, this is the one way a client can find out a customer is waiting on them.
+- **Meta's media reference is not exposed.** A stored message is described field by field rather than passing `content` through, so a storage detail cannot become part of the API by accident. A held photo reads as `not_examined`: nobody looked, per §4v, and the bytes were never kept.
+- **`requireTenant` is now shared inside the package from `turns.ts`.** `delivery.ts` still has its own copy, and `@zeddev/bot` has a third with a different error code. Left alone as unrelated to this increment.
+- **Tests were checked for teeth by mutation.** Seventeen behaviours were broken one at a time. The first run left one survivor: a key in milliseconds still sorted correctly because the fixture's microseconds matched insertion order. The fixture now disagrees with insertion order, and all are caught.
+
+### Follow-ups the conversation visibility increment leaves open
+
+- **The end-customer's WhatsApp display name is not captured.** The spec says "number or name if known", and the platform knows only the number: the gateway reads past `contacts[].profile.name`. Worth confirming with the operator whether a client wants it, since it is more personal data held, and adding it means a column and a gateway change. Messages already stored would have no name.
+- **The list aggregates every message of the tenant on each read.** Fine at low volume and it keeps one source of truth, but it grows with a tenant's history rather than its customer count. If it becomes slow, the fix is a `last_activity_at` on `conversations` maintained under the existing lock, plus handling for a customer with no row yet. No measurement exists yet.
+- **Search by part of a number is a sequential filter** over that same aggregate, for the same reason.
+- **`conversation-memory.md` AC10 (pre-reset messages stay visible) has no test,** because the reset does not exist. It should hold by construction: the transcript does not read the context, and nothing a reset could do touches these tables.
+- **`client-offboarding-and-data-retention.md` AC7 (reactivation restores history) needs offboarding** (P4). Nothing here is cached, so it should hold.
+- **A list page can miss a conversation that becomes active while the client is paging,** because recency moves. Reopening the list shows it. The transcript has no such issue, because its order is fixed.
 
 ---
 

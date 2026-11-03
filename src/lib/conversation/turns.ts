@@ -109,13 +109,14 @@ export interface TurnScheduler {
   enqueueWithin(connection: Connection, request: EnqueueRequest): Promise<EnqueueResult>;
 }
 
-function requireTenant(connection: Connection, operation: string): void {
+export function requireTenant(connection: Connection, operation: string): void {
   if (connection.boundTenantId === undefined) {
     throw new DefectError(`${operation} requires a tenant-bound connection`, { code: 'conversation.tenant_unbound' });
   }
 }
 
-const DIGITS = /^[0-9]{1,32}$/;
+/** An end-customer's WhatsApp id, as `inbound_messages.customer_id` constrains it. */
+export const WHATSAPP_ID = /^[0-9]{1,32}$/;
 
 function assertPolicy(policy: AggregationPolicy): void {
   if (!(policy.windowMs > 0) || !(policy.maxTurnMs >= policy.windowMs)) {
@@ -226,7 +227,7 @@ export async function admitPendingMessages(
 ): Promise<AdmissionResult> {
   requireTenant(connection, 'admitPendingMessages');
   assertPolicy(policy);
-  if (!DIGITS.test(customerId)) {
+  if (!WHATSAPP_ID.test(customerId)) {
     throw new ValidationError([{ key: 'customerId', reason: 'must be a WhatsApp id: digits only' }]);
   }
   const conversation = await lockConversation(connection, customerId);
@@ -722,6 +723,21 @@ function handoffStatus(row: ConversationRow): ConversationHandoffStatus {
   };
 }
 
+/** A conversation's handoff status as the API shows it. */
+export function describeConversationHandoff(status: ConversationHandoffStatus): {
+  readonly customerId: string;
+  readonly paused: boolean;
+  readonly pausedAt: string | null;
+  readonly reason: HandoffSignal | null;
+} {
+  return {
+    customerId: status.customerId,
+    paused: status.paused,
+    pausedAt: status.pausedAt?.toISOString() ?? null,
+    reason: status.reason ?? null,
+  };
+}
+
 /** Request fields for resuming a conversation. Anything else is refused by name. */
 export const RESUME_FIELDS = ['customerId'] as const;
 
@@ -733,7 +749,7 @@ export function parseResumeInput(body: Readonly<Record<string, unknown>>): strin
     if (!known.has(key)) issues.push({ key, reason: 'is not a recognised field' });
   }
   const raw = body.customerId;
-  if (typeof raw !== 'string' || !DIGITS.test(raw)) {
+  if (typeof raw !== 'string' || !WHATSAPP_ID.test(raw)) {
     issues.push({ key: 'customerId', reason: 'is required and must be a WhatsApp id: digits only' });
   }
   if (issues.length > 0) throw new ValidationError(issues);

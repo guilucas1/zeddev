@@ -9,7 +9,8 @@
  * A domain library, like `@zeddev/bot`: no HTTP, no queue consumer loop. Every
  * function takes a connection already bound to one tenant. The
  * `conversation-worker` service runs `conversationHandlers` under `runConsumer`;
- * the API calls `resumeConversation`.
+ * the API calls `resumeConversation`, and reads conversations back through
+ * `transcript.ts` (`client-conversation-visibility.md`).
  *
  * Sending the recorded answer is here too (`delivery.ts`): an answer is recorded
  * with `delivery_state = 'pending'`, and the delivery handler drains that outbox,
@@ -65,6 +66,7 @@ export {
 export {
   admitPendingMessages,
   CONVERSATION_LIMITS,
+  describeConversationHandoff,
   INBOUND_DISPOSITIONS,
   parseResumeInput,
   prepareTurn,
@@ -90,4 +92,25 @@ export {
   type TurnState,
   type WithheldReason,
 } from './turns.ts';
+export {
+  CONVERSATION_LIST_FIELDS,
+  describeConversationSummary,
+  describeStoredMessage,
+  describeTranscript,
+  listConversations,
+  parseConversationListInput,
+  parseTranscriptInput,
+  readTranscript,
+  TRANSCRIPT_FIELDS,
+  TRANSCRIPT_LIMITS,
+  type BotEntry,
+  type ConversationListPage,
+  type ConversationListQuery,
+  type ConversationSummary,
+  type CustomerEntry,
+  type MediaRepresentation,
+  type TranscriptEntry,
+  type TranscriptPage,
+  type TranscriptQuery,
+} from './transcript.ts';
 export { conversationHandlers, type ConversationWorkerDependencies } from './worker.ts';
