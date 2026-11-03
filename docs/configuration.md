@@ -185,6 +185,20 @@ Turns stored inbound messages into answers: it groups an end-customer's rapid me
 | `WORKER_SHUTDOWN_GRACE` | duration | no | `30000` | On a stop signal, how long in-flight jobs are given to finish before the process exits. One cut short is not lost: its lease expires and it runs again, and a turn is answered at most once however many times its job runs. |
 | `WORKER_VISIBILITY_TIMEOUT` | duration | no | `60000` | How long a claimed job is held before another worker may take it over. The worker renews it while a job runs, so this bounds how long the job of a worker that died stays stuck, not how long a slow AI call may take. |
 
+## Scheduler service
+
+The platform's timer-driven work: recovering interrupted WhatsApp connections, and deleting finished jobs so the queue table does not grow forever. whatsapp-number-connection.md requires recovery be attempted automatically and be bounded, and leaves the bound to implementation, so the bound is here. It needs a tenant's WhatsApp token to try the connection, which is why it requires the sealing keys and the WhatsApp keys. It listens on no port and nothing waits on it: while it is down that work simply waits, and running two is safe, so it is the same artifact and the same values on every tier.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `SCHEDULER_JOB_PURGE_INTERVAL` | duration | no | `3600000` | How often finished jobs past SCHEDULER_JOB_RETENTION are deleted from the job queue. |
+| `SCHEDULER_JOB_RETENTION` | duration | no | `604800000` | How long a job that succeeded is kept before deletion. Its enqueue deduplication ends with it, so this must comfortably exceed how long Meta may keep redelivering a webhook. Longer costs database space and shorter gains little: a job holds routing metadata only, its payload having gone when it finished. Jobs that exhausted their retries are never deleted by this; they are the record of a failure. |
+| `SCHEDULER_RECONNECT_BASE_DELAY` | duration | no | `60000` | The wait after the first failed recovery attempt, doubling after each failure up to SCHEDULER_RECONNECT_MAX_DELAY. Half of each wait is randomised, so tenants interrupted together do not retry together. Keep it longer than an attempt can take (a few WHATSAPP_REQUEST_TIMEOUTs), or a second scheduler instance may start one while the last is still out. |
+| `SCHEDULER_RECONNECT_INTERVAL` | duration | no | `60000` | How often the scheduler looks for interrupted WhatsApp connections that are due another recovery attempt. This is one indexed query, and it is the longest an interrupted connection waits for its first attempt. |
+| `SCHEDULER_RECONNECT_MAX_ATTEMPTS` | integer | no | `12` | How many recovery attempts may fail for a recoverable reason before the connection falls to error, which switches the client's bot off until they reconnect the number (whatsapp-number-connection.md AC6). With the default delays, twelve attempts span roughly three hours, enough to ride out an ordinary Meta incident. A failure Meta says retrying cannot fix, such as a revoked token, goes to error immediately regardless. |
+| `SCHEDULER_RECONNECT_MAX_DELAY` | duration | no | `1800000` | The longest wait between recovery attempts. Must be at least SCHEDULER_RECONNECT_BASE_DELAY. |
+| `SCHEDULER_SHUTDOWN_GRACE` | duration | no | `30000` | On a stop signal, how long in-flight work is given to finish before the process exits. Nothing cut short is lost: a recovery attempt that never reported back has spent none of the allowance and simply runs again. |
+
 ## Template
 
 ```sh
@@ -408,6 +422,34 @@ MAIL_TLS=starttls
 # Account to authenticate as. Empty means do not authenticate, which is correct for a local relay that accepts mail from its own host and for nothing else.
 # default: 
 MAIL_USERNAME=
+
+# How often finished jobs past SCHEDULER_JOB_RETENTION are deleted from the job queue.
+# default: 3600000
+SCHEDULER_JOB_PURGE_INTERVAL=3600000
+
+# How long a job that succeeded is kept before deletion. Its enqueue deduplication ends with it, so this must comfortably exceed how long Meta may keep redelivering a webhook. Longer costs database space and shorter gains little: a job holds routing metadata only, its payload having gone when it finished. Jobs that exhausted their retries are never deleted by this; they are the record of a failure.
+# default: 604800000
+SCHEDULER_JOB_RETENTION=604800000
+
+# The wait after the first failed recovery attempt, doubling after each failure up to SCHEDULER_RECONNECT_MAX_DELAY. Half of each wait is randomised, so tenants interrupted together do not retry together. Keep it longer than an attempt can take (a few WHATSAPP_REQUEST_TIMEOUTs), or a second scheduler instance may start one while the last is still out.
+# default: 60000
+SCHEDULER_RECONNECT_BASE_DELAY=60000
+
+# How often the scheduler looks for interrupted WhatsApp connections that are due another recovery attempt. This is one indexed query, and it is the longest an interrupted connection waits for its first attempt.
+# default: 60000
+SCHEDULER_RECONNECT_INTERVAL=60000
+
+# How many recovery attempts may fail for a recoverable reason before the connection falls to error, which switches the client's bot off until they reconnect the number (whatsapp-number-connection.md AC6). With the default delays, twelve attempts span roughly three hours, enough to ride out an ordinary Meta incident. A failure Meta says retrying cannot fix, such as a revoked token, goes to error immediately regardless.
+# default: 12
+SCHEDULER_RECONNECT_MAX_ATTEMPTS=12
+
+# The longest wait between recovery attempts. Must be at least SCHEDULER_RECONNECT_BASE_DELAY.
+# default: 1800000
+SCHEDULER_RECONNECT_MAX_DELAY=1800000
+
+# On a stop signal, how long in-flight work is given to finish before the process exits. Nothing cut short is lost: a recovery attempt that never reported back has spent none of the allowance and simply runs again.
+# default: 30000
+SCHEDULER_SHUTDOWN_GRACE=30000
 
 # Access key identifying the platform to the object storage endpoint.
 STORAGE_ACCESS_KEY_ID=

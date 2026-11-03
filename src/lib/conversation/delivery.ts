@@ -43,9 +43,9 @@
  * such a failure is first observed: a terminal Meta reason moves the connection
  * to `error` with that reason, a recoverable one moves `connected` to
  * `reconnecting`, and a send that succeeds while `reconnecting` moves it back to
- * `connected`. This is the only thing in the platform that drives automatic
- * recovery, which is why it lives next to the only thing that regularly calls
- * Meta.
+ * `connected`. Sending is how recovery is noticed when there is traffic; when
+ * there is none, `recovery.ts` in `@zeddev/whatsapp` probes on a schedule, and is
+ * what eventually gives up.
  */
 
 import type { Connection } from '@zeddev/db';

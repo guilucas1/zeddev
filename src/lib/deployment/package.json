@@ -15,6 +15,7 @@
     "@zeddev/identity": "*",
     "@zeddev/logging": "*",
     "@zeddev/mail": "*",
+    "@zeddev/scheduler": "*",
     "@zeddev/storage": "*",
     "@zeddev/whatsapp": "*",
     "@zeddev/whatsapp-gateway": "*",

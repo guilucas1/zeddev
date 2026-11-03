@@ -1,0 +1,26 @@
+{
+  "name": "@zeddev/scheduler",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./config": "./config.ts"
+  },
+  "dependencies": {
+    "@zeddev/config": "*",
+    "@zeddev/db": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/logging": "*",
+    "@zeddev/queue": "*",
+    "@zeddev/schema": "*",
+    "@zeddev/time": "*",
+    "@zeddev/vault": "*",
+    "@zeddev/whatsapp": "*"
+  },
+  "devDependencies": {
+    "@zeddev/bot": "*",
+    "@zeddev/secrets": "*",
+    "@zeddev/testing": "*"
+  }
+}

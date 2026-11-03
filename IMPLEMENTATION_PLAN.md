@@ -133,7 +133,9 @@ Image and voice understanding are done too: a customer's photo or voice note now
 
 Client conversation visibility is done too: a client can now list their conversations and read any of them, with what each photo showed, what each voice note said, why anything went unanswered, and whether each answer was actually delivered. `transcript.ts` in `@zeddev/conversation` reads what the reply path already stores, migration `0018_conversation_visibility` adds one index and no table, and `POST /v1/conversations/list` and `POST /v1/conversations/transcript` expose it. See §4w. That brings the totals to 1088 passing tests, zero skipped, 25 of 27 specs with covering tests, 516 spec-linked assertions. There is still no dashboard to read it in: `services/web` is not built.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is `services/scheduler` (bounded reconnection, `purgeSucceeded`), then P3 metrics collection and knowledge retrieval grounding.
+The scheduler is done too: a new service, `services/scheduler`, runs the platform's timer-driven work. An interrupted WhatsApp connection is now retried with no traffic and no client action, restored when its link is found working, and moved to `error` with `recovery_exhausted` when its allowance runs out, which closes `whatsapp-number-connection.md` AC6. Old succeeded jobs are deleted at last. `recovery.ts` in `@zeddev/whatsapp` holds the rules and migration `0019_connection_recovery` holds the count. See §4x. That brings the totals to 1116 passing tests, zero skipped, 25 of 27 specs with covering tests, 525 spec-linked assertions.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is P3 metrics collection and knowledge retrieval grounding.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -367,8 +369,7 @@ These are load-bearing — most items below assume them. Recorded here so they a
   rule enforcement, handoff decisions, fallback execution, and outbound send with retry — which is also
   where a send failure feeds back into the connection state.
 - `services/api` — client and operator HTTP API: auth, configuration, transcripts, metrics.
-- `services/scheduler` — timer-driven work: reconnection attempts, stalled-reconnect detection, alert
-  evaluation and suppression, retention-window deletion, memory reset evaluation.
+- `services/scheduler` — timer-driven work. **Built (§4x):** connection recovery and job purging. Still to land here as their specs are built: alert evaluation and suppression, retention-window deletion, memory reset evaluation.
 - `services/web` — client dashboard and operator dashboard.
 
 The gateway is deliberately separate from the worker: `message-delivery-reliability.md` requires
@@ -428,8 +429,8 @@ call must never be able to cause Meta to redeliver.
   `tenant_secrets`, `secret_access_records`.
 
 > **P0 is complete.** Still-open follow-ups, carried forward rather than blocking anything:
-> `maxInFlightPerTenant` is now set by `services/conversation-worker` (§4s); `purgeSucceeded` still has no
-> caller (queue, §4d), and neither does `verifyAccess()` from any service that holds an object store (storage,
+> `maxInFlightPerTenant` is now set by `services/conversation-worker` (§4s); `purgeSucceeded` is now called by `services/scheduler` (§4x); `verifyAccess()` still has no
+> caller from any service that holds an object store (storage,
 > §4e) — none does yet, which is also why object storage (MinIO) is not in `compose.yaml`: there is nothing in
 > it to run against.
 
@@ -507,9 +508,7 @@ call must never be able to cause Meta to redeliver.
   disconnected), the legal-transition table, timestamped transition history, and surfaced error reasons —
   including Meta-side business-verification failure as a distinct condition
   (`business_verification_required`) — in `@zeddev/whatsapp` plus migration `0006_whatsapp_connection`. What
-  remains is bounding it: a send failure now moves `connected → reconnecting` and a later success moves it
-  back (§4u), but a tenant with no traffic never attempts a recovery, so exhausting attempts into `error`
-  still needs `services/scheduler`. Offboarding transitioning to `disconnected` is P4.
+  Bounding it is done too: `services/scheduler` retries an interrupted connection with no traffic and gives up with `recovery_exhausted` (§4x). Offboarding transitioning to `disconnected` is P4.
 - **[DONE]** Number replacement as a distinct guided flow that structurally cannot produce a dual-active
   window: `submitCredentials(..., { replace: true })` goes through `disconnected` — releasing the old number's
   route — before assigning the new one. See §4t.
@@ -559,6 +558,7 @@ call must never be able to cause Meta to redeliver.
 - **[DONE]** Voice note transcription, with transcription artifacts stripped and the transcript persisted. `voice-message-understanding.md` AC1–AC9 have tests. The language hint is not sent until language configuration exists (blocked on §4). See §4v.
 - **[PARTIAL]** Human handoff: trigger detection via the reply protocol, per-conversation pause, held
   messages, client-initiated resume (`POST /v1/conversations/handoff/resume`), and history are done. Client notification (blocked on channel decision) and a system-side resumption condition remain; the status listing is `POST /v1/conversations/list` with `pausedOnly` (§4w). See §4s.
+- **[DONE]** Bounded automatic reconnection and job purging: `services/scheduler`, `recovery.ts` in `@zeddev/whatsapp`, and migration `0019_connection_recovery`. `whatsapp-number-connection.md` AC5, AC6, AC9, AC12 covered on this path. See §4x.
 
 ### P3 — Visibility
 
@@ -616,7 +616,7 @@ call must never be able to cause Meta to redeliver.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
   `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
   457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
-  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.)
+  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.)
 
 ---
 
@@ -815,7 +815,7 @@ before the operator dashboard ships in P3.
   conversation worker must set it, or AC16 holds for dispatch frequency but not for worker occupancy.
 - `purgeSucceeded` has no caller yet. The P2 scheduler owns it. Until then, succeeded jobs accumulate; the
   retention window it is given is really the enqueue-idempotency window, so it must exceed the upstream's
-  redelivery interval.
+  redelivery interval. **Closed by §4x.**
 - `queue_jobs` carries no platform-scope policy, so P3's operator queue-depth metrics need a forward
   migration. It is safe to add — the table holds routing metadata only — but it should be a deliberate act.
 - `dedupeKey` is enqueue idempotency, **not** the AC4 inbound-redelivery suppression. That record must
@@ -1149,7 +1149,7 @@ SMTP).
   that yet beyond there being no route; when the gateway lands, consider requiring verification evidence in
   the call.
 - Bounded automatic reconnection (`reconnecting → error` with `recovery_exhausted`) needs the scheduler and
-  an attempt/time policy, which `whatsapp-number-connection.md` leaves to implementation.
+  an attempt/time policy, which `whatsapp-number-connection.md` leaves to implementation. **Closed by §4x.**
 - The P2 reply path must call `mayAutoRespond` in its sending transaction; its tests should assert that.
 - Concurrent *first* transitions for a tenant with no `whatsapp_connections` row can race on the INSERT and
   one fails with a unique violation; harmless at the volume a single client's connect flow produces, but the
@@ -1593,7 +1593,7 @@ SMTP).
   *what* the turn contains.
 - Typing indicator / read receipt behaviour is not implemented — the spec leaves it an open question.
 - `purgeSucceeded` (§4d) is still not called by anything, and every turn now adds at least one more job row to
-  what accumulates.
+  what accumulates. **Closed by §4x.**
 - No live test against a real model yet for this path; §4p's recommended smoke test also covers the worker.
 
 ---
@@ -1677,7 +1677,7 @@ SMTP).
   component yet observes a live failure and moves the state. This belongs to the outbound sender, which is the
   first component that will call Meta on a schedule: a send failing for a recoverable reason should move
   `connected → reconnecting` and a later success should move it back, with a bounded attempt policy (still
-  undecided — see §4) before it falls to `error`.
+  undecided — see §4) before it falls to `error`. **Closed by §4x.**
 - **Sealed values are not bound to their row.** `SecretSealer` uses AES-256-GCM with no additional
   authenticated data, so a ciphertext lifted from one `tenant_secrets` row and written into another tenant's
   row would unseal cleanly. Row-level security already prevents that write, so this is defence in depth rather
@@ -1759,7 +1759,7 @@ SMTP).
 - **A reconnect is only attempted when there is something to send.** A tenant with no traffic sits in
   `reconnecting` until its next reply, and `whatsapp-number-connection.md` AC6 wants recovery attempts to
   be *exhausted* before `error`. That bound — a stalled-reconnect sweep with an attempt policy — belongs to
-  `services/scheduler`, which does not exist yet; `recovery_exhausted` is the reason waiting for it.
+  `services/scheduler`, which does not exist yet; `recovery_exhausted` is the reason waiting for it. **Closed by §4x.**
 - **`delivery_updated_at` and `delivery_attempts` are written but nothing reads them yet.** They exist for
   the per-tenant failed-delivery metric `operator-health-monitoring.md` requires (P3).
 - **A send that succeeds and then fails to record leaves the row `sending`**, and the next attempt calls it
@@ -1820,6 +1820,27 @@ SMTP).
 - **`conversation-memory.md` AC10 (pre-reset messages stay visible) has no test,** because the reset does not exist. It should hold by construction: the transcript does not read the context, and nothing a reset could do touches these tables.
 - **`client-offboarding-and-data-retention.md` AC7 (reactivation restores history) needs offboarding** (P4). Nothing here is cached, so it should hold.
 - **A list page can miss a conversation that becomes active while the client is paging,** because recency moves. Reopening the list shows it. The transcript has no such issue, because its order is fixed.
+
+## 4x. Findings from the scheduler increment
+
+- **[DECISION] Recovery is bounded by an attempt budget, not a time window.** The spec leaves the bound to implementation. A window keeps running while the platform itself is off, so a laptop asleep overnight would wake to every interrupted tenant in `error`, which is terminal until the client reconnects by hand. An attempt budget only spends what was actually tried. Defaults: 12 attempts, 1 minute doubling to a 30-minute cap, half of each wait randomised, which comes to roughly three hours. They lean generous because of what is on the far side: `error` switches the client's bot off.
+- **An attempt is counted when it is settled, not when it is claimed, and only for a recoverable answer.** So a scheduler that dies mid-probe spends nothing, and neither does a defect on this platform: that says nothing about the client's link. This is the same reasoning `feedConnection` in `delivery.ts` gives. A failure Meta says retrying cannot fix (a revoked token, a blocked business) goes to `error` at once with Meta's reason, because AC9 and AC12 need the actual answer on the connection rather than `recovery_exhausted` hours later.
+- **[DECISION] No leader election.** Claiming an attempt advances `recovery_next_at` under the row lock, so several scheduler instances can sweep at once and whichever commits first owns the attempt. `purgeSucceeded` is an idempotent delete. A leader would be one more thing that has to fail over (`component-independence.md`), so tasks are required to tolerate concurrency instead, and `schedule.ts` says so.
+- **The count lives on the connection row, and a trigger resets it.** It has to survive a restart and be shared between instances. The reset is `BEFORE UPDATE` on any state change, so every way out of `reconnecting` is covered: a send succeeding, a client disconnecting, a probe settling. A NULL `recovery_next_at` means "due now", so entering the state needs nothing written, and no backfill was needed (row-level security would have made that a per-tenant `DO` block).
+- **The cross-tenant read uses the existing platform scope, with no new scope or policy.** `listConnectionsDueForRecovery` returns tenant ids only, from the one table whose platform policy already permits reading connection health across tenants. Every write happens under that tenant's own binding.
+- **`probeCloudLink` is now the single definition of a working link**, in `cloud.ts`: business not blocked, number reachable, subscription in place. It was inline in the API's `probeAndSend`, and recovery would otherwise have been a second copy that could drift. Subscribing is idempotent, which makes re-establishing a lapsed subscription the one repair available from this side.
+- **A probe never sends a message.** There is nobody to send one to, and it would cost money. So a number that is only rate limited returns to `connected` while its sends are still throttled, and the next refused send moves it back. That is the right reading of the vocabulary, since a throughput limit is not a broken link and readiness holds through both states, but it means `connected` here proves less than it does after onboarding's round trip.
+- **Testing the tests found one that proved nothing.** Four deliberate breaks were applied after everything passed. Removing the due-time check from the claim survived, because an instant fake probe let the first sweep settle before the others reached the row; the concurrency test now holds the probe open and also asserts on the claim directly. A payload-deletion assertion in the purge test was also removed: a job's payload is deleted when it succeeds, so it passed with or without the purge.
+
+### Follow-ups the scheduler increment leaves open
+
+- **A long outage on this platform's own side spends real allowance.** Connections already `reconnecting` when the platform's network fails count those failures as recoverable, and past about three hours they reach `error`. `error` has no automatic way back (`CONNECTION_TRANSITIONS` has no `error → connected` edge), so the client must reconnect by hand. Worth deciding whether an unreachable Meta (as opposed to Meta answering with a failure) should count at all, or whether `recovery_exhausted` should keep being probed.
+- **A permanent local failure never ends.** A tenant whose token cannot be unsealed (for example, a retired sealing key) is logged as `whatsapp.recovery.defect` and stays `reconnecting`, retried every sweep, because it must not be blamed on the client. Only the stalled-reconnect alert in `operator-proactive-alerting.md` will surface it, and that is not built.
+- **`Retry-After` is ignored by probes.** Meta's hint is available on the error but the wait comes from the backoff alone.
+- **A late answer can land on a later stay in `reconnecting`.** Settling checks the state, not which stay the probe was claimed in. The window is one probe long and the effect is corrected by the next send or sweep, so no generation counter was added.
+- **The scheduler polls.** One indexed query a minute, which `cost-efficient-operation.md`'s idle-cost goal tolerates less gladly than the queue's `LISTEN`. This is the always-on tension §3 already records.
+- **Adding a queue means adding it to the purge task** in `src/services/scheduler/start.ts`, which names `INBOUND_QUEUE` only because that is the only queue.
+- **Not exercised live.** Tests use the scripted Cloud API, and the image was verified by building it, by confirming it refuses to start without configuration, and by Compose parsing it. It has not run in a full Compose stack, and no probe has reached real Meta.
 
 ---
 

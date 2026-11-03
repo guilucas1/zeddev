@@ -38,6 +38,7 @@ import { DATABASE_CONFIG_SCHEMA } from '@zeddev/db';
 import { IDENTITY_CONFIG_SCHEMA } from '@zeddev/identity';
 import { LOGGING_CONFIG_SCHEMA } from '@zeddev/logging';
 import { MAIL_CONFIG_SCHEMA } from '@zeddev/mail';
+import { SCHEDULER_CONFIG_SCHEMA } from '@zeddev/scheduler/config';
 import { STORAGE_CONFIG_SCHEMA } from '@zeddev/storage';
 import { VAULT_CONFIG_SCHEMA } from '@zeddev/vault';
 import { WHATSAPP_CONFIG_SCHEMA } from '@zeddev/whatsapp';
@@ -124,6 +125,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       "Turns stored inbound messages into answers: it groups an end-customer's rapid messages into one turn, puts the turn and the conversation before it to the AI provider, and records exactly one answer per turn. It listens on no port — its only input is the job queue in PostgreSQL — so more capacity is more worker processes, with nothing to route. The aggregation window and maximum turn duration are message-burst-aggregation.md's platform-wide timing, a trade between letting a customer finish a thought and answering quickly; the in-flight cap is what stops one business's surge from delaying every other's (message-delivery-reliability.md AC16).",
     schema: WORKER_CONFIG_SCHEMA,
+  },
+  {
+    title: 'Scheduler service',
+    rationale:
+      "The platform's timer-driven work: recovering interrupted WhatsApp connections, and deleting finished jobs so the queue table does not grow forever. whatsapp-number-connection.md requires recovery be attempted automatically and be bounded, and leaves the bound to implementation, so the bound is here. It needs a tenant's WhatsApp token to try the connection, which is why it requires the sealing keys and the WhatsApp keys. It listens on no port and nothing waits on it: while it is down that work simply waits, and running two is safe, so it is the same artifact and the same values on every tier.",
+    schema: SCHEDULER_CONFIG_SCHEMA,
   },
 ];
 

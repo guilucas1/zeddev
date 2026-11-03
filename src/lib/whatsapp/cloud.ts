@@ -28,6 +28,9 @@
  *   - `fetchMedia` — the bytes of an image or voice note a customer sent, which
  *     the inbound notification only names by id.
  *
+ * `probeCloudLink` composes the first group into "does this link work", without
+ * sending anything.
+ *
  * ## Why failures are classified here and not at the call site
  *
  * `ConnectionErrorReason` is the vocabulary the client's status screen, the
@@ -334,6 +337,42 @@ export function describeCloudFailure(reason: ConnectionErrorReason | 'transient'
 export function businessVerificationBlocked(profile: BusinessAccountProfile): boolean {
   if (profile.reviewStatus === 'rejected') return true;
   return profile.verificationStatus !== 'unknown' && profile.verificationStatus !== 'verified';
+}
+
+/** What `probeCloudLink` found: the link works, or the classified reason it does not. */
+export type CloudLinkProbe =
+  | { readonly ok: true; readonly number: NumberProfile }
+  | { readonly ok: false; readonly reason: ConnectionErrorReason | 'transient' };
+
+/**
+ * Everything about a number's link that can be established without sending.
+ *
+ * Shared by the connection flow, where it comes before the verification send, and
+ * by automatic recovery, where it is the whole attempt. If each kept its own copy,
+ * "working" could come to mean one thing when a number is connected and another
+ * when it is restored.
+ *
+ * Subscribing is idempotent and comes before the check rather than after a failed
+ * one, so a subscription that lapsed is repaired rather than reported.
+ *
+ * Returns a failure Meta classified instead of throwing it, because to both callers
+ * that is an answer. Anything unclassified still throws: it is a defect here, not a
+ * problem with the client's connection, and must not be dressed up as one.
+ */
+export async function probeCloudLink(cloud: WhatsAppCloud, credentials: CloudCredentials): Promise<CloudLinkProbe> {
+  try {
+    const business = await cloud.describeBusinessAccount(credentials);
+    if (businessVerificationBlocked(business)) return { ok: false, reason: 'business_verification_required' };
+    const number = await cloud.describeNumber(credentials);
+    await cloud.subscribeApp(credentials);
+    const subscribed = await cloud.listSubscribedApps(credentials);
+    if (!subscribed.includes(cloud.descriptor.appId)) return { ok: false, reason: 'configuration_invalid' };
+    return { ok: true, number };
+  } catch (error) {
+    const reason = cloudFailureReason(error);
+    if (reason === undefined) throw error;
+    return { ok: false, reason };
+  }
 }
 
 /** Meta ids are numeric strings; a value that is not one would be a path injection. */

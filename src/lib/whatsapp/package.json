@@ -11,6 +11,7 @@
     "@zeddev/config": "*",
     "@zeddev/db": "*",
     "@zeddev/errors": "*",
+    "@zeddev/logging": "*",
     "@zeddev/secrets": "*",
     "@zeddev/vault": "*",
     "@zeddev/time": "*"

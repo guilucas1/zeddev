@@ -106,12 +106,12 @@ import { SystemClock, type Clock } from '@zeddev/time';
 import {
   abandonVerification,
   beginVerification,
-  businessVerificationBlocked,
   CLOUD_RECOVERABLE_REASONS,
   cloudFailureReason,
   connectionCodeMessage,
   connectionHistory,
   describeCloudFailure,
+  probeCloudLink,
   describeConnection,
   describeConnectionSetup,
   disconnectNumber,
@@ -291,18 +291,14 @@ export function createApi(dependencies: ApiDependencies): Api {
     const refuse = (reason: ConnectionErrorReason | 'transient') =>
       ({ sent: false, reason, description: describeCloudFailure(reason) }) as const;
     try {
-      const business = await cloud.describeBusinessAccount(credentials);
-      if (businessVerificationBlocked(business)) return refuse('business_verification_required');
-      const number = await cloud.describeNumber(credentials);
-      await cloud.subscribeApp(credentials);
-      const subscribed = await cloud.listSubscribedApps(credentials);
-      if (!subscribed.includes(cloud.descriptor.appId)) return refuse('configuration_invalid');
+      const link = await probeCloudLink(cloud, credentials);
+      if (!link.ok) return refuse(link.reason);
       const sent = await cloud.sendText(credentials, { to: recipient, body: connectionCodeMessage(code) });
       return {
         sent: true,
         outboundMessageId: sent.messageId,
-        displayNumber: number.displayNumber,
-        verifiedName: number.verifiedName,
+        displayNumber: link.number.displayNumber,
+        verifiedName: link.number.verifiedName,
       };
     } catch (error) {
       const reason = cloudFailureReason(error);

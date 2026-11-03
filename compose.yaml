@@ -130,6 +130,25 @@ services:
     # Longer than WORKER_SHUTDOWN_GRACE, so in-flight jobs can finish.
     stop_grace_period: 40s
 
+  # Timer-driven work: recovering interrupted WhatsApp connections and deleting old
+  # jobs. No port, and nothing waits on it; while it is down that work just waits.
+  scheduler:
+    build:
+      context: .
+      dockerfile: src/services/scheduler/Dockerfile
+    image: zeddev-scheduler
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Longer than SCHEDULER_SHUTDOWN_GRACE, so an attempt in flight can finish.
+    stop_grace_period: 40s
+
   # Catches outbound mail on a laptop, where there is no relay to send through.
   # Set MAIL_HOST=mailpit, MAIL_PORT=1025, MAIL_TLS=disable in .env; read the mail
   # at http://127.0.0.1:8025.

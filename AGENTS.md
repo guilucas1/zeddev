@@ -32,6 +32,7 @@ Run from the repo root.
 | `node src/services/api/main.ts` | Runs the API service. Reads every setting from the environment and refuses to start, listing every missing key. |
 | `node src/services/whatsapp-gateway/main.ts` | Runs the inbound WhatsApp webhook (`/v1/whatsapp/webhook`). Needs `DATABASE_*` and `WHATSAPP_*`. |
 | `node src/services/conversation-worker/main.ts` | Runs the conversation worker (no port; consumes the job queue, and sends the replies it decides). Needs `DATABASE_*`, `AI_*`, `VAULT_*`, and `WHATSAPP_*`. |
+| `node src/services/scheduler/main.ts` | Runs the scheduler (no port; retries interrupted WhatsApp connections and deletes old jobs). Needs `DATABASE_*`, `VAULT_*`, and `WHATSAPP_*`. |
 | `node src/services/api/cli.ts create-operator --email <addr>` | Creates the platform operator. Password is read from stdin. |
 | `docker compose up -d` (add `--profile local-mail` on a laptop) | Runs the platform from `compose.yaml`. Needs a `.env` and `deploy/secrets/postgres-superuser-password` — see the header of `compose.yaml`. |
 
@@ -131,6 +132,8 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - **`waitForWork` in both queue adapters must wake by the next delayed job's due time** (conformance-tested); a
   consumer that only woke at its idle timeout would delay every turn close and every retry by up to that
   timeout.
+- **A timer-driven task goes in the `tasks` list in `src/services/scheduler/start.ts`** and must be safe to run concurrently in another scheduler instance; there is no leader. Coordinate through a row, the way `claimRecoveryProbe` advances `recovery_next_at`.
+- **Automatic recovery is decided in exactly one place**: `recovery.ts` in `@zeddev/whatsapp`, and "does this link work" in `probeCloudLink` in `cloud.ts`, which the connection flow shares. Only a recoverable answer spends the allowance; a defect on this side must not, or a local bug takes a healthy bot off the air.
 
 ### Database-backed tests
 
@@ -249,3 +252,4 @@ too. See PROMPT_build.md/PROMPT_plan.md Step 0 for how the build/plan loops use 
 - Tests can insert `inbound_messages` rows with an explicit `received_at` (the insert policy allows it) to
   drive aggregation windows deterministically with a `FakeClock` instead of sleeping — see
   `src/lib/conversation/turns.test.ts`.
+- A test proving that concurrent workers cannot both act on a row must hold the fake's call open. An in-memory port answers instantly, so the first worker settles before the others arrive, and the test passes with no lock at all.
