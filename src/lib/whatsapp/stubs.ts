@@ -43,6 +43,13 @@ export interface GraphStub {
  */
 const BASE_PATH = '/v21.0';
 
+/**
+ * Where the stub says media bytes are. Outside the versioned root on purpose: Meta
+ * serves them from a different host altogether, so an adapter that built this URL
+ * itself rather than following the one it was given would fail here too.
+ */
+const MEDIA_PATH = '/media-bytes/';
+
 const MISSING_TOKEN: ScriptedFailure = {
   status: 401,
   code: 190,
@@ -104,11 +111,13 @@ function route(
   token: string,
   method: string,
   segments: readonly string[],
-  fields: string,
+  query: URLSearchParams,
   body: unknown,
+  origin: string,
 ): unknown {
   const [id, collection] = segments;
   if (id === undefined) throw MISSING_TOKEN;
+  const fields = query.get('fields') ?? '';
 
   if (collection === undefined && method === 'GET' && fields.includes('display_phone_number')) {
     const profile = backend.describeNumber(token, id);
@@ -128,6 +137,22 @@ function route(
       name: profile.name,
       account_review_status: profile.reviewStatus.toUpperCase(),
       owner_business_info: { id: `owner-${profile.businessAccountId}`, name: profile.name, verification_status: profile.verificationStatus },
+    };
+  }
+
+  // A `GET /{id}` asking for no field list is a media lookup, which is the third
+  // thing the same path shape can mean. `phone_number_id` is decoded rather than
+  // ignored, so an adapter that stopped sending it is refused here.
+  if (collection === undefined && method === 'GET' && fields === '') {
+    const media = backend.describeMedia(token, id, query.get('phone_number_id') ?? '');
+    return {
+      messaging_product: 'whatsapp',
+      url: `${origin}${MEDIA_PATH}${id}`,
+      mime_type: media.mimeType,
+      sha256: 'stub',
+      // A string because that is how Meta's documentation shows it.
+      file_size: String(media.declaredBytes),
+      id,
     };
   }
 
@@ -178,10 +203,17 @@ export async function startGraphStub(): Promise<GraphStub> {
       });
       const body = await readBody(req);
       try {
+        if (url.pathname.startsWith(MEDIA_PATH)) {
+          const data = backend.downloadMedia(bearer(req), url.pathname.slice(MEDIA_PATH.length));
+          res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': data.byteLength });
+          res.end(data);
+          return;
+        }
         if (!url.pathname.startsWith(`${BASE_PATH}/`)) throw MISSING_TOKEN;
         const token = bearer(req);
         const segments = url.pathname.slice(BASE_PATH.length + 1).split('/');
-        send(res, 200, route(backend, token, req.method ?? 'GET', segments, url.searchParams.get('fields') ?? '', body));
+        const origin = `http://${req.headers.host ?? ''}`;
+        send(res, 200, route(backend, token, req.method ?? 'GET', segments, url.searchParams, body, origin));
       } catch (error) {
         // The backend did the work and then declared its answer lost, so the
         // wire has to lose it too: the socket goes away with nothing written on

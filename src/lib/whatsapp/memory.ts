@@ -18,13 +18,17 @@
 import { TransientTransportError } from '@zeddev/errors';
 import {
   assertCloudCredentials,
+  assertMediaRequest,
   assertSendableText,
   cloudFailure,
+  mediaTooLarge,
   unreachableContext,
   type BusinessAccountProfile,
   type CloudCredentials,
   type CloudDescriptor,
+  type MediaRequest,
   type NumberProfile,
+  type RetrievedMedia,
   type SentMessage,
   type WhatsAppCloud,
 } from './cloud.ts';
@@ -37,6 +41,10 @@ export const CLOUD_OPERATIONS = [
   'listSubscribedApps',
   'unsubscribeApp',
   'sendText',
+  // The two exchanges behind `fetchMedia`, scripted apart because a failure can
+  // arrive at either one: a media id Meta no longer knows, or a CDN that refuses.
+  'describeMedia',
+  'downloadMedia',
 ] as const;
 export type CloudOperation = (typeof CLOUD_OPERATIONS)[number];
 
@@ -76,6 +84,22 @@ export interface ObservedSend {
   readonly messageId: string;
 }
 
+/** Media a customer sent to a number, as Meta would hold it. */
+export interface ScriptedMedia {
+  /** Whose number it was sent to. Any other account asking for it is told it does not exist. */
+  readonly token: string;
+  readonly mediaId: string;
+  readonly mimeType: string;
+  readonly data: Uint8Array;
+  /** What Meta claims the size is, when a test needs the claim and the bytes to disagree. */
+  readonly declaredBytes?: number | undefined;
+}
+
+export interface DescribedMedia {
+  readonly mimeType: string;
+  readonly declaredBytes: number;
+}
+
 /** Meta's answer when the token is not one it knows. */
 const UNKNOWN_TOKEN: ScriptedFailure = {
   status: 401,
@@ -99,12 +123,20 @@ export class ScriptedCloudBackend {
   readonly #accounts = new Map<string, AccountState>();
   readonly #failures = new Map<CloudOperation, ScriptedFailure[]>();
   readonly #lost = new Map<CloudOperation, number>();
+  readonly #media = new Map<string, ScriptedMedia>();
   readonly sends: ObservedSend[] = [];
+  /** The id of every download that handed over bytes, oldest first. */
+  readonly downloads: string[] = [];
   #messageCounter = 0;
 
   /** Add or replace an account. The token is the key, as it is at Meta. */
   register(account: ScriptedAccount): void {
     this.#accounts.set(account.token, { ...account, subscribedApps: new Set() });
+  }
+
+  /** Make media available, as a customer sending it to this account's number would. */
+  registerMedia(media: ScriptedMedia): void {
+    this.#media.set(`${media.token}:${media.mediaId}`, media);
   }
 
   /** The next call to `operation` fails this way, then normal service resumes. */
@@ -211,6 +243,28 @@ export class ScriptedCloudBackend {
     this.#loseAnswer('sendText');
     return { messageId };
   }
+
+  /** Keyed by token as well as id, so one account's media does not exist for another. */
+  #mediaFor(token: string, mediaId: string): ScriptedMedia {
+    this.#account(token);
+    const media = this.#media.get(`${token}:${mediaId}`);
+    if (media === undefined) throw UNKNOWN_OBJECT;
+    return media;
+  }
+
+  describeMedia(token: string, mediaId: string, phoneNumberId: string): DescribedMedia {
+    this.#take('describeMedia');
+    this.#forNumber(token, phoneNumberId);
+    const media = this.#mediaFor(token, mediaId);
+    return { mimeType: media.mimeType, declaredBytes: media.declaredBytes ?? media.data.byteLength };
+  }
+
+  downloadMedia(token: string, mediaId: string): Uint8Array {
+    this.#take('downloadMedia');
+    const media = this.#mediaFor(token, mediaId);
+    this.downloads.push(mediaId);
+    return media.data;
+  }
 }
 
 /**
@@ -256,7 +310,7 @@ export class InMemoryWhatsAppCloud implements WhatsAppCloud {
     this.descriptor = Object.freeze({ baseUrl: 'memory://whatsapp', appId: options.appId });
   }
 
-  #run<T>(operation: CloudOperation, credentials: CloudCredentials, fn: () => T): T {
+  #run<T>(operation: string, credentials: CloudCredentials, fn: () => T): T {
     assertCloudCredentials(credentials);
     try {
       return fn();
@@ -310,5 +364,17 @@ export class InMemoryWhatsAppCloud implements WhatsAppCloud {
     return this.#run('sendText', credentials, () =>
       this.backend.sendText(credentials.accessToken.expose(), credentials.phoneNumberId, message.to, message.body),
     );
+  }
+
+  async fetchMedia(credentials: CloudCredentials, request: MediaRequest): Promise<RetrievedMedia> {
+    assertMediaRequest(request);
+    return this.#run('fetchMedia', credentials, () => {
+      const token = credentials.accessToken.expose();
+      const described = this.backend.describeMedia(token, request.mediaId, credentials.phoneNumberId);
+      if (described.declaredBytes > request.maxBytes) throw mediaTooLarge(request);
+      const data = this.backend.downloadMedia(token, request.mediaId);
+      if (data.byteLength > request.maxBytes) throw mediaTooLarge(request);
+      return { mimeType: described.mimeType, data };
+    });
   }
 }

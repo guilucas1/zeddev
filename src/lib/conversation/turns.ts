@@ -54,6 +54,7 @@ import type { EnqueueRequest, EnqueueResult } from '@zeddev/queue';
 import type { InboundContent, InboundMessageType } from '@zeddev/whatsapp';
 import { renderConversation, type ContextTurn, type RenderedConversation } from './context.ts';
 import { scheduleDelivery } from './delivery.ts';
+import type { MediaUnderstandingFailure, PendingMedia } from './media.ts';
 
 /** What became of an inbound message. Mirrored by a CHECK in migration 0014. */
 export const INBOUND_DISPOSITIONS = ['aggregated', 'held_bot_inactive', 'held_handoff_paused'] as const;
@@ -342,6 +343,11 @@ export interface PreparedTurn {
    * `bot-disclosure-setting.md`'s "start of every new conversation" keys on.
    */
   readonly conversationStart: boolean;
+  /**
+   * Photos and voice notes of this turn nobody has looked at yet. The worker settles
+   * these and prepares the turn again, so `conversation` then holds what they said.
+   */
+  readonly pendingMedia: readonly PendingMedia[];
 }
 
 export type TurnPreparation =
@@ -431,6 +437,7 @@ export async function prepareTurn(
       conversation: renderConversation(context.turns),
       configuration,
       conversationStart: !context.botHasSpoken,
+      pendingMedia: context.pendingMedia,
     },
   };
 }
@@ -460,10 +467,34 @@ async function withheldReason(connection: Connection, conversation: Conversation
 interface ContextRow {
   turn_id: string;
   sequence: string;
+  message_id: string | null;
   message_type: InboundMessageType | null;
   upstream_type: string | null;
   content: InboundContent | null;
+  understanding_exists: boolean;
+  understood_text: string | null;
+  understanding_failure: MediaUnderstandingFailure | null;
   bot_message: string | null;
+}
+
+/** The media of the turn being answered that has no understanding yet, in send order. */
+function pendingMediaOf(rows: readonly ContextRow[]): PendingMedia[] {
+  const current = rows.at(-1)?.turn_id;
+  const pending: PendingMedia[] = [];
+  for (const row of rows) {
+    if (row.turn_id !== current || row.understanding_exists || row.message_id === null) continue;
+    if (row.message_type !== 'image' && row.message_type !== 'audio') continue;
+    const content = row.content as { readonly mediaId?: unknown; readonly mimeType?: unknown; readonly caption?: unknown };
+    if (typeof content.mediaId !== 'string' || typeof content.mimeType !== 'string') continue;
+    pending.push({
+      messageId: row.message_id,
+      kind: row.message_type,
+      mediaId: content.mediaId,
+      mimeType: content.mimeType,
+      caption: typeof content.caption === 'string' ? content.caption : undefined,
+    });
+  }
+  return pending;
 }
 
 /**
@@ -479,7 +510,7 @@ async function readContext(
   connection: Connection,
   conversationId: string,
   sequence: string,
-): Promise<{ turns: ContextTurn[]; botHasSpoken: boolean }> {
+): Promise<{ turns: ContextTurn[]; botHasSpoken: boolean; pendingMedia: PendingMedia[] }> {
   const result = await connection.query<ContextRow>(
     `WITH recent AS (
        SELECT id, sequence FROM conversation_turns
@@ -488,10 +519,13 @@ async function readContext(
         LIMIT $3
      )
      SELECT r.id AS turn_id, r.sequence::text AS sequence,
-            m.message_type, m.upstream_type, m.content, o.message AS bot_message
+            m.id AS message_id, m.message_type, m.upstream_type, m.content,
+            u.inbound_message_id IS NOT NULL AS understanding_exists, u.understood_text,
+            u.failure AS understanding_failure, o.message AS bot_message
        FROM recent r
        LEFT JOIN inbound_dispositions d ON d.turn_id = r.id
        LEFT JOIN inbound_messages m ON m.id = d.inbound_message_id
+       LEFT JOIN inbound_media_understandings u ON u.inbound_message_id = m.id
        LEFT JOIN conversation_turn_outcomes o ON o.turn_id = r.id
       ORDER BY r.sequence, m.sent_at, m.position`,
     [conversationId, sequence, CONVERSATION_LIMITS.contextTurns],
@@ -504,7 +538,14 @@ async function readContext(
       turns.push(current);
     }
     if (row.message_type !== null && row.content !== null && row.upstream_type !== null) {
-      current.messages.push({ type: row.message_type, upstreamType: row.upstream_type, content: row.content });
+      current.messages.push({
+        type: row.message_type,
+        upstreamType: row.upstream_type,
+        content: row.content,
+        understanding: row.understanding_exists
+          ? { text: row.understood_text ?? undefined, failure: row.understanding_failure ?? undefined }
+          : undefined,
+      });
     }
   }
 
@@ -514,7 +555,7 @@ async function readContext(
       LIMIT 1`,
     [conversationId],
   );
-  return { turns, botHasSpoken: spoken.rows.length > 0 };
+  return { turns, botHasSpoken: spoken.rows.length > 0, pendingMedia: pendingMediaOf(result.rows) };
 }
 
 // ---------------------------------------------------------------------------

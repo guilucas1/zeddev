@@ -22,6 +22,7 @@ import {
   businessVerificationBlocked,
   cloudFailureDeterminacy,
   cloudFailureReason,
+  isMediaTooLarge,
   type CloudCredentials,
   type WhatsAppCloud,
 } from './cloud.ts';
@@ -291,6 +292,100 @@ export function runWhatsAppCloudConformance(harness: CloudHarness): void {
         );
       },
     );
+
+    const DELIVERY = 'message-delivery-reliability.md';
+    const MEDIA_LIMIT = 1024;
+
+    /** A photo waiting at "Meta" for this account. */
+    function photo(credentials: CloudCredentials, mediaId: string, data: Uint8Array, declaredBytes?: number): void {
+      fixture.backend.registerMedia({
+        token: credentials.accessToken.expose(),
+        mediaId,
+        mimeType: 'image/jpeg',
+        data,
+        declaredBytes,
+      });
+    }
+
+    unitTest('media comes back as the exact bytes and type that were sent', async () => {
+      const credentials = account();
+      // Every byte value, so an adapter that decoded the body as text fails here.
+      const data = Uint8Array.from({ length: 256 }, (_, i) => i);
+      photo(credentials, '7001', data);
+      const media = await fixture.cloud.fetchMedia(credentials, { mediaId: '7001', maxBytes: MEDIA_LIMIT });
+      assert.equal(media.mimeType, 'image/jpeg');
+      assert.deepEqual(Buffer.from(media.data), Buffer.from(data));
+    });
+
+    specTest(
+      'image-message-understanding.md',
+      'AC7 each image is interpreted only within its own client business’s context',
+      'media sent to one account does not exist for another account’s token',
+      async () => {
+        const owner = account();
+        const stranger = account();
+        photo(owner, '7002', Uint8Array.of(1, 2, 3));
+        const error = await fixture.cloud.fetchMedia(stranger, { mediaId: '7002', maxBytes: MEDIA_LIMIT }).then(
+          () => undefined,
+          (thrown: unknown) => thrown,
+        );
+        assert.ok(error instanceof TerminalTransportError);
+        assert.equal(cloudFailureReason(error), 'configuration_invalid');
+      },
+    );
+
+    specTest(DELIVERY, 'AC14 media retrieval is retried up to its allowance', 'a failure at either exchange is retryable when Meta’s trouble is passing', async () => {
+      const credentials = account();
+      photo(credentials, '7003', Uint8Array.of(1));
+      for (const [operation, failure] of [
+        ['describeMedia', { status: 503, code: 999999 }],
+        ['downloadMedia', { status: 429, code: 130429 }],
+      ] as const) {
+        fixture.backend.failNext(operation, failure);
+        const error = await fixture.cloud.fetchMedia(credentials, { mediaId: '7003', maxBytes: MEDIA_LIMIT }).then(
+          () => undefined,
+          (thrown: unknown) => thrown,
+        );
+        assert.ok(error instanceof TransientTransportError, operation);
+        assert.equal(error.retryable, true);
+      }
+      await fixture.cloud.fetchMedia(credentials, { mediaId: '7003', maxBytes: MEDIA_LIMIT });
+    });
+
+    specTest(DELIVERY, 'AC15 retrieval that keeps failing is handed to fallback', 'media Meta no longer holds is terminal, so nothing retries a reference that has expired', async () => {
+      const error = await fixture.cloud.fetchMedia(account(), { mediaId: '7004', maxBytes: MEDIA_LIMIT }).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+      assert.ok(error instanceof TerminalTransportError);
+      assert.equal(error.retryable, false);
+    });
+
+    unitTest('media past the limit is refused, whether or not Meta admitted the size', async () => {
+      const credentials = account();
+      const before = fixture.backend.downloads.length;
+      photo(credentials, '7005', new Uint8Array(MEDIA_LIMIT + 1));
+      const declared = await fixture.cloud.fetchMedia(credentials, { mediaId: '7005', maxBytes: MEDIA_LIMIT }).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+      assert.equal(isMediaTooLarge(declared), true);
+      assert.equal(fixture.backend.downloads.length, before, 'a declared size past the limit must not be downloaded');
+
+      photo(credentials, '7006', new Uint8Array(MEDIA_LIMIT + 1), 10);
+      const undeclared = await fixture.cloud.fetchMedia(credentials, { mediaId: '7006', maxBytes: MEDIA_LIMIT }).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+      assert.equal(isMediaTooLarge(undeclared), true);
+    });
+
+    unitTest('a media id that is not a Meta id is refused before any request', async () => {
+      await assert.rejects(
+        () => fixture.cloud.fetchMedia(account(), { mediaId: '../15550001111', maxBytes: MEDIA_LIMIT }),
+        ValidationError,
+      );
+    });
 
     specTest(
       'credential-and-secret-handling.md',

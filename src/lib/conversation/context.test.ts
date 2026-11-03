@@ -31,6 +31,40 @@ unitTest('an image is announced as unseen; its caption counts as understood', ()
   assert.equal(captioned.parts.at(-1)!.text, 'the red one');
 });
 
+unitTest('an understood photo is shown as what it showed, with its caption beside it', () => {
+  const rendered = renderMessage({
+    type: 'image',
+    upstreamType: 'image',
+    content: { mediaId: '1', mimeType: 'image/png', caption: 'the red one' },
+    understanding: { text: 'Two shirts, one red.', failure: undefined },
+  });
+  assert.equal(rendered.understood, true);
+  assert.deepEqual(
+    rendered.parts.map((part) => part.text),
+    ['[The customer sent a photo. What it shows:]', 'Two shirts, one red.', "[The photo's caption:]", 'the red one'],
+  );
+});
+
+unitTest('a voice note is shown as what was said, and an audio file is not called a voice note', () => {
+  const understanding = { text: 'do you deliver', failure: undefined };
+  const voice = renderMessage({ type: 'audio', upstreamType: 'audio', content: { mediaId: '1', mimeType: 'audio/ogg', voice: true }, understanding });
+  assert.equal(voice.understood, true);
+  assert.deepEqual(voice.parts.map((part) => part.text), ['[The customer sent a voice message. What they said:]', 'do you deliver']);
+  const file = renderMessage({ type: 'audio', upstreamType: 'audio', content: { mediaId: '1', mimeType: 'audio/mpeg', voice: false }, understanding });
+  assert.match(file.parts[0]!.text, /audio file/);
+});
+
+unitTest('media that failed reads exactly like media nobody has looked at', () => {
+  const failed = renderMessage({
+    type: 'image',
+    upstreamType: 'image',
+    content: { mediaId: '1', mimeType: 'image/png' },
+    understanding: { text: undefined, failure: 'unreadable' },
+  });
+  assert.equal(failed.understood, false);
+  assert.match(failed.parts[0]!.text, /could not be viewed/);
+});
+
 unitTest('an unsupported type is named by its upstream type, nothing else', () => {
   const rendered = renderMessage({ type: 'unsupported', upstreamType: 'contacts', content: {} });
   assert.equal(rendered.understood, false);
@@ -58,6 +92,13 @@ unitTest('a current turn with nothing understood names the fallback trigger it g
   assert.equal(renderConversation([{ messages: [voice], botMessage: undefined }]).notUnderstood, 'low_confidence');
   assert.equal(renderConversation([{ messages: [sticker], botMessage: undefined }]).notUnderstood, 'out_of_scope');
   assert.equal(renderConversation([{ messages: [sticker, voice], botMessage: undefined }]).notUnderstood, 'low_confidence');
+  // Something going wrong is told apart from something being unintelligible, which
+  // is what lets a client's "our system is having trouble" stay true.
+  const failedVoice = (failure: 'retrieval_failed' | 'provider_failed' | 'no_speech') =>
+    ({ ...voice, understanding: { text: undefined, failure } }) as const;
+  assert.equal(renderConversation([{ messages: [failedVoice('retrieval_failed')], botMessage: undefined }]).notUnderstood, 'ai_error');
+  assert.equal(renderConversation([{ messages: [failedVoice('provider_failed')], botMessage: undefined }]).notUnderstood, 'ai_error');
+  assert.equal(renderConversation([{ messages: [failedVoice('no_speech')], botMessage: undefined }]).notUnderstood, 'low_confidence');
   // Only the current turn decides: an earlier unreadable turn does not.
   assert.equal(
     renderConversation([

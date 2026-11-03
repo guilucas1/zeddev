@@ -77,6 +77,7 @@ export const TENANT_SCOPED_TABLES = [
   'conversation_turn_outcomes',
   'conversation_handoff_events',
   'whatsapp_connection_verifications',
+  'inbound_media_understandings',
 ] as const;
 
 /**

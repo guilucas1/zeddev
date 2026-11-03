@@ -25,6 +25,8 @@
  *     the platform's webhook at all, so it is the receive half of "able to send
  *     and receive".
  *   - `sendText` — the send half, and later the outbound sender's whole job.
+ *   - `fetchMedia` — the bytes of an image or voice note a customer sent, which
+ *     the inbound notification only names by id.
  *
  * ## Why failures are classified here and not at the call site
  *
@@ -88,6 +90,25 @@ export interface SentMessage {
   readonly messageId: string;
 }
 
+/**
+ * Which media to retrieve, and how much of it the caller can use.
+ *
+ * The bound is the caller's because the caller knows what it is for: the bytes go
+ * on to an AI provider with its own request limit, and fetching more than that
+ * only to refuse it afterwards would spend memory and bandwidth for nothing.
+ */
+export interface MediaRequest {
+  /** Meta's id for the media, as the inbound notification named it. */
+  readonly mediaId: string;
+  readonly maxBytes: number;
+}
+
+export interface RetrievedMedia {
+  /** The type Meta reports, which may carry parameters (`audio/ogg; codecs=opus`). */
+  readonly mimeType: string;
+  readonly data: Uint8Array;
+}
+
 export interface CloudDescriptor {
   /** The API root in use, for operator diagnostics. Never a credential. */
   readonly baseUrl: string;
@@ -106,6 +127,12 @@ export interface WhatsAppCloud {
   /** Stop Meta delivering this account's notifications to the platform. Idempotent. */
   unsubscribeApp(credentials: CloudCredentials): Promise<void>;
   sendText(credentials: CloudCredentials, message: { readonly to: string; readonly body: string }): Promise<SentMessage>;
+  /**
+   * Retrieve media a customer sent to this number. Read-only, so unlike `sendText`
+   * repeating it after any failure is safe. Raises `mediaTooLarge` past
+   * `request.maxBytes`, and a classified failure for anything Meta refuses.
+   */
+  fetchMedia(credentials: CloudCredentials, request: MediaRequest): Promise<RetrievedMedia>;
 }
 
 /**
@@ -334,6 +361,37 @@ export function assertSendableText(message: { readonly to: string; readonly body
   }
   if (message.body.trim() === '') issues.push({ key: 'body', reason: 'is required' });
   if (issues.length > 0) throw new ValidationError(issues);
+}
+
+/**
+ * A media request the port will act on. The id becomes a URL path segment, so a
+ * value that is not one of Meta's ids would be a path injection.
+ */
+export function assertMediaRequest(request: MediaRequest): void {
+  const issues = [];
+  if (!META_ID.test(request.mediaId)) issues.push({ key: 'mediaId', reason: 'must be the numeric id Meta assigned to the media' });
+  if (!Number.isInteger(request.maxBytes) || request.maxBytes < 1) issues.push({ key: 'maxBytes', reason: 'must be a positive integer' });
+  if (issues.length > 0) throw new ValidationError(issues);
+}
+
+const MEDIA_TOO_LARGE_CODE = 'whatsapp.cloud.media_too_large';
+
+/**
+ * The media exists and is more than the caller can use.
+ *
+ * Its own code because it is the one retrieval failure that says something about
+ * the media rather than about the path to it: terminal, and no fault of the
+ * connection, which is why it carries no connection reason.
+ */
+export function mediaTooLarge(request: MediaRequest): TerminalTransportError {
+  return new TerminalTransportError('WhatsApp media exceeds the size the platform can use.', {
+    code: MEDIA_TOO_LARGE_CODE,
+    context: { operation: 'fetchMedia', mediaId: request.mediaId, limit: request.maxBytes },
+  });
+}
+
+export function isMediaTooLarge(error: unknown): boolean {
+  return error instanceof TerminalTransportError && error.code === MEDIA_TOO_LARGE_CODE;
 }
 
 export function assertCloudCredentials(credentials: CloudCredentials): void {

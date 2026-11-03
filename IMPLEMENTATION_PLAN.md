@@ -129,11 +129,9 @@ attempts-exhausted record, and connection-state feedback — which is also what 
 reconnection. See §4u. That brings the totals to 987 passing tests, zero skipped, 23 of 27 specs with
 covering tests, 457 spec-linked assertions.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the
-supported-language list, document upload on accepted document formats and size limits, memory reset policy on
-the default inactivity window. The next unblocked work is image and voice understanding, which
-replace the "could not be viewed/listened to" notes — the AI port already declares vision and audio
-capabilities, and media retrieval is the piece that has to be built for them.
+Image and voice understanding are done too: a customer's photo or voice note now reaches the model as what it showed or said. `WhatsAppCloud.fetchMedia` retrieves the bytes (port, Graph adapter, fake, wire stub, conformance), `media.ts` in `@zeddev/conversation` turns each message into text once, when its turn is about to be answered, and migration `0017_inbound_media_understanding` keeps that text and never the bytes. Retrieval has its own retry allowance through the queue and ends in the fallback rather than a dead letter. See §4v. That brings the totals to 1054 passing tests, zero skipped, 24 of 27 specs with covering tests, 494 spec-linked assertions. Neither path has yet run against a live model or against Meta: see the follow-ups in §4v.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is P3 client conversation visibility, which can now show the understood content this increment stores, then `services/scheduler` (bounded reconnection, `purgeSucceeded`) and knowledge retrieval grounding.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -358,8 +356,7 @@ These are load-bearing — most items below assume them. Recorded here so they a
 ### Component map (the units `component-independence.md` requires be independently deployable)
 
 - `postgres` — persistent storage.
-- `object-storage` — uploaded knowledge documents and fetched WhatsApp media. S3-compatible port so a
-  local container and a cloud bucket are the same adapter.
+- `object-storage` — uploaded knowledge documents. S3-compatible port so a local container and a cloud bucket are the same adapter. **Revised (§4v):** fetched WhatsApp media is not stored; only the text derived from it is.
 - `services/whatsapp-gateway` — inbound webhook verification, acknowledgement, deduplication, tenant
   attribution, enqueue; consumes the connection-verification reply. **Revised (§4u):** outbound send moved
   to the conversation worker, because the outbox is that library's table and this process's one hard
@@ -556,11 +553,8 @@ call must never be able to cause Meta to redeliver.
 - **[PARTIAL]** Fallback execution across all three triggers, plus the new `not_understood` cause, are decided
   and recorded with literal text in the outbox (`conversation_turn_outcomes`); actually sending it is the
   outbound sender's. See §4s.
-- Image understanding, including captions, multiple images per turn, and text visible within images.
-  Derived understanding must be **persisted**, not transient — `client-conversation-visibility.md`
-  requires the client see what the bot understood from an image in the transcript.
-- Voice note transcription, with transcription artifacts stripped from replies, and transcript persistence
-  for the same reason.
+- **[DONE]** Image understanding, including captions, multiple images per turn, and text visible within images, persisted as `inbound_media_understandings`. All 8 acceptance criteria of `image-message-understanding.md` have tests, at the port and turn layers; prompt quality against a live model is unverified. See §4v.
+- **[DONE]** Voice note transcription, with transcription artifacts stripped and the transcript persisted. `voice-message-understanding.md` AC1–AC9 have tests. The language hint is not sent until language configuration exists (blocked on §4). See §4v.
 - **[PARTIAL]** Human handoff: trigger detection via the reply protocol, per-conversation pause, held
   messages, client-initiated resume (`POST /v1/conversations/handoff/resume`), and history are done. Client
   notification (blocked on channel decision), a system-side resumption condition, and a status listing (P3
@@ -624,7 +618,7 @@ call must never be able to cause Meta to redeliver.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
   `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
   457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
-  sender, and `whatsapp-number-connection.md` 20.)
+  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.)
 
 ---
 
@@ -1598,8 +1592,6 @@ SMTP).
   conversation status listing (P3 visibility) are not built.
 - The memory reset policy must bound context by something other than a fixed count and define
   `conversationStart` properly — blocked on the same §4 default-inactivity-window decision.
-- Media understanding (image/voice) replaces the "could not be viewed/listened to" bracketed notes with actual
-  derived content once it lands.
 - Worker/database clock skew shifts *when* a turn closes, as noted above — acceptable because it never changes
   *what* the turn contains.
 - Typing indicator / read receipt behaviour is not implemented — the spec leaves it an open question.
@@ -1780,8 +1772,31 @@ SMTP).
 - **Delivery receipts are not consumed.** Meta reports `sent`/`delivered`/`read` on the same webhook the
   gateway already receives; wiring them would turn `sent` from "Meta accepted it" into "it arrived", and is
   the cheapest available upgrade to the indeterminate case.
-- **Media retrieval has its own retry allowance** (AC14, AC15) and is not built; it lands with image and
-  voice understanding.
+
+## 4v. Findings from the image and voice understanding increment
+
+- **[DECISION] A photo becomes text once, by its own model call, instead of travelling with the reply request.** Sending the bytes with every reply fails three ways: later turns would need them again and Meta's reference does not last; `client-conversation-visibility.md` AC4/AC5 want the client to read what was understood, so the text has to exist anyway; and photos in up to twenty turns of context would not survive a free-tier quota. The price is one extra call per media message, once.
+- **[DECISION] Bytes are never stored**, revising the §1 component map, which had placed fetched media in object storage. Every spec that looks at media afterwards needs the derived text only, and a customer's photos are the most sensitive and most expensive thing the platform could hold. They stay in the worker's memory for the length of one call. **Worth confirming with the operator:** it means a client's transcript can show what a photo contained but never the photo itself. Reversing this is additive (store on retrieval), but cannot recover photos already discarded.
+- **Understanding runs when a turn is about to be answered, not when a message arrives.** A photo sent while the bot is off or the conversation is paused therefore spends no bandwidth and no quota. It sits between two runs of `prepareTurn`, outside any transaction, and the second run is what notices the bot was switched off during a slow download. Consequence: a held message is never understood, so the future transcript shows it as an unexamined photo or voice note.
+- **Every path ends in a recorded row, because an unsettled message would leave its turn, and so every later turn of that conversation, unanswered forever** (the §4s dead-letter risk). The turn job therefore settles on its last retrieval attempt rather than raising.
+- **[DECISION] Three attempts at retrieval (`MEDIA_LIMITS.retrievalAttempts`), through the queue's backoff.** Fewer than the sender's five, because a customer is waiting on an answer not yet decided and the cost of giving up is only the fallback. Only retryable failures use them: a reference Meta no longer holds is terminal and settles at once. A provider failure also settles at once, because the port has spent its own retries and `generateReply` treats a failed reply the same way. Each round tries every pending message before raising, and rows already written survive the retry, so a turn with three photos and one failed download does not pay for three descriptions twice.
+- **A technical failure and an unintelligible message are different fallback triggers.** A failed download or provider call gets `ai_error`; a blurry photo, silence, an unsupported format, or a model without the capability gets `low_confidence`. A client may word those differently, and "our system is having trouble" is false of a blurry photo. A turn with a caption or other text still goes to the model, with a note saying the media could not be viewed.
+- **The unreadable verdict is a sentinel the model is asked to write, read loosely** (`readImageUnderstanding`), because a model asked for one word still writes "UNREADABLE." or bold. Only the whole answer counts: a description mentioning the word is still a description.
+- **Transcripts are cleaned before storage, because the reply is written by a model shown them** (`cleanTranscript`). Square brackets and angle tags go whatever they hold; parentheses only around a known non-speech word; a time of day stays and only a bracketed time or a subtitle range is a timestamp. A transcript with no letter or digit left is no speech, which catches `[BLANK_AUDIO]`.
+- **The media location from Meta is data, and the token goes where it points.** The adapter refuses a location with a different scheme from the configured root, so a token never travels in the clear; the host cannot be pinned without embedding Meta's hostnames. The location is a signed link and appears in no error. `phone_number_id` on the lookup makes Meta check the media was sent to this number, not merely that this token can see it.
+- **`file_size` and `content-length` are claims, so the bound is enforced by counting what arrives.** A declared size past the limit stops before the download; a body no header admitted to is abandoned at the limit. A 200 carrying HTML or JSON is refused as a transient failure, because handed on it would come back as a confident description of an error page.
+- **Tests were checked for teeth by mutation.** Twelve behaviours were broken one at a time (the last attempt raising, the second `prepareTurn`, the location check, the byte bound, transcript cleaning, and others) and each was caught.
+
+### Follow-ups the media understanding increment leaves open
+
+- **Neither path has run against a live model or against Meta.** The image prompt's quality, the sentinel's reliability, and whether Meta's download needs anything beyond the bearer token are all unverified. The §4p smoke test should cover a real photo and a real voice note before launch.
+- **The largest audio WhatsApp allows may exceed the port's limit.** `MAX_REQUEST_MEDIA_BYTES` is 15 MiB and the Cloud API's documented audio limit is 16 MB, about 15.26 MiB, so a note in that small gap gets the fallback, as `too_large`. Opus at voice bitrates reaches that only after over an hour. `voice-message-understanding.md` AC7 allows fallback only if content cannot be understood, so strictly this is a known gap, accepted because the limit exists to stay under the provider's inline request limit.
+- **A long voice note may outlast `AI_REQUEST_TIMEOUT`.** It then settles as `provider_failed` and gets the fallback. No live timing exists yet to size it against.
+- **Long transcripts are cut at 20,000 code points** (`MEDIA_LIMITS.understandingMaxLength`, roughly twenty minutes of speech), marked with ` […]`, because the text is shown to the model in up to twenty later turns. The tail of a longer note is lost.
+- **No language hint is sent, and the description language is a guess.** Both wait on language configuration (§4). The image prompt uses the caption's language or the photo's, else English, and a client reads this text in the future transcript.
+- **The number of media calls in a turn is unbounded**, one per message, in sequence. The spec requires all images be considered, so there is no cap, but a large album costs its size in free-tier quota. Metrics (P3) should make this visible; `input_tokens` and `output_tokens` on `inbound_media_understandings` exist for that and nothing reads them yet.
+- **A sealer failure while loading credentials still raises and can dead-letter the turn**, leaving the conversation `behind` as in §4s. That is an operator misconfiguration affecting everything else too, so it was left as is.
+- **`readMediaUnderstandings` is the read path waiting for the transcript view** (P3); only tests call it today.
 
 ---
 

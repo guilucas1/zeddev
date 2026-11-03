@@ -78,6 +78,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   writes the outbox row and enqueues its delivery job in the same transaction; nothing else may call
   `WhatsAppCloud.sendText` for a reply. A send that Meta answered is retryable; one whose answer was lost
   is not, and `cloudFailureDeterminacy` is the only thing that decides which — do not re-derive it.
+- **Media is understood in exactly one place**: `understandTurnMedia` in `src/lib/conversation/media.ts`, between the two `prepareTurn` runs in `handleTurn`. It writes `inbound_media_understandings` (text only, first write stands; media bytes are never stored) and must end every message in a recorded row, or that conversation's later turns never get answered. A new failure reason needs an entry in `MEDIA_UNDERSTANDING_FAILURES`, migration CHECK included, and a decision about `TECHNICAL_MEDIA_FAILURES`, which selects the `ai_error` fallback.
 - **`tenant_secrets` is read and written only through `@zeddev/vault`.** Every entry point there records a
   `secret_access_records` row and refuses a connection with no bound tenant. Do not query the table directly.
 - **Message bytes are built in exactly one place**: `buildMessage` in `src/lib/mail/message.ts`.

@@ -16,13 +16,17 @@
 import { TransientTransportError } from '@zeddev/errors';
 import {
   assertCloudCredentials,
+  assertMediaRequest,
   assertSendableText,
   cloudFailure,
+  mediaTooLarge,
   unreachableContext,
   type BusinessAccountProfile,
   type CloudCredentials,
   type CloudDescriptor,
+  type MediaRequest,
   type NumberProfile,
+  type RetrievedMedia,
   type SendDeterminacy,
   type SentMessage,
   type WhatsAppCloud,
@@ -111,6 +115,22 @@ function determinacyOf(cause: unknown): SendDeterminacy {
   }
   return 'unknown';
 }
+
+/** Meta documents `file_size` as a number and has been seen to send it as a string. */
+function asByteCount(value: unknown): number | undefined {
+  const count = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return typeof count === 'number' && Number.isFinite(count) && count >= 0 ? count : undefined;
+}
+
+/**
+ * A success status on a media download that is not media.
+ *
+ * A CDN can answer a client it does not like with a 200 and a web page. Handed on,
+ * those bytes would reach an AI provider as a "photo" and come back as a confident
+ * description of an error page, so they are refused here as the transient failure
+ * they are.
+ */
+const NOT_MEDIA_CONTENT_TYPE = /^(text\/html|application\/json)\b/i;
 
 function parseRetryAfter(header: string | null): number | undefined {
   if (header === null) return undefined;
@@ -284,6 +304,119 @@ export class GraphWhatsAppCloud implements WhatsAppCloud {
       method: 'DELETE',
       path: `/${credentials.businessAccountId}/subscribed_apps`,
     });
+  }
+
+  /**
+   * Media is two exchanges: the Graph API says where the bytes are, and the bytes
+   * are fetched from there, with the same token.
+   *
+   * `phone_number_id` makes Meta check the media was sent to *this* number, rather
+   * than merely being visible to this token — which matters for a token that spans
+   * several numbers, and is the difference between "an id another tenant's customer
+   * was given" being refused by Meta or served by it.
+   */
+  async fetchMedia(credentials: CloudCredentials, request: MediaRequest): Promise<RetrievedMedia> {
+    assertCloudCredentials(credentials);
+    assertMediaRequest(request);
+    const described = asRecord(
+      await this.#call('fetchMedia', credentials, {
+        method: 'GET',
+        path: `/${request.mediaId}`,
+        query: { phone_number_id: credentials.phoneNumberId },
+      }),
+    );
+    const declared = asByteCount(described['file_size']);
+    if (declared !== undefined && declared > request.maxBytes) throw mediaTooLarge(request);
+    const data = await this.#download(credentials, this.#mediaLocation(described['url']), request);
+    return { mimeType: asText(described['mime_type']), data };
+  }
+
+  /**
+   * Where Meta says the bytes are, checked before a token is sent there.
+   *
+   * The URL is data from a response, and the bearer token goes wherever it points.
+   * The host cannot be pinned without embedding one of Meta's hostnames, and it
+   * changes; what can be refused is a location that would carry the token in the
+   * clear, or one that is not a URL at all. Never quoted in an error: it is a signed
+   * link to a customer's media.
+   */
+  #mediaLocation(value: unknown): URL {
+    let location: URL | undefined;
+    try {
+      location = new URL(asText(value));
+    } catch {
+      location = undefined;
+    }
+    if (location === undefined || location.protocol !== new URL(this.#root).protocol) {
+      throw new TransientTransportError('WhatsApp Cloud API named no usable location for the media.', {
+        code: 'whatsapp.cloud.malformed_response',
+        context: unreachableContext('fetchMedia', 'none'),
+      });
+    }
+    return location;
+  }
+
+  /**
+   * Read the bytes, stopping at the bound rather than after it.
+   *
+   * `file_size` and `content-length` are both claims. Only counting what actually
+   * arrives protects the process, so the body is read chunk by chunk and abandoned
+   * the moment it passes the limit. The timeout covers the body as well as the
+   * connect, because `fetch`'s signal stays armed until the stream ends.
+   */
+  async #download(credentials: CloudCredentials, location: URL, request: MediaRequest): Promise<Uint8Array> {
+    const unreachable = (cause: unknown): TransientTransportError =>
+      new TransientTransportError('WhatsApp Cloud API fetchMedia did not complete.', {
+        code: 'whatsapp.cloud.unreachable',
+        context: unreachableContext('fetchMedia', determinacyOf(cause)),
+        cause,
+      });
+
+    let response: Response;
+    try {
+      response = await this.#fetch(location, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${credentials.accessToken.expose()}` },
+        signal: AbortSignal.timeout(this.#settings.requestTimeoutMs),
+      });
+    } catch (cause) {
+      throw unreachable(cause);
+    }
+    if (!response.ok) {
+      const error = asRecord(asRecord(await this.#readJson('fetchMedia', response))['error']) as MetaError;
+      throw cloudFailure('fetchMedia', {
+        status: response.status,
+        code: asNumber(error.code),
+        subcode: asNumber(error.error_subcode),
+        retryAfterMs: parseRetryAfter(response.headers.get('retry-after')),
+      });
+    }
+    if (NOT_MEDIA_CONTENT_TYPE.test(response.headers.get('content-type') ?? '')) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new TransientTransportError('WhatsApp Cloud API answered a media download with something that is not media.', {
+        code: 'whatsapp.cloud.malformed_response',
+        context: unreachableContext('fetchMedia', 'none'),
+      });
+    }
+    const announced = asByteCount(response.headers.get('content-length'));
+    if (announced !== undefined && announced > request.maxBytes) {
+      await response.body?.cancel().catch(() => undefined);
+      throw mediaTooLarge(request);
+    }
+
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for await (const chunk of response.body ?? []) {
+        total += chunk.byteLength;
+        if (total > request.maxBytes) break;
+        chunks.push(chunk);
+      }
+    } catch (cause) {
+      throw unreachable(cause);
+    }
+    if (total > request.maxBytes) throw mediaTooLarge(request);
+    return Buffer.concat(chunks, total);
   }
 
   async sendText(

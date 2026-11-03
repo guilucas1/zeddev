@@ -38,6 +38,7 @@ export {
 } from './connection.ts';
 export {
   assertCloudCredentials,
+  assertMediaRequest,
   assertSendableText,
   businessVerificationBlocked,
   classifyCloudFailure,
@@ -45,6 +46,8 @@ export {
   cloudFailureDeterminacy,
   cloudFailureReason,
   describeCloudFailure,
+  isMediaTooLarge,
+  mediaTooLarge,
   CLOUD_ERROR_CODES,
   CLOUD_RECOVERABLE_REASONS,
   SEND_DETERMINACY,
@@ -54,7 +57,9 @@ export {
   type BusinessAccountProfile,
   type CloudCredentials,
   type CloudDescriptor,
+  type MediaRequest,
   type NumberProfile,
+  type RetrievedMedia,
   type SendDeterminacy,
   type SentMessage,
   type WhatsAppCloud,

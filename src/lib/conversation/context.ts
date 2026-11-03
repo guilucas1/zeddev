@@ -12,6 +12,11 @@
  * short messages arrive as three paragraphs of one message — the "one thought
  * split across several messages" the burst spec describes.
  *
+ * A photo or voice note that was understood is shown as what it showed or said,
+ * introduced by a note saying what kind of message it was, so the reply reads as an
+ * answer to the content and a later "that photo I sent" has something to refer to
+ * (`conversation-memory.md`). The text comes from `media.ts`, once per message.
+ *
  * A message the platform could not understand is not dropped. It is shown as a
  * bracketed note saying what arrived, so the model neither answers as if the
  * customer had said nothing nor invents what the photo showed
@@ -24,12 +29,21 @@
 import type { ConversationTurn, TextPart } from '@zeddev/ai';
 import type { FallbackTrigger } from '@zeddev/bot';
 import type { InboundContent, InboundMessageType } from '@zeddev/whatsapp';
+import { TECHNICAL_MEDIA_FAILURES, type MediaUnderstandingFailure } from './media.ts';
 
 /** One stored message of a turn, as far as rendering is concerned. */
 export interface TurnMessage {
   readonly type: InboundMessageType;
   readonly upstreamType: string;
   readonly content: InboundContent;
+  /**
+   * What was made of an image or audio message, if anything has been yet. Absent
+   * for a message that has never been through understanding, which reads the same
+   * as one that failed: nobody knows what it held.
+   */
+  readonly understanding?:
+    | { readonly text: string | undefined; readonly failure: MediaUnderstandingFailure | undefined }
+    | undefined;
 }
 
 /** One turn of the conversation, oldest first when in a list. */
@@ -40,6 +54,10 @@ export interface ContextTurn {
   readonly botMessage: string | undefined;
 }
 
+const IMAGE_SEEN_NOTE = '[The customer sent a photo. What it shows:]';
+const CAPTION_NOTE = "[The photo's caption:]";
+const VOICE_HEARD_NOTE = '[The customer sent a voice message. What they said:]';
+const AUDIO_HEARD_NOTE = '[The customer sent an audio file. What it says:]';
 const IMAGE_NOTE = '[The customer sent a photo, which could not be viewed.]';
 const IMAGE_CAPTION_NOTE = "[The customer sent a photo, which could not be viewed. The photo's caption:]";
 const VOICE_NOTE = '[The customer sent a voice message, which could not be listened to.]';
@@ -65,12 +83,22 @@ export function renderMessage(message: TurnMessage): { readonly parts: readonly 
     }
     case 'image': {
       const caption = typeof content.caption === 'string' ? content.caption.trim() : '';
+      const seen = message.understanding?.text;
+      if (seen !== undefined) {
+        const captioned = caption === '' ? [] : [text(CAPTION_NOTE), text(caption)];
+        return { parts: [text(IMAGE_SEEN_NOTE), text(seen), ...captioned], understood: true };
+      }
       return caption === ''
         ? { parts: [text(IMAGE_NOTE)], understood: false }
         : { parts: [text(IMAGE_CAPTION_NOTE), text(caption)], understood: true };
     }
-    case 'audio':
-      return { parts: [text(content.voice === true ? VOICE_NOTE : AUDIO_NOTE)], understood: false };
+    case 'audio': {
+      const voice = content.voice === true;
+      const heard = message.understanding?.text;
+      return heard === undefined
+        ? { parts: [text(voice ? VOICE_NOTE : AUDIO_NOTE)], understood: false }
+        : { parts: [text(voice ? VOICE_HEARD_NOTE : AUDIO_HEARD_NOTE), text(heard)], understood: true };
+    }
     case 'unsupported':
       return { parts: [text(unsupportedNote(message.upstreamType))], understood: false };
   }
@@ -81,9 +109,11 @@ export interface RenderedConversation {
   readonly turns: readonly ConversationTurn[];
   /**
    * Set when nothing in the turn being answered could be understood, naming the
-   * fallback trigger it should get instead of a model call: `out_of_scope` when
-   * every message was a type the platform does not handle, `low_confidence` when
-   * something that should have been understood (a photo, a voice note) was not.
+   * fallback trigger it should get instead of a model call: `ai_error` when
+   * something went wrong retrieving or reading a photo or voice note,
+   * `out_of_scope` when every message was a type the platform does not handle,
+   * `low_confidence` when something that should have been understood was looked
+   * at and was not.
    */
   readonly notUnderstood: FallbackTrigger | undefined;
 }
@@ -96,17 +126,21 @@ export function renderConversation(turns: readonly ContextTurn[]): RenderedConve
   const rendered: ConversationTurn[] = [];
   let lastUnderstood = false;
   let lastAllUnsupported = true;
+  let lastTechnicalFailure = false;
 
   turns.forEach((turn, index) => {
     const current = index === turns.length - 1;
     const parts: TextPart[] = [];
     let understood = false;
     let allUnsupported = true;
+    let technicalFailure = false;
     for (const message of turn.messages) {
       const piece = renderMessage(message);
       parts.push(...piece.parts);
       understood ||= piece.understood;
       allUnsupported &&= message.type === 'unsupported';
+      const failure = message.understanding?.failure;
+      technicalFailure ||= failure !== undefined && TECHNICAL_MEDIA_FAILURES.has(failure);
     }
     // An empty turn (every message blank) still stands for the customer having
     // written; the port refuses a customer turn with no parts, so it gets a note.
@@ -115,6 +149,7 @@ export function renderConversation(turns: readonly ContextTurn[]): RenderedConve
     if (current) {
       lastUnderstood = understood;
       lastAllUnsupported = allUnsupported && turn.messages.length > 0;
+      lastTechnicalFailure = technicalFailure;
     } else if (turn.botMessage !== undefined) {
       rendered.push({ role: 'bot', text: turn.botMessage });
     }
@@ -122,6 +157,12 @@ export function renderConversation(turns: readonly ContextTurn[]): RenderedConve
 
   return {
     turns: rendered,
-    notUnderstood: lastUnderstood ? undefined : lastAllUnsupported ? 'out_of_scope' : 'low_confidence',
+    notUnderstood: lastUnderstood
+      ? undefined
+      : lastTechnicalFailure
+        ? 'ai_error'
+        : lastAllUnsupported
+          ? 'out_of_scope'
+          : 'low_confidence',
   };
 }

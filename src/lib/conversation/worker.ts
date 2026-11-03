@@ -6,8 +6,8 @@
  *
  * - `INBOUND_JOB_KIND` — a message was stored. Admit this end-customer's pending
  *   messages: aggregate them into the open turn, open a new one, or hold them.
- * - `TURN_JOB_KIND` — a turn's window may have run out. Close it, generate its
- *   answer, record it.
+ * - `TURN_JOB_KIND` — a turn's window may have run out. Close it, understand any
+ *   photos and voice notes in it, generate its answer, record it.
  * - `DELIVERY_JOB_KIND` — an answer was recorded. Send it, and let what Meta says
  *   about it reach the connection state.
  *
@@ -39,6 +39,7 @@ import {
   DELIVERY_JOB_KIND,
   type DeliveryAttemptOutcome,
 } from './delivery.ts';
+import { understandTurnMedia } from './media.ts';
 import {
   admitPendingMessages,
   prepareTurn,
@@ -114,9 +115,27 @@ async function handleTurn(dependencies: ConversationWorkerDependencies, job: Cla
   const turnId = payloadId(job, 'turnId');
   const fields = { tenantId: job.tenantId, turnId, jobId: job.id, attempt: job.attempt };
 
-  const preparation = await withTenant(pool, job.tenantId, (tx) =>
-    prepareTurn(tx, turnId, policy, scheduler, clock.now()),
-  );
+  const prepare = (): ReturnType<typeof prepareTurn> =>
+    withTenant(pool, job.tenantId, (tx) => prepareTurn(tx, turnId, policy, scheduler, clock.now()));
+
+  let preparation = await prepare();
+  if (preparation.status === 'ready' && preparation.turn.pendingMedia.length > 0) {
+    await understandTurnMedia(
+      dependencies,
+      {
+        tenantId: job.tenantId,
+        turnId,
+        customerId: preparation.turn.customerId,
+        attempt: job.attempt,
+        maxAttempts: job.maxAttempts,
+      },
+      preparation.turn.pendingMedia,
+    );
+    // Prepared again rather than patched up: understanding can take long enough for
+    // the bot to be switched off or the conversation paused, and running the whole
+    // check again is what notices, before the model is asked for an answer.
+    preparation = await prepare();
+  }
   switch (preparation.status) {
     case 'answered':
       logger.debug('conversation.turn.already_answered', fields);

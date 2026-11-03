@@ -37,6 +37,25 @@ export {
   type DeliveryState,
 } from './delivery.ts';
 export {
+  cleanTranscript,
+  IMAGE_UNDERSTANDING_INSTRUCTIONS,
+  MEDIA_LIMITS,
+  MEDIA_PRINCIPAL,
+  MEDIA_UNDERSTANDING_FAILURES,
+  readImageUnderstanding,
+  readMediaUnderstandings,
+  recordMediaUnderstanding,
+  TECHNICAL_MEDIA_FAILURES,
+  understandMedia,
+  understandTurnMedia,
+  type MediaJobContext,
+  type MediaUnderstandingDependencies,
+  type MediaUnderstandingFailure,
+  type MediaVerdict,
+  type PendingMedia,
+  type StoredMediaUnderstanding,
+} from './media.ts';
+export {
   renderConversation,
   renderMessage,
   type ContextTurn,

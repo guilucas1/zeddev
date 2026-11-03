@@ -107,6 +107,7 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
   // by this fixture is one the worker can actually unseal.
   const sealer = new SecretSealer([parseSealingKey(SEALING_KEY, 'VAULT_SEALING_KEYS')]);
   let counter = 0;
+  const tokens = new Map<string, string>();
 
   before(async () => {
     db = await createTestDatabase('worker');
@@ -137,6 +138,7 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
       return created.rows[0]!.id;
     });
     const token = ['worker', String(counter), 'token'].join('-');
+    tokens.set(tenant, token);
     cloudBackend.register({ token, phoneNumberId, businessAccountId: BUSINESS_ACCOUNT_ID, appId: APP_ID });
     await withTenant(pool, tenant, async (tx) => {
       await submitCredentials(
@@ -153,15 +155,21 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
   }
 
   /** What the gateway does with one accepted message: store it and schedule it, together. */
-  async function deliver(tenant: string, phoneNumberId: string, customerId: string, externalId: string, text: string) {
+  async function deliver(
+    tenant: string,
+    phoneNumberId: string,
+    customerId: string,
+    externalId: string,
+    message: string | { readonly voiceNote: string },
+  ) {
     const scheduler = new PostgresQueue({ name: INBOUND_QUEUE, pool });
     await withTenant(pool, tenant, async (tx) => {
       const stored = await recordInboundMessage(tx, phoneNumberId, {
         externalId,
         customerId,
-        type: 'text',
-        upstreamType: 'text',
-        content: { text },
+        ...(typeof message === 'string'
+          ? { type: 'text', upstreamType: 'text', content: { text: message } }
+          : { type: 'audio', upstreamType: 'audio', content: { mediaId: message.voiceNote, mimeType: 'audio/ogg', voice: true } }),
         sentAt: new Date(),
       });
       if (stored.created) {
@@ -240,6 +248,32 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
       await eventually(() => outcomes(tenant), (rows) => rows.length > 0, 'the turn to be answered');
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       assert.equal((await outcomes(tenant)).length, 1);
+    },
+  );
+
+  specTest(
+    'message-delivery-reliability.md',
+    'AC14 media retrieval is retried up to its allowance',
+    'through the real queue, a failed retrieval comes back after its backoff and the voice note is answered',
+    async () => {
+      const { tenant, phoneNumberId } = await liveTenant();
+      const customer = '15551230003';
+      cloudBackend.registerMedia({ token: tokens.get(tenant)!, mediaId: '8801', mimeType: 'audio/ogg', data: Uint8Array.of(1, 2, 3) });
+      cloudBackend.failNext('downloadMedia', { status: 503, code: 999999 });
+      provider.backend.script({ kind: 'text', text: 'Do you open on Sunday?' }, { kind: 'text', text: '[reply]\nYes, from ten.' });
+
+      await deliver(tenant, phoneNumberId, customer, 'wamid.worker-voice', { voiceNote: '8801' });
+      await eventually(async () => sentTo(customer), (sends) => sends.length > 0, 'the voice note to be answered');
+
+      assert.deepEqual(sentTo(customer), ['Yes, from ten.']);
+      const settled = await withTenant(pool, tenant, async (tx) =>
+        (await tx.query<{ attempts: number; understood_text: string }>('SELECT attempts, understood_text FROM inbound_media_understandings')).rows,
+      );
+      assert.deepEqual(
+        settled.map((row) => ({ ...row })),
+        [{ attempts: 2, understood_text: 'Do you open on Sunday?' }],
+        'the attempt number must be the one the queue counted',
+      );
     },
   );
 
