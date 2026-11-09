@@ -137,7 +137,9 @@ The scheduler is done too: a new service, `services/scheduler`, runs the platfor
 
 Per-tenant metrics and the operator's health view are done too: an operator can see every tenant's connection, its numbers over a chosen period, which tenants stand out, and one tenant in depth, without any route that could reach a message. Migration `0020_tenant_metrics` counts each event in a counts-only hourly table, a new library, `@zeddev/monitoring`, reads it back, three operator routes expose it, and `services/scheduler` deletes what is past retention. See §4y. That brings the totals to 1159 passing tests, zero skipped, 25 of 27 specs with covering tests, 545 spec-linked assertions. The screens are `services/web`'s and are not built.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is knowledge retrieval grounding and the `services/web` dashboards; operator alerting is blocked on the notification channel decision.
+Knowledge selection is done too: a tenant whose knowledge no longer fits one prompt now sends only the entries that matter to the conversation, and the model is told it holds a selection. A tenant within the 12,000-character budget still sends everything, exactly as before. `knowledge-selection.ts` in `@zeddev/bot` holds it, `generateReply` calls it, and no table or migration changes. See §4z. That brings the totals to 1195 passing tests, zero skipped, 25 of 27 specs with covering tests, 569 spec-linked assertions. Uploaded documents are not part of it, since upload is still blocked on §4.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is the `services/web` dashboards; operator alerting is blocked on the notification channel decision.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -191,8 +193,7 @@ These are load-bearing — most items below assume them. Recorded here so they a
 - **[DECISION] Monorepo with workspaces.** `src/lib/*` is the project's standard library — shared
   utilities, ports, and components live there and nowhere else. `src/services/*` holds the independently
   deployable units. Ad-hoc copies of a utility in a service are a defect, not a shortcut.
-- **[DECISION] PostgreSQL as the single persistent store**, carrying relational data, the job queue, and
-  vector embeddings for knowledge retrieval. Rationale: `cost-efficient-operation.md` forbids
+- **[DECISION] PostgreSQL as the single persistent store**, carrying relational data and the job queue. (Vector embeddings were first assumed here for knowledge retrieval; §4z chose lexical ranking instead.) Rationale: `cost-efficient-operation.md` forbids
   tenant-independent fixed-cost infrastructure, and every additional always-on backing service (a
   dedicated broker, a dedicated vector DB) is exactly that. One store is also the cheapest thing to make
   identical across a laptop container, a VPS container, and a managed cloud instance per
@@ -539,13 +540,12 @@ call must never be able to cause Meta to redeliver.
 - **[PARTIAL]** Prompt assembly from tenant configuration: `replyInstructions` in `@zeddev/bot` (`reply.ts`)
   composes persona, disclosure, knowledge entries, behaviour rules, handoff, and the output protocol, and
   `interpretReply` reads the answer back. Conversation memory is now supplied (up to 20 turns, from
-  `@zeddev/conversation`). Still to add as they land: language (blocked on §4), retrieved knowledge (today
-  every entry is rendered whole), and the reset boundary. See §4q, §4s.
+  `@zeddev/conversation`). Still to add as they land: language (blocked on §4), and the reset boundary. Knowledge is selected per reply when it exceeds the prompt budget (§4z). See §4q, §4s.
 - **[PARTIAL]** Conversation memory: `@zeddev/conversation` (`context.ts`) supplies a unified
   per-end-customer-per-tenant context across text/image/voice, capped at `CONVERSATION_LIMITS.contextTurns` =
   20 turns; the stored transcript itself is untouched. Inactivity and manual reset are still blocked on the §4
   default-inactivity-window decision. See §4s.
-- Knowledge retrieval grounding over configured freeform entries and ingested documents.
+- **[DONE]** Knowledge retrieval grounding over freeform entries: `selectKnowledge` in `@zeddev/bot`. Ingested documents join it when upload lands (blocked on §4). See §4z.
 - **[DONE]** Outbound send with transient retry and backoff, exactly-once delivery from the end-customer's
   perspective, terminal-failure recording feeding the operator metrics, and connection-state feedback when
   a send failure indicates the connection itself is broken. `delivery.ts` in `@zeddev/conversation` plus
@@ -614,7 +614,7 @@ call must never be able to cause Meta to redeliver.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
   `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
   457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
-  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.)
+  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.) (After the knowledge selection increment: 25 of 27 specs, 569 assertions.)
 
 ---
 
@@ -1347,8 +1347,7 @@ SMTP).
   replaces the text in place and keeps the id and list position (`position` identity column, same reason as
   §4k: two entries created in one transaction share `now()`).
 - **Limits: 4000 characters per entry, 100 entries per tenant.** **[DECISION]** The spec assumes no limit and
-  leaves any to implementation. Until retrieval exists, the reply path renders every entry into every prompt,
-  so the cap bounds prompt cost on a free-tier provider; bulk knowledge belongs in documents. The per-entry
+  leaves any to implementation. What one prompt carries is bounded separately (§4z); bulk knowledge belongs in documents. The per-entry
   limit is mirrored by the CHECK in migration 0012 (tested at the boundary with 4000 emoji), and the cap is
   enforced under a per-tenant advisory lock, raced by five concurrent adds for the last slot.
 - **A blank entry cannot exist.** It would make knowledge read as "configured" while telling the bot nothing.
@@ -1372,9 +1371,6 @@ SMTP).
   §1's object-storage decision), processing with a visible failed state, and inclusion in `describeKnowledge`,
   `knowledgeConfigured`, and `knowledgeDirectives`' input. This is also the first service to hold an object
   store, which puts MinIO in `compose.yaml` and requires calling `verifyAccess()` at startup (§4e).
-- Retrieval: if the reply path ever selects a subset of entries instead of all of them, it must pass the subset
-  through `knowledgeDirectives`, not render entries itself.
-- AC5–AC8 need output-level tests once P2's reply path and AI port exist.
 - The web screen for knowledge does not exist (`services/web`).
 
 ## 4p. Findings from the AI provider port increment
@@ -1863,6 +1859,21 @@ SMTP).
 - **Not counted:** media understanding failures on their own, AI token usage (still written and still unread), queue depth, and `inbound_rejections`.
 - **Offboarding (P4) must decide what happens to these rows.** They are deleted with the tenant by cascade, but nothing yet applies the offboarding retention window to them.
 - **Not exercised live.** The counters are proven against a real PostgreSQL and the worker's real pipeline with a scripted Cloud API. No screen shows them yet.
+
+## 4z. Findings from the knowledge selection increment
+
+- **Selecting can lose a fact, so it only happens when it has to.** **[DECISION]** Knowledge within `KNOWLEDGE_SELECTION.promptBudget` (12,000 characters, about 3,000 tokens) goes into the prompt whole. Only past that is it ranked. A tenant at the entry limits would otherwise send about 100,000 tokens with every customer message, and on a free tier that ends in rate limits and the `ai_error` fallback for every customer. The port had no size check to catch this.
+- **Lexical ranking, not embeddings.** **[DECISION]** BM25 over character trigrams, computed in process, nothing stored. The AI port has no embedding capability, a provider swap would strand every stored vector, and a vector index is another always-on cost for at most 100 entries. Trigrams need no language list or stemmer, and they tolerate how customers type: `entregam` finds `Entregamos`, `garantai` finds `garantia`. Accents and case are folded first. Worst case (100 full-size entries) measured 60–90 ms, and only an over-budget tenant pays it.
+- **Three rules exist because of how selection fails.** An entry is whole or absent, since cutting one can drop the "except Sundays" that makes the rest true. The budget is always spent, unmatched entries filling it oldest first, since a message matching nothing may still be about something the client phrased differently. And the prompt says when it holds a selection (`partial`), since otherwise a fact left out reads as a fact denied and the bot tells a customer the business lacks something it has; the instruction is to take the `low_confidence` fallback instead.
+- **The query is the last four turns, each older one counting half.** "And on Saturdays?" names no topic. The bot's own turns count, because "yes please" answers what the bot offered. The platform's bracketed notes about photos and voice messages do not, or every entry mentioning a photo would rank up.
+- **`generateReply` calls it**, so the preview and the live path cannot select differently (`behavior-rules-configuration.md` AC16, tested). `knowledgeDirectives` is still the only renderer of knowledge.
+- **The rules are held by tests that fail when the rule is removed.** Each of ranking, accent folding, the turn window, excluding notes, skipping past an oversized entry, and the `partial` mark was removed in turn to confirm a test fails. Two tests written first turned out to pass with any ranking, because their budgets could never fit the deciding entry, and were corrected.
+
+### Follow-ups the knowledge selection increment leaves open
+
+- **Documents.** When upload lands, a document must reach `selectKnowledge` as chunks no longer than `KNOWLEDGE_LIMITS.entryMaxLength`, or the guarantee that the most relevant item fits the budget stops holding. `knowledgeDirectives` needs them too.
+- **Not exercised against a live model.** Tests prove what the model is shown, through the real worker and PostgreSQL. Whether a real model obeys the partial-knowledge sentence, or avoids contradicting a fact (AC5, AC6), has not been checked.
+- **The budget and ranking constants are judgement, not measurement.** There is no real tenant traffic yet to tune `promptBudget` or the turn weights against. How often a tenant is over budget is not logged.
 
 ---
 

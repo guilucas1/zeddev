@@ -68,6 +68,7 @@ import {
   type HandoffTrigger,
 } from './handoff.ts';
 import { knowledgeDirectives, readKnowledge, type KnowledgeConfiguration } from './knowledge.ts';
+import { selectKnowledge } from './knowledge-selection.ts';
 import { personaDirectives, readPersona, type Persona } from './persona.ts';
 import { characters, CONTROL_EXCEPT_LINE_BREAK_AND_TAB, requireTenant } from './shared.ts';
 
@@ -362,7 +363,9 @@ export async function generateReply(
   turns: readonly ConversationTurn[],
   options: { readonly conversationStart: boolean; readonly signal?: AiCallOptions['signal'] },
 ): Promise<ReplyOutcome> {
-  const instructions = replyInstructions(configuration, { conversationStart: options.conversationStart });
+  // Here rather than in a caller, so a preview selects exactly as a live reply does.
+  const grounded = { ...configuration, knowledge: selectKnowledge(configuration.knowledge, turns) };
+  const instructions = replyInstructions(grounded, { conversationStart: options.conversationStart });
   try {
     const result = await provider.generate({ instructions, turns }, { signal: options.signal });
     return { decision: interpretReply(result, configuration), usage: result.usage, failure: undefined };

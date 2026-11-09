@@ -46,12 +46,12 @@ import { parseMultilineText, requireTenant } from './shared.ts';
 /**
  * Limits, in characters (Unicode code points — what PostgreSQL counts).
  *
- * The spec assumes no hard limit and leaves any to implementation. These bound
- * what the reply path may have to send to the model, which is paid for on every
- * message on a free-tier provider (`cost-efficient-operation.md`): 4000
- * characters is a page of policy or a long FAQ answer per entry, and 100 entries
- * is far more than a small business writes by hand — documents are where bulk
- * knowledge belongs. The entry limit is mirrored by a CHECK in migration 0012.
+ * The spec assumes no hard limit and leaves any to implementation. 4000 characters
+ * is a page of policy or a long FAQ answer per entry, and 100 entries is far more
+ * than a small business writes by hand — documents are where bulk knowledge
+ * belongs. What one prompt may carry is bounded separately, by
+ * `KNOWLEDGE_SELECTION.promptBudget`, which must not fall below `entryMaxLength`.
+ * The entry limit is mirrored by a CHECK in migration 0012.
  */
 export const KNOWLEDGE_LIMITS = {
   entryMaxLength: 4000,
@@ -70,6 +70,11 @@ export interface KnowledgeEntry {
 export interface KnowledgeConfiguration {
   /** Every freeform entry, in creation order. */
   readonly entries: readonly KnowledgeEntry[];
+  /**
+   * Set only by `selectKnowledge`, when `entries` is a selection from a larger
+   * whole: the prompt must then say so (see `knowledgeDirectives`).
+   */
+  readonly partial?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -263,10 +268,9 @@ export function knowledgeConfigured(configuration: KnowledgeConfiguration): bool
  * to treat the entries as facts it must not contradict (AC5, AC6) and, by
  * omission, that a removed entry is no longer a fact the business asserts (AC8).
  *
- * Retrieval is intentionally unspecified by the spec. If the reply path ever
- * selects a relevant subset instead of passing every entry, it must pass that
- * subset to this function rather than render entries itself, so there stays one
- * definition of how knowledge is framed.
+ * The reply path passes what `selectKnowledge` chose. A selection adds one
+ * sentence: without it, a fact left out reads as a fact that is not so, and the
+ * bot tells a customer the business does not do something it does.
  *
  * Pure and deterministic: the only input is what the tenant's own connection read.
  */
@@ -277,8 +281,14 @@ export function knowledgeDirectives(configuration: KnowledgeConfiguration): stri
       'When a customer asks about something they cover, answer from them, and never state anything that contradicts them. ' +
       'Each fact is a quoted string:',
     ...configuration.entries.map((entry) => `- ${JSON.stringify(entry.content)}`),
+    ...(configuration.partial === true ? [PARTIAL_KNOWLEDGE_NOTE] : []),
   ].join('\n');
 }
+
+const PARTIAL_KNOWLEDGE_NOTE =
+  'These are only the facts most relevant to this conversation, not everything the business has told you. ' +
+  'If the customer asks about something specific to this business that they do not cover, do not guess and ' +
+  'do not say the business lacks it: take the "fallback" action with low_confidence.';
 
 /** One entry as the client's configuration screen shows it. */
 export function describeKnowledgeEntry(entry: KnowledgeEntry): {

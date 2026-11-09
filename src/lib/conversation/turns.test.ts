@@ -25,7 +25,19 @@ import assert from 'node:assert/strict';
 import { after, before, describe } from 'node:test';
 import { InMemoryAiProvider, type ObservedGeneration, type ObservedTranscription } from '@zeddev/ai/testing';
 import { MAX_REQUEST_MEDIA_BYTES, type AiCapability } from '@zeddev/ai';
-import { FALLBACK_CAUSES, FALLBACK_TRIGGERS, saveFallbackMessages, saveHandoffSettings, savePersona, setBotActive, setHandoffEnabled } from '@zeddev/bot';
+import {
+  createKnowledgeEntry,
+  deleteKnowledgeEntry,
+  FALLBACK_CAUSES,
+  FALLBACK_TRIGGERS,
+  KNOWLEDGE_SELECTION,
+  saveFallbackMessages,
+  saveHandoffSettings,
+  savePersona,
+  setBotActive,
+  setHandoffEnabled,
+  updateKnowledgeEntry,
+} from '@zeddev/bot';
 import { withIdentityScope, withTenant, type Connection, type Pool } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { MediaRetrievalError, ValidationError } from '@zeddev/errors';
@@ -80,6 +92,7 @@ const ACTIVATION = 'bot-activation-control.md';
 const IMAGE = 'image-message-understanding.md';
 const VOICE = 'voice-message-understanding.md';
 const VISIBILITY = 'client-conversation-visibility.md';
+const KNOWLEDGE = 'business-knowledge-configuration.md';
 
 const POLICY: AggregationPolicy = { windowMs: 5_000, maxTurnMs: 30_000 };
 const T0 = new Date('2026-03-02T10:00:00.000Z');
@@ -459,6 +472,87 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
       (turn) => `${turn.role}: ${turn.parts.map((part) => (part.type === 'text' ? part.text : `<${part.mediaType}>`)).join(' | ')}`,
     );
   }
+
+  // -------------------------------------------------------------------------
+  // Business knowledge, as the live reply path carries it
+  //
+  // What the model does with a fact needs a real model; what these assert is that
+  // the worker's own prompt, for the very next turn, holds the configuration as it
+  // now stands.
+  // -------------------------------------------------------------------------
+
+  /** Ask one question as a turn of its own and return the instructions the model was given for it. */
+  async function instructionsFor(
+    w: ReturnType<typeof world>,
+    tenant: string,
+    customer: string,
+    text: string,
+    atMs: number,
+  ): Promise<string> {
+    await w.receive(tenant, customer, { text }, { receivedMs: atMs });
+    await w.advanceTo(atMs);
+    await w.advanceTo(atMs + 6_000);
+    return w.generations().at(-1)!.instructions;
+  }
+
+  specTest(KNOWLEDGE, 'AC5 the response draws on configured knowledge', 'the worker’s prompt for a customer’s question carries the facts the client wrote', async () => {
+    const w = world();
+    const tenant = await liveTenant();
+    await withTenant(pool, tenant, (tx) => createKnowledgeEntry(tx, { content: 'Store hours are 9am-6pm.' }));
+    const instructions = await instructionsFor(w, tenant, '15550000701', 'when do you close?', 0);
+    assert.ok(instructions.includes(JSON.stringify('Store hours are 9am-6pm.')));
+    assert.match(instructions, /never state anything that contradicts them/);
+    assert.doesNotMatch(instructions, /only the facts most relevant/, 'all of it fits, so all of it is sent');
+  });
+
+  specTest(KNOWLEDGE, 'AC7 an edit or removal is reflected in the next message answered', 'the very next turn carries the edit, then the removal, with no other step', async () => {
+    const w = world();
+    const tenant = await liveTenant();
+    const customer = '15550000702';
+    const entry = await withTenant(pool, tenant, (tx) => createKnowledgeEntry(tx, { content: 'Store hours are 9am-6pm.' }));
+    assert.match(await instructionsFor(w, tenant, customer, 'hours?', 0), /9am-6pm/);
+
+    await withTenant(pool, tenant, (tx) => updateKnowledgeEntry(tx, { id: entry.id, content: 'Store hours are 10am-4pm.' }));
+    const edited = await instructionsFor(w, tenant, customer, 'hours again?', 60_000);
+    assert.match(edited, /10am-4pm/);
+    assert.doesNotMatch(edited, /9am-6pm/);
+
+    await withTenant(pool, tenant, (tx) => deleteKnowledgeEntry(tx, { id: entry.id }));
+    assert.doesNotMatch(await instructionsFor(w, tenant, customer, 'and now?', 120_000), /Store hours/);
+  });
+
+  specTest(KNOWLEDGE, 'AC11 each bot reflects only its own client’s knowledge', 'two tenants’ workers’ prompts carry their own facts and never the other’s', async () => {
+    const w = world();
+    const [first, second] = [await liveTenant(), await liveTenant()];
+    await withTenant(pool, first, (tx) => createKnowledgeEntry(tx, { content: 'We sell only marmalade.' }));
+    await withTenant(pool, second, (tx) => createKnowledgeEntry(tx, { content: 'We sell only bicycles.' }));
+    const firsts = await instructionsFor(w, first, '15550000703', 'what do you sell?', 0);
+    const seconds = await instructionsFor(w, second, '15550000703', 'what do you sell?', 60_000);
+    assert.match(firsts, /marmalade/);
+    assert.doesNotMatch(firsts, /bicycles/);
+    assert.match(seconds, /bicycles/);
+    assert.doesNotMatch(seconds, /marmalade/);
+  });
+
+  specTest(KNOWLEDGE, 'AC6 a configured fact reaches the reply that answers about it', 'over budget, the worker’s prompt stays bounded and carries the fact asked about, and the next message’s fact in turn', async () => {
+    const w = world();
+    const tenant = await liveTenant();
+    const customer = '15550000704';
+    const padding = ' Ask a member of staff for the details of this item.'.repeat(70).slice(0, 3_500);
+    await withTenant(pool, tenant, async (tx) => {
+      for (let i = 0; i < 10; i += 1) await createKnowledgeEntry(tx, { content: `Nothing to report on department ${i}.${padding}` });
+      await createKnowledgeEntry(tx, { content: `Refunds take fourteen days.${padding}` });
+      await createKnowledgeEntry(tx, { content: `Gift vouchers never expire.${padding}` });
+    });
+
+    const refunds = await instructionsFor(w, tenant, customer, 'how long do refunds take?', 0);
+    assert.match(refunds, /Refunds take fourteen days/);
+    assert.match(refunds, /only the facts most relevant to this conversation/);
+    assert.ok(refunds.length < KNOWLEDGE_SELECTION.promptBudget * 2, 'the prompt does not carry all 42,000 characters');
+
+    const vouchers = await instructionsFor(w, tenant, customer, 'gift vouchers, do they expire?', 60_000);
+    assert.match(vouchers, /Gift vouchers never expire/);
+  });
 
   // -------------------------------------------------------------------------
   // Grouping

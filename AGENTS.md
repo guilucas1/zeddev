@@ -115,6 +115,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   never a tenant parameter. An option list or limit mirrored by a SQL CHECK needs a test asserting the two agree.
   Shared validation helpers (code-point length counting, control-character rules, multi-line text parsing,
   `requireTenant`) live in `src/lib/bot/shared.ts`; do not copy them into a new module.
+- **Knowledge reaches a prompt through `selectKnowledge` then `knowledgeDirectives`**, both called on the `generateReply` path so preview and live agree. Do not render entries elsewhere. A new knowledge source (documents) must arrive as items no longer than `KNOWLEDGE_LIMITS.entryMaxLength`, or the most relevant item may not fit `KNOWLEDGE_SELECTION.promptBudget`.
 - **Readiness is defined once, in SQL**: `app.bot_readiness_unmet` in migration 0007. A new readiness
   condition needs a clause there, an AFTER trigger on its input table calling
   `app.reevaluate_bot_readiness_trigger()`, and an entry in `READINESS_CONDITIONS` in
@@ -248,6 +249,7 @@ too. See PROMPT_build.md/PROMPT_plan.md Step 0 for how the build/plan loops use 
   fixtures with a script instead; `src/lib/testing/source-text.test.ts` fails on any raw control character.
 - Long Bash heredocs mixing backticks and apostrophes can fail to parse in the Bash tool. Write the script with
   the Write tool (e.g. under `C:/Users/Guilherme/AppData/Local/Temp/`) and run it with `node`.
+- The Bash tool can collapse `\\` to `\` inside a heredoc, so a node edit script whose search string contains a backslash silently fails to match. Use the Edit tool for those.
 - Python is not usable on this machine (pyenv shim with no version set). Script file edits with `node`: write the script to a file with a quoted heredoc (`<<'EOF'`) and run
   `node "$(cygpath -w /tmp/x.js)"`. Inline `node -e "…"` mangles backslash escapes and backticks.
 - Tests can insert `inbound_messages` rows with an explicit `received_at` (the insert policy allows it) to

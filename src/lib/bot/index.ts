@@ -13,7 +13,8 @@
  * go-live toggle are `activation.ts`; behaviour rules are `behavior.ts`;
  * fallback messages are `fallback.ts`; the disclosure setting is `disclosure.ts`;
  * human-handoff configuration is `handoff.ts`; business knowledge is
- * `knowledge.ts`. `reply.ts` composes all of them into one reply prompt and
+ * `knowledge.ts`, and how much of it one prompt carries is
+ * `knowledge-selection.ts`. `reply.ts` composes all of them into one reply prompt and
  * reads the model's answer back. Language and memory policy follow in the same package.
  */
 
@@ -159,6 +160,8 @@ export {
   type KnowledgeConfiguration,
   type KnowledgeEntry,
 } from './knowledge.ts';
+
+export { KNOWLEDGE_SELECTION, selectKnowledge } from './knowledge-selection.ts';
 
 export {
   FALLBACK_CAUSES,

@@ -4,11 +4,10 @@
  * What these tests can prove today is the *instruction layer*: that what a client
  * writes is exactly what the reply path reads and renders into the bot's
  * instructions — every current entry, the latest edit and not the previous one,
- * nothing once removed, one tenant's entries and never another's. Whether a model
- * then answers consistently with them (AC5–AC8 read end to end) needs the P2
- * reply path and its AI port; those criteria are linked here at the layer this
- * package owns, and the P2 reply-path tests must cover them again against output.
- * Document upload (AC3, AC4, and the document halves of AC5, AC8, AC12) is not
+ * nothing once removed, one tenant's entries and never another's. The same facts
+ * in the worker's real prompt are covered in `@zeddev/conversation`'s `turns.test.ts`,
+ * and which entries a prompt carries in `knowledge-selection.test.ts`. Whether a
+ * model then answers consistently with them needs a live model. Document upload (AC3, AC4, and the document halves of AC5, AC8, AC12) is not
  * built yet.
  *
  * Isolation and "the next reply reflects the change" are row-level-security and

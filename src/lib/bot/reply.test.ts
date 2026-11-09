@@ -288,6 +288,52 @@ unitTest('generateReply sends the assembled instructions and the conversation un
   assert.deepEqual(seen.turns, [{ role: 'customer', parts: [{ type: 'text', text: 'Do you sell gift cards?' }] }]);
 });
 
+/** Forty entries of 500 characters: well over one prompt's budget, each findable by its own word. */
+function oversizedKnowledge(): ReplyConfiguration['knowledge'] {
+  const padding = ' Please ask a member of staff for details.'.repeat(11);
+  const topics = Array.from({ length: 39 }, (_, i) => `topic${i}xq`);
+  const contents = [...topics.map((topic) => `About ${topic}.`), 'Gift cards are sold from R$50.'];
+  return {
+    entries: contents.map((content, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      content: `${content}${padding}`.slice(0, 500).trim(),
+      createdAt: NOW,
+      updatedAt: NOW,
+    })),
+  };
+}
+
+unitTest('generateReply shows the model the knowledge selected for this conversation, and says it is a selection', async () => {
+  const provider = new InMemoryAiProvider({ reply: () => '[reply]\nYes, from R$50.' });
+  const knowledge = oversizedKnowledge();
+  const outcome = await generateReply(provider, configuration({ knowledge }), CUSTOMER_TURN, { conversationStart: false });
+  assert.deepEqual(outcome.decision, { path: 'reply', text: 'Yes, from R$50.' });
+  const seen = provider.backend.requests[0] as ObservedGeneration;
+  assert.ok(seen.instructions.includes('Gift cards are sold from R$50.'), 'the entry the customer asked about');
+  assert.ok(seen.instructions.length < JSON.stringify(knowledge.entries.map((entry) => entry.content)).length, 'not all of it');
+  assert.match(seen.instructions, /only the facts most relevant to this conversation/);
+});
+
+specTest(
+  'behavior-rules-configuration.md',
+  'AC16 preview demonstrates the same constraints as a real conversation',
+  'a preview selects knowledge exactly as the live path does for the same message',
+  async () => {
+    const answer = () => '[reply]\nYes.';
+    const message = 'Do you sell gift cards?';
+    const replyConfiguration = configuration({ knowledge: oversizedKnowledge() });
+    const preview = new InMemoryAiProvider({ reply: answer });
+    const fallback = { sharedMessage: 'Sorry.', triggerMessages: { ai_error: null, low_confidence: null, out_of_scope: null } };
+    await previewReply(preview, replyConfiguration, fallback, message);
+    const live = new InMemoryAiProvider({ reply: answer });
+    await generateReply(live, replyConfiguration, [{ role: 'customer', parts: [{ type: 'text', text: message }] }], { conversationStart: true });
+    assert.equal(
+      (preview.backend.requests[0] as ObservedGeneration).instructions,
+      (live.backend.requests[0] as ObservedGeneration).instructions,
+    );
+  },
+);
+
 specTest(
   'fallback-response-behavior.md',
   'AC5 the AI generation step fails outright and the customer still receives a fallback',
