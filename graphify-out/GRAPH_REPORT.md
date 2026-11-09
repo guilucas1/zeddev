@@ -1,24 +1,24 @@
 # Graph Report - zeddev  (2026-11-03)
 
 ## Corpus Check
-- 282 files · ~347,539 words
+- 293 files · ~357,071 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2690 nodes · 7447 edges · 140 communities (125 shown, 15 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 46 edges (avg confidence: 0.73)
+- 2788 nodes · 7695 edges · 136 communities (123 shown, 13 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 45 edges (avg confidence: 0.73)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `cf2de347`
+- Built from commit: `4f4f7a14`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- db/connection.ts
+- Connection
 - onboarding.test.ts
 - db/testing.ts
-- Specs Index
+- Implementation Plan
 - errors/index.ts
 - persona.ts
 - s3.ts
@@ -28,14 +28,14 @@
 - logging/index.ts
 - testing/index.ts
 - Diagnostics, Preflight Checks & Logging
-- cloud.ts
+- graph.ts
 - ai/index.ts
 - bot/index.ts
-- mail/index.ts
-- api/app.ts
+- mail/types.ts
+- ValidationError
 - WhatsApp Inbound Message Recording
 - api/start.ts
-- attempts.ts
+- adapter.ts
 - ai/memory.ts
 - gemini.ts
 - AI Config & Media Type Normalization
@@ -43,42 +43,42 @@
 - secrets/index.ts
 - s3.test.ts
 - whatsapp/index.ts
-- whatsapp-gateway/app.test.ts
-- IdentityService
-- message.ts
+- whatsapp-gateway/app.ts
+- withIdentityScope
+- mail/index.ts
 - transcript.ts
 - whatsapp/memory.ts
-- Connection
+- recovery.test.ts
 - turns.test.ts
-- codec.ts
-- ConfigurationError
+- dependencies
+- scheduler/start.test.ts
 - config/index.ts
-- scram.ts
-- conversation/index.ts
+- activation.test.ts
+- delivery.ts
 - behavior.ts
-- ValidationError
-- whatsapp/package.json
+- withTenant
+- conversation/package.json
 - dependencies
 - smtp.test.ts
 - transcript.test.ts
 - Conversation Turn & Handoff Status
 - handoff.ts
-- SmtpMailer
+- SmtpConnection
 - objectKey
 - DB Package Dependencies
 - Identity Access Principals & Authorization
-- Storage Package Dependencies
+- dependencies
 - sigv4.ts
 - s3wire.ts
 - ai/stubs.ts
-- MemorySink
+- conversation-worker/start.ts
 - identity/index.ts
 - Clock
 - S3 Wire Protocol Error Parsing
 - AGENTS.md Package Index & Manifests
 - Backoff & Clock Abstractions
 - Persona Formality & Text Parsing
-- Bot Package Dependencies
+- Pool
 - queue/index.ts
 - InMemoryQueue
 - S3ObjectStore
@@ -93,25 +93,23 @@
 - Conversation Worker Job Handlers
 - Schema Migrations Runner
 - disclosure.test.ts
-- .resolveClientSession
+- IdentityService
 - worker.ts
-- Conversation Turn Admission & Locking
+- whatsapp/package.json
 - Postgres Value Codec
 - Identity Package Dependencies
 - Tenant Test Fixtures
 - Config Package Dependencies
-- context.ts
+- inbound.test.ts
 - service.ts
-- WhatsApp Package Dependencies
+- scheduler/tsconfig.json
 - Mailer
 - time/index.ts
-- Tenant-Scoped Object Store Wrapper
 - Tenancy Package Dependencies
 - Identity Package Manifest
-- Implementation Plan
+- Cost-Efficient Operation Spec
 - ScriptedCloudBackend
 - Identity Session Principals
-- ObjectStore
 - conversation-worker/start.test.ts
 - Errors Package Dependencies
 - HTTP Package Dependencies
@@ -145,27 +143,25 @@
 - WhatsApp Gateway tsconfig
 - Local DB Script (db.sh)
 - Local Mail Script (mail.sh)
-- ai/config.ts
-- media.ts
-- withIdentityScope
+- ai/config.test.ts
+- conversation/index.ts
 - credentials.ts
-- graph.test.ts
-- WhatsAppCloud
-- AiProvider
+- cloud.ts
+- runAttempts
 - identity/package.json
 - TenantObjectStore
 - tokens.ts
 
 ## God Nodes (most connected - your core abstractions)
-1. `Connection` - 62 edges
-2. `unitTest()` - 62 edges
-3. `ValidationError` - 57 edges
-4. `specTest()` - 56 edges
+1. `unitTest()` - 64 edges
+2. `Connection` - 60 edges
+3. `specTest()` - 58 edges
+4. `ValidationError` - 57 edges
 5. `Pool` - 55 edges
-6. `withIdentityScope()` - 53 edges
-7. `Secret` - 52 edges
-8. `Logger` - 49 edges
-9. `Clock` - 49 edges
+6. `Logger` - 55 edges
+7. `withIdentityScope()` - 53 edges
+8. `Secret` - 53 edges
+9. `Clock` - 51 edges
 10. `withTenant()` - 47 edges
 
 ## Surprising Connections (you probably didn't know these)
@@ -175,10 +171,10 @@
   PROMPT_build.md → PROMPT_plan.md
 - `PROMPT_build.md Step 1 (graph-narrowed implementation search)` --semantically_similar_to--> `PROMPT_plan.md Step 1 (graph-based gap analysis)`  [INFERRED] [semantically similar]
   PROMPT_build.md → PROMPT_plan.md
-- `Decision: Readiness defined once in SQL with triggers` --rationale_for--> `Bot Activation Control Spec`  [EXTRACTED]
-  IMPLEMENTATION_PLAN.md → specs/bot-activation-control.md
-- `Decision: Four-step WhatsApp connection verification state machine` --rationale_for--> `Bot Activation Control Spec`  [EXTRACTED]
-  IMPLEMENTATION_PLAN.md → specs/bot-activation-control.md
+- `Implementation Plan` --references--> `Configuration Reference`  [EXTRACTED]
+  IMPLEMENTATION_PLAN.md → docs/configuration.md
+- `Decision: Log redaction as an allowlist` --rationale_for--> `Credential and Secret Handling Spec`  [INFERRED]
+  IMPLEMENTATION_PLAN.md → specs/credential-and-secret-handling.md
 
 ## Import Cycles
 - None detected.
@@ -193,206 +189,202 @@
 - **Specs Consuming the WhatsApp Connection State Vocabulary** — specs_whatsapp_number_connection_state_vocabulary, specs_whatsapp_number_connection_whatsapp_number_connection, specs_operator_health_monitoring_operator_health_monitoring, specs_operator_proactive_alerting_operator_proactive_alerting, specs_message_delivery_reliability_message_delivery_reliability [EXTRACTED 1.00]
 - **Specs Applying Tenant Data Isolation As a Cross-Cutting Constraint** — specs_tenant_data_isolation_tenant_data_isolation, specs_message_burst_aggregation_message_burst_aggregation, specs_message_delivery_reliability_message_delivery_reliability, specs_image_message_understanding_image_message_understanding, specs_language_configuration_language_configuration, specs_persona_and_tone_configuration_persona_and_tone_configuration, specs_environment_portability_environment_portability, specs_human_handoff_human_handoff [INFERRED 0.85]
 
-## Communities (140 total, 15 thin omitted)
+## Communities (136 total, 13 thin omitted)
 
-### Community 0 - "db/connection.ts"
-Cohesion: 0.15
-Nodes (23): NotificationHandler, PendingOperation, QueryResult, SslMode, BackendNotification, bindMessage(), describeMessage(), executeMessage() (+15 more)
+### Community 0 - "Connection"
+Cohesion: 0.05
+Nodes (53): RFC-5802, RFC-7677, ARRAY_ELEMENT, arrayLiteral(), decodeValue(), encodeParam(), normalizeTimestampText(), OID (+45 more)
 
 ### Community 1 - "onboarding.test.ts"
-Cohesion: 0.07
-Nodes (58): ConflictError, CONNECTION_ERROR_REASONS, CONNECTION_STATES, CONNECTION_TRANSITIONS, connectionHistory(), ConnectionRow, ConnectionState, ConnectionStatus (+50 more)
+Cohesion: 0.09
+Nodes (48): META_ID, disconnectWhatsApp(), fromRow(), readConnection(), requireTenant(), transitionConnection(), assignPhoneNumber(), connectedTenant() (+40 more)
 
 ### Community 2 - "db/testing.ts"
 Cohesion: 0.18
-Nodes (17): withPlatformScope(), adminOptions(), createTestDatabase(), envValue(), maintenanceDatabase(), onAdmin(), SKIP_REASON, TestDatabase (+9 more)
+Nodes (14): adminOptions(), createTestDatabase(), envValue(), maintenanceDatabase(), onAdmin(), SKIP_REASON, TestDatabase, testDatabaseConfigured() (+6 more)
 
-### Community 3 - "Specs Index"
-Cohesion: 0.30
-Nodes (16): Decision: Log redaction as an allowlist, Decision: Tagged first-line reply output protocol, Decision: Tenant isolation enforced in the database via row-level security, Decision: Configured list of sealing keys for tenant secrets, AI Provider Portability Spec, Authentication and Access Spec, Behavior Rules Configuration Spec, Bot Activation Control Spec (+8 more)
+### Community 3 - "Implementation Plan"
+Cohesion: 0.20
+Nodes (26): Decision: Readiness defined once in SQL with triggers, Decision: Round-robin tenant-fair queue dispatch, Decision: Log redaction as an allowlist, Decision: Migrations are forward-only, Decision: Node 24 native TypeScript type stripping, no build step, Decision: Tagged first-line reply output protocol, Decision: Ports-and-adapters for every external dependency, Decision: Tenant isolation enforced in the database via row-level security (+18 more)
 
 ### Community 4 - "errors/index.ts"
-Cohesion: 0.12
-Nodes (16): AiGenerationError, AiRequestRejectedError, AuthorizationError, ConnectionRevokedError, DuplicateError, ERROR_KINDS, ErrorContext, ErrorKind (+8 more)
+Cohesion: 0.08
+Nodes (26): COMPLETE_ENV, CONFIGURATION_CLASSES, FailureContext, mapPostgresFailure(), PostgresFailure, RETRYABLE_CLASSES, RETRYABLE_CODES, VALIDATION_CODES (+18 more)
 
 ### Community 5 - "persona.ts"
-Cohesion: 0.14
-Nodes (23): phrase(), clearFreeformInstructions(), describePersona(), Formality, FORMALITY_DIRECTIVES, FORMALITY_LEVELS, fromRow(), parsePersonaInput() (+15 more)
+Cohesion: 0.13
+Nodes (25): phrase(), conditionList(), clearFreeformInstructions(), describePersona(), Formality, FORMALITY_DIRECTIVES, FORMALITY_LEVELS, fromRow() (+17 more)
 
 ### Community 6 - "s3.ts"
-Cohesion: 0.15
-Nodes (28): STORAGE_CONFIG_SCHEMA, memoryHarness, TENANTS, StoredEntry, ADDRESSING_STYLES, AddressingStyle, S3Request, sha256Hex() (+20 more)
+Cohesion: 0.17
+Nodes (24): STORAGE_CONFIG_SCHEMA, memoryHarness, TENANTS, StoredEntry, ADDRESSING_STYLES, AddressingStyle, S3Request, sha256Hex() (+16 more)
 
 ### Community 7 - "db/index.ts"
-Cohesion: 0.12
-Nodes (26): DATABASE_CONFIG_SCHEMA, ConnectionOptions, SSL_MODES, DatabaseConfig, AppliedMigration, appliedMigrations(), checksum(), loadMigrations() (+18 more)
+Cohesion: 0.14
+Nodes (22): DATABASE_CONFIG_SCHEMA, ConnectionOptions, SSL_MODES, DatabaseConfig, AppliedMigration, appliedMigrations(), checksum(), loadMigrations() (+14 more)
 
 ### Community 8 - "reply.ts"
-Cohesion: 0.08
-Nodes (36): FallbackSource, handoffDirectives(), personaDirectives(), describeReplyDecision(), FALLBACK_CAUSES, FallbackCause, fallbackDecision(), generateReply() (+28 more)
+Cohesion: 0.09
+Nodes (35): disclosureDirectives(), handoffDirectives(), personaDirectives(), describeReplyDecision(), FALLBACK_CAUSES, FallbackCause, fallbackDecision(), generateReply() (+27 more)
 
 ### Community 9 - "mail/fixtures.ts"
 Cohesion: 0.10
-Nodes (23): MailFixture, MailHarness, runMailConformance(), RFC-3834, api(), createTestMailbox(), DecodedMail, decodeEncodedWords() (+15 more)
+Nodes (20): MailHarness, api(), createTestMailbox(), DecodedMail, decodeEncodedWords(), decodeMail(), envValue(), MailpitSummary (+12 more)
 
 ### Community 10 - "logging/index.ts"
 Cohesion: 0.08
-Nodes (23): issuesOf(), issuesOf(), issuesOf(), issuesOf(), issuesOf(), issuesOf(), Diagnostic, LEVEL_RANK (+15 more)
+Nodes (21): issuesOf(), issuesOf(), issuesOf(), issuesOf(), issuesOf(), issuesOf(), Diagnostic, LEVEL_RANK (+13 more)
 
 ### Community 11 - "testing/index.ts"
-Cohesion: 0.09
-Nodes (25): bySpec, coverageFile, entries, specs, uncovered, workDir, COMPLETE_ENV, REFERENCE_PATH (+17 more)
+Cohesion: 0.10
+Nodes (24): bySpec, coverageFile, entries, specs, uncovered, workDir, REFERENCE_PATH, runMailConformance() (+16 more)
 
 ### Community 12 - "Diagnostics, Preflight Checks & Logging"
 Cohesion: 0.05
 Nodes (36): dependencies, @zeddev/ai, @zeddev/config, @zeddev/conversation, @zeddev/db, @zeddev/errors, @zeddev/logging, @zeddev/queue (+28 more)
 
-### Community 13 - "cloud.ts"
-Cohesion: 0.10
-Nodes (38): assertCloudCredentials(), assertMediaRequest(), assertSendableText(), BusinessAccountProfile, classifyCloudFailure(), CLOUD_ERROR_CODES, CLOUD_RECOVERABLE_REASONS, CloudCredentials (+30 more)
+### Community 13 - "graph.ts"
+Cohesion: 0.12
+Nodes (25): assertCloudCredentials(), assertMediaRequest(), BusinessAccountProfile, CloudCredentials, CloudDescriptor, MediaRequest, mediaTooLarge(), NumberProfile (+17 more)
 
 ### Community 14 - "ai/index.ts"
-Cohesion: 0.17
-Nodes (25): appendPart(), audioMediaType(), baseMediaType(), capabilityRejected(), imageMediaType(), mediaTooLarge(), NormalizedGeneration, NormalizedTranscription (+17 more)
+Cohesion: 0.14
+Nodes (31): AI_CONFIG_SCHEMA, AiConfig, loadAiConfig(), loadAiSettings(), AI_PROVIDERS, appendPart(), audioMediaType(), baseMediaType() (+23 more)
 
 ### Community 15 - "bot/index.ts"
-Cohesion: 0.17
-Nodes (24): ACTIVATION_CAUSES, ActivationCause, ActivationEvent, BotStatus, describeBotStatus(), fromRow(), listBotStatuses(), mayAutoRespond() (+16 more)
+Cohesion: 0.08
+Nodes (46): ACTIVATION_CAUSES, ActivationCause, ActivationEvent, BotStatus, describeBotStatus(), fromRow(), listBotStatuses(), mayAutoRespond() (+38 more)
 
-### Community 16 - "mail/index.ts"
-Cohesion: 0.18
-Nodes (17): loadMailConfig(), loadSmtpSettings(), MAIL_CONFIG_SCHEMA, MailConfig, BASE, memoryHarness, MINIMAL_ENV, RFC-5322 (+9 more)
+### Community 16 - "mail/types.ts"
+Cohesion: 0.31
+Nodes (6): mintMessageId(), MAIL_TLS_MODES, MailMessage, MailTlsMode, SentMail, RFC-2047
 
-### Community 17 - "api/app.ts"
-Cohesion: 0.05
-Nodes (51): AuthenticationError, TransientTransportError, HttpError, readBody(), SECURITY_HEADERS, ACCEPTED, Api, ApiDependencies (+43 more)
+### Community 17 - "ValidationError"
+Cohesion: 0.08
+Nodes (33): AuthenticationError, TransientTransportError, ValidationError, ACCEPTED, Api, CLIENT_COOKIE_PATH, OPERATOR_COOKIE_PATH, RequestContext (+25 more)
 
 ### Community 18 - "WhatsApp Inbound Message Recording"
 Cohesion: 0.13
 Nodes (31): Configuration-Driven Behavior (No Environment Branching), Environment Portability, Fallback Message Precedence Order, Fallback Response Behavior, Fixed, Non-Generated Fallback Text, Per-Conversation Handoff Pause Scope, Handoff Trigger Conditions, Human Handoff (+23 more)
 
 ### Community 19 - "api/start.ts"
-Cohesion: 0.23
-Nodes (21): loadAiConfig(), loadAiSettings(), loadAll(), loadConfig(), RawEnv, createPool(), loadDatabaseConfig(), assertTenantIsolationEnforceable() (+13 more)
+Cohesion: 0.12
+Nodes (33): Config, ConfigSchema, loadAll(), loadConfig(), RawEnv, createPool(), loadDatabaseConfig(), assertTenantIsolationEnforceable() (+25 more)
 
-### Community 20 - "attempts.ts"
-Cohesion: 0.13
-Nodes (18): AdapterCore, AdapterDependencies, DEFAULT_AI_BACKOFF, AttemptOutcome, AttemptPolicy, AttemptTimedOut, Failure, MAX_ERROR_BODY_BYTES (+10 more)
+### Community 20 - "adapter.ts"
+Cohesion: 0.17
+Nodes (7): AdapterCore, DEFAULT_AI_BACKOFF, AttemptOutcome, AttemptPolicy, parseRetryAfter(), readErrorBody(), AiProviderDescriptor
 
 ### Community 21 - "ai/memory.ts"
-Cohesion: 0.10
+Cohesion: 0.11
 Nodes (23): AiFixture, AiFixtureOptions, AiHarness, ALL, JPEG, OGG, PNG, rejection() (+15 more)
 
 ### Community 22 - "gemini.ts"
-Cohesion: 0.16
-Nodes (24): base64(), asRecord(), contentFiltered(), emptyResponse(), malformedResponse(), safeProviderCode(), tokenCount(), decode() (+16 more)
+Cohesion: 0.15
+Nodes (29): base64(), asRecord(), AttemptTimedOut, contentFiltered(), emptyResponse(), Failure, malformedResponse(), MAX_ERROR_BODY_BYTES (+21 more)
 
 ### Community 23 - "AI Config & Media Type Normalization"
 Cohesion: 0.07
 Nodes (27): devDependencies, @types/node, typescript, engines, node, name, private, scripts (+19 more)
 
 ### Community 24 - "knowledge.test.ts"
-Cohesion: 0.14
-Nodes (29): createKnowledgeEntry(), deleteKnowledgeEntry(), describeKnowledge(), describeKnowledgeEntry(), describeKnowledgeStatus(), entryContent(), entryId(), entryNotFound() (+21 more)
+Cohesion: 0.13
+Nodes (30): createKnowledgeEntry(), deleteKnowledgeEntry(), describeKnowledge(), describeKnowledgeEntry(), describeKnowledgeStatus(), entryContent(), entryId(), entryNotFound() (+22 more)
 
 ### Community 25 - "secrets/index.ts"
-Cohesion: 0.12
-Nodes (30): generateSealingKey(), parseSealingKey(), SCRYPT_DEFAULTS, SealingKey, SECRET_CLASSES, SecretAccessRecord, SecretClass, secretRef() (+22 more)
+Cohesion: 0.06
+Nodes (45): generateSealingKey(), parseSealingKey(), SCRYPT_DEFAULTS, SealingKey, SECRET_CLASSES, SecretAccessRecord, SecretClass, secretRef() (+37 more)
 
 ### Community 26 - "s3.test.ts"
 Cohesion: 0.10
 Nodes (23): HarnessOptions, runStorageConformance(), StorageFixture, StorageHarness, createTestBucket(), envValue(), SKIP_REASON, storageTestConfigured() (+15 more)
 
 ### Community 27 - "whatsapp/index.ts"
+Cohesion: 0.10
+Nodes (36): CONNECTION_ERROR_REASONS, CONNECTION_STATES, CONNECTION_TRANSITIONS, ConnectionRow, ConnectionState, ConnectionStatus, ConnectionTransition, describeConnection() (+28 more)
+
+### Community 28 - "whatsapp-gateway/app.ts"
+Cohesion: 0.16
+Nodes (16): HttpError, readBody(), SECURITY_HEADERS, WhatsAppConfig, createGateway(), digest(), Gateway, GatewayDependencies (+8 more)
+
+### Community 29 - "withIdentityScope"
+Cohesion: 0.13
+Nodes (21): newTenant(), newTenant(), newTenant(), newTenant(), newTenant(), newTenant(), withIdentityScope(), recordAccess() (+13 more)
+
+### Community 30 - "mail/index.ts"
 Cohesion: 0.12
-Nodes (32): withInboundScope(), arrayOf(), assignPhoneNumber(), attributeInboundNumber(), fromRow(), INBOUND_MESSAGE_TYPES, INBOUND_REJECTION_REASONS, InboundBatch (+24 more)
-
-### Community 28 - "whatsapp-gateway/app.test.ts"
-Cohesion: 0.12
-Nodes (20): endCustomerRef(), INBOUND_JOB_KIND, INBOUND_QUEUE, createGateway(), digest(), Gateway, GatewayDependencies, InboundScheduler (+12 more)
-
-### Community 29 - "IdentityService"
-Cohesion: 0.27
-Nodes (8): recordAccess(), recordAccessOutOfBand(), assertEmail(), assertPasswordStrength(), IdentityService, secs(), mintToken(), verifyCredential()
-
-### Community 30 - "message.ts"
-Cohesion: 0.14
-Nodes (21): ADDRESS_FORBIDDEN, assertEnvelopeAddress(), assertHeaderText(), base64Body(), buildMessage(), BuildMessageInput, DAYS, encodeHeaderText() (+13 more)
+Nodes (30): MAIL_CONFIG_SCHEMA, MailConfig, BASE, memoryHarness, MINIMAL_ENV, RFC-5322, ADDRESS_FORBIDDEN, assertEnvelopeAddress() (+22 more)
 
 ### Community 31 - "transcript.ts"
-Cohesion: 0.09
-Nodes (41): BotEntry, CONVERSATION_LIST_FIELDS, ConversationListPage, ConversationSummary, cursorOf(), CustomerEntry, CustomerEntryBase, describeConversationSummary() (+33 more)
+Cohesion: 0.10
+Nodes (33): BotEntry, CONVERSATION_LIST_FIELDS, ConversationListPage, ConversationSummary, cursorOf(), CustomerEntry, CustomerEntryBase, describeConversationSummary() (+25 more)
 
 ### Community 32 - "whatsapp/memory.ts"
-Cohesion: 0.13
+Cohesion: 0.14
 Nodes (23): AccountState, ANSWER_LOST, CLOUD_OPERATIONS, CloudOperation, DescribedMedia, InMemoryWhatsAppCloudOptions, isAnswerLost(), isScriptedFailure() (+15 more)
 
-### Community 33 - "Connection"
-Cohesion: 0.16
-Nodes (5): Connection, toPostgresFailure(), parseNotification(), queryMessage(), splitMessages()
+### Community 33 - "recovery.test.ts"
+Cohesion: 0.08
+Nodes (29): CloudLinkProbe, probeCloudLink(), WhatsAppCloud, ConnectionErrorReason, connectionHistory(), claimRecoveryProbe(), listConnectionsDueForRecovery(), recoverOne() (+21 more)
 
 ### Community 34 - "turns.test.ts"
 Cohesion: 0.08
-Nodes (14): INBOUND_DISPOSITIONS, BoardFailure, BoardJob, cloudBackend, deliveryOf(), handoffTenant(), liveTenant(), OutcomeRow (+6 more)
+Nodes (14): BoardFailure, BoardJob, cloudBackend, deliveryOf(), handoffTenant(), liveTenant(), OutcomeRow, outcomesOf() (+6 more)
 
-### Community 35 - "codec.ts"
-Cohesion: 0.40
-Nodes (9): ARRAY_ELEMENT, arrayLiteral(), decodeValue(), encodeParam(), normalizeTimestampText(), OID, parseArrayText(), rowCountFromTag() (+1 more)
+### Community 35 - "dependencies"
+Cohesion: 0.06
+Nodes (32): dependencies, @zeddev/config, @zeddev/db, @zeddev/errors, @zeddev/logging, @zeddev/queue, @zeddev/schema, @zeddev/time (+24 more)
 
-### Community 36 - "ConfigurationError"
-Cohesion: 0.39
-Nodes (4): ConfigurationError, loadSealer(), loadVaultConfig(), VAULT_CONFIG_SCHEMA
+### Community 36 - "scheduler/start.test.ts"
+Cohesion: 0.17
+Nodes (14): loadSchedulerSettings(), SCHEDULER_CONFIG_SCHEMA, SchedulerConfig, SchedulerSettings, logger, runSchedule(), ScheduledTask, RunningScheduler (+6 more)
 
 ### Community 37 - "config/index.ts"
-Cohesion: 0.10
-Nodes (30): target, BaseSpec, BooleanSpec, Config, ConfigSchema, ConfigSpec, ConfigValueType, DURATION_UNITS (+22 more)
+Cohesion: 0.11
+Nodes (25): target, BaseSpec, BooleanSpec, ConfigSpec, ConfigValueType, DURATION_UNITS, DurationSpec, EnumSpec (+17 more)
 
-### Community 38 - "scram.ts"
-Cohesion: 0.15
-Nodes (14): RFC-5802, RFC-7677, hmac(), md5Password(), parseServerFinal(), parseServerFirst(), pbkdf2, SCRAM_SHA_256 (+6 more)
-
-### Community 39 - "conversation/index.ts"
+### Community 38 - "activation.test.ts"
 Cohesion: 0.21
-Nodes (18): claimDelivery(), DELIVERY_FAILURES, DELIVERY_JOB_KIND, DELIVERY_LIMITS, DELIVERY_PRINCIPAL, DELIVERY_STATES, DeliveryAttemptOutcome, DeliveryClaim (+10 more)
+Nodes (13): configure(), connect(), liveTenant(), newTenant(), readyTenant(), ConflictError, DISPATCH_READABLE_TABLES, INBOUND_SCOPE_TABLES (+5 more)
+
+### Community 39 - "delivery.ts"
+Cohesion: 0.14
+Nodes (20): claimDelivery(), DELIVERY_FAILURES, DELIVERY_LIMITS, DELIVERY_PRINCIPAL, DELIVERY_STATES, DeliveryClaim, DeliveryFailure, deliveryJob() (+12 more)
 
 ### Community 40 - "behavior.ts"
 Cohesion: 0.11
-Nodes (41): ACTION_DIRECTIVES, BEHAVIOR_LIMITS, BehaviorConfiguration, behaviorDirectives(), BehaviorRule, clearBehaviorInstructions(), CONDITION_BY_KIND, createBehaviorRule() (+33 more)
+Nodes (40): ACTION_DIRECTIVES, BEHAVIOR_LIMITS, BehaviorConfiguration, behaviorDirectives(), BehaviorRule, clearBehaviorInstructions(), CONDITION_BY_KIND, createBehaviorRule() (+32 more)
 
-### Community 41 - "ValidationError"
-Cohesion: 0.16
-Nodes (23): describeFallbackMessages(), FALLBACK_FIELDS, FALLBACK_LIMITS, FALLBACK_TRIGGERS, FallbackInput, fallbackMessageFor(), FallbackMessages, FallbackRow (+15 more)
-
-### Community 42 - "whatsapp/package.json"
+### Community 41 - "withTenant"
 Cohesion: 0.17
-Nodes (11): devDependencies, @zeddev/schema, @zeddev/testing, exports, ./testing, @zeddev/schema, @zeddev/testing, name (+3 more)
+Nodes (9): save(), sent(), sentForEveryTrigger(), replyPersona(), withPlatformScope(), withTenant(), move(), jobsOf() (+1 more)
+
+### Community 42 - "conversation/package.json"
+Cohesion: 0.17
+Nodes (11): devDependencies, @zeddev/schema, @zeddev/testing, exports, @zeddev/schema, @zeddev/testing, name, private (+3 more)
 
 ### Community 43 - "dependencies"
-Cohesion: 0.07
-Nodes (29): dependencies, @zeddev/ai, @zeddev/bot, @zeddev/db, @zeddev/errors, @zeddev/logging, @zeddev/queue, @zeddev/secrets (+21 more)
+Cohesion: 0.11
+Nodes (19): dependencies, @zeddev/ai, @zeddev/bot, @zeddev/db, @zeddev/errors, @zeddev/logging, @zeddev/queue, @zeddev/secrets (+11 more)
 
 ### Community 44 - "smtp.test.ts"
-Cohesion: 0.09
-Nodes (21): RFC-821, BuiltMessage, asConfigurationError(), assertCommandSafe(), AttemptState, Phase, PHASE_CONFIG_KEYS, replyFailure() (+13 more)
+Cohesion: 0.10
+Nodes (22): RFC-821, asConfigurationError(), assertCommandSafe(), AttemptState, Phase, PHASE_CONFIG_KEYS, replyFailure(), SmtpMailer (+14 more)
 
 ### Community 45 - "transcript.test.ts"
-Cohesion: 0.13
-Nodes (13): ConversationListQuery, Answer, at(), closeTogether(), conversationOf(), hold(), HUMAN_REQUEST, listAll (+5 more)
+Cohesion: 0.10
+Nodes (19): ConversationListQuery, parseConversationListInput(), parseTranscriptInput(), readLimit(), refuseUnknown(), Answer, at(), closeTogether() (+11 more)
 
 ### Community 46 - "Conversation Turn & Handoff Status"
 Cohesion: 0.10
 Nodes (20): es2023, node, compilerOptions, allowImportingTsExtensions, erasableSyntaxOnly, exactOptionalPropertyTypes, isolatedModules, lib (+12 more)
 
 ### Community 47 - "handoff.ts"
-Cohesion: 0.11
-Nodes (32): conditionList(), describeHandoffSettings(), enabledFlag(), fromRow(), HANDOFF_FIELDS, HANDOFF_LIMITS, HANDOFF_TRIGGER_DESCRIPTIONS, HANDOFF_TRIGGERS (+24 more)
-
-### Community 48 - "SmtpMailer"
-Cohesion: 0.20
-Nodes (3): Session, SmtpMailer, SmtpConnection
+Cohesion: 0.12
+Nodes (31): describeHandoffSettings(), enabledFlag(), fromRow(), HANDOFF_FIELDS, HANDOFF_LIMITS, HANDOFF_TRIGGER_DESCRIPTIONS, HANDOFF_TRIGGERS, HandoffDecision (+23 more)
 
 ### Community 49 - "objectKey"
-Cohesion: 0.25
+Cohesion: 0.27
 Nodes (9): InMemoryTenantObjectStore, parseDate(), S3TenantObjectStore, assertObjectId(), assertObjectKind(), assertOwnedBy(), objectKey(), ObjectRef (+1 more)
 
 ### Community 50 - "DB Package Dependencies"
@@ -403,33 +395,33 @@ Nodes (20): dependencies, @zeddev/db, @zeddev/errors, @zeddev/logging, @zeddev/t
 Cohesion: 0.09
 Nodes (22): dependencies, @zeddev/config, @zeddev/errors, @zeddev/logging, @zeddev/secrets, @zeddev/tenancy, @zeddev/time, devDependencies (+14 more)
 
-### Community 52 - "Storage Package Dependencies"
+### Community 52 - "dependencies"
 Cohesion: 0.06
-Nodes (33): dependencies, @zeddev/ai, @zeddev/api, @zeddev/config, @zeddev/conversation-worker, @zeddev/db, @zeddev/identity, @zeddev/logging (+25 more)
+Nodes (35): dependencies, @zeddev/ai, @zeddev/api, @zeddev/config, @zeddev/conversation-worker, @zeddev/db, @zeddev/identity, @zeddev/logging (+27 more)
 
 ### Community 53 - "sigv4.ts"
-Cohesion: 0.25
-Nodes (18): amzDate(), canonicalHeaders, canonicalQuery(), canonicalRequest(), canonicalUri(), credentialScope(), EMPTY_PAYLOAD_SHA256, hmac() (+10 more)
+Cohesion: 0.23
+Nodes (19): amzDate(), canonicalHeaders, canonicalQuery(), canonicalRequest(), canonicalUri(), credentialScope(), EMPTY_PAYLOAD_SHA256, hmac() (+11 more)
 
 ### Community 54 - "s3wire.ts"
 Cohesion: 0.23
 Nodes (13): CREDENTIAL_CODES, decodeEntities(), elementBlocks(), elementText(), ENTITIES, FailureContext, ListedKey, ListPage (+5 more)
 
 ### Community 55 - "ai/stubs.ts"
-Cohesion: 0.35
-Nodes (11): BASE_PATHS, decodeOpenAiContent(), firstText(), geminiError(), handleGemini(), handleOpenAi(), misbehave(), openAiError() (+3 more)
+Cohesion: 0.28
+Nodes (13): SCRIPTED_FAILURE_STATUS, BASE_PATHS, decodeOpenAiContent(), firstText(), geminiError(), handleGemini(), handleOpenAi(), misbehave() (+5 more)
 
-### Community 56 - "MemorySink"
-Cohesion: 0.15
-Nodes (6): JsonLinesSink, LogSink, MemorySink, NullSink, StartOptions, StartWorkerOptions
+### Community 56 - "conversation-worker/start.ts"
+Cohesion: 0.17
+Nodes (11): JsonLinesSink, LogSink, NullSink, INBOUND_QUEUE, loadWorkerSettings(), WORKER_CONFIG_SCHEMA, WorkerConfig, WorkerSettings (+3 more)
 
 ### Community 57 - "identity/index.ts"
 Cohesion: 0.21
-Nodes (18): ACCESS_PRINCIPAL_TYPES, AccessPrincipalType, AccessRecordInput, DENIAL_REASONS, DenialReason, ACTION_PRINCIPALS, actionPrincipalType(), ACTIONS (+10 more)
+Nodes (17): ACCESS_PRINCIPAL_TYPES, AccessPrincipalType, AccessRecordInput, DENIAL_REASONS, DenialReason, IdentityConfig, ACTION_PRINCIPALS, actionPrincipalType() (+9 more)
 
 ### Community 58 - "Clock"
 Cohesion: 0.12
-Nodes (8): ConsumerOptions, JobHandler, runConsumer(), sleepQuietly(), waitForSomething(), InMemoryQueueOptions, Queue, Clock
+Nodes (9): LoggerOptions, ConsumerOptions, JobHandler, runConsumer(), sleepQuietly(), waitForSomething(), InMemoryQueueOptions, Queue (+1 more)
 
 ### Community 59 - "S3 Wire Protocol Error Parsing"
 Cohesion: 0.07
@@ -448,8 +440,12 @@ Cohesion: 0.14
 Nodes (13): dependencies, @zeddev/db, @zeddev/logging, devDependencies, @zeddev/testing, exports, @zeddev/db, @zeddev/logging (+5 more)
 
 ### Community 64 - "queue/index.ts"
-Cohesion: 0.24
-Nodes (15): DeliveryScheduler, DEFAULT_BACKOFF, StoredJob, ClaimRow, PostgresQueueOptions, assertQueueName(), ClaimOptions, digestKey() (+7 more)
+Cohesion: 0.27
+Nodes (14): DEFAULT_BACKOFF, StoredJob, ClaimRow, PostgresQueueOptions, assertQueueName(), ClaimOptions, digestKey(), EnqueueRequest (+6 more)
+
+### Community 66 - "S3ObjectStore"
+Cohesion: 0.22
+Nodes (4): TransportResponse, S3ObjectStore, parseObjectKey(), tenantPrefix()
 
 ### Community 68 - "dependencies"
 Cohesion: 0.13
@@ -473,11 +469,11 @@ Nodes (27): AdmissionResult, admitLocked(), admitPendingMessages(), assertPolicy
 
 ### Community 73 - "PostgresQueue"
 Cohesion: 0.18
-Nodes (3): withDispatchScope(), toDiagnostic(), PostgresQueue
+Nodes (4): bindTenantContext(), withDispatchScope(), toDiagnostic(), PostgresQueue
 
 ### Community 74 - "mail/package.json"
-Cohesion: 0.18
-Nodes (10): devDependencies, @zeddev/testing, exports, ./testing, @zeddev/testing, name, private, type (+2 more)
+Cohesion: 0.13
+Nodes (14): compose.yaml (Docker Compose Stack), postgres Compose service, Configuration Reference, devDependencies, @zeddev/testing, exports, ./testing, @zeddev/testing (+6 more)
 
 ### Community 75 - "Conversation Worker Job Handlers"
 Cohesion: 0.09
@@ -488,20 +484,20 @@ Cohesion: 0.10
 Nodes (19): dependencies, @zeddev/config, @zeddev/db, @zeddev/errors, @zeddev/secrets, devDependencies, @zeddev/schema, @zeddev/testing (+11 more)
 
 ### Community 77 - "disclosure.test.ts"
-Cohesion: 0.17
-Nodes (20): describeDisclosureSetting(), DISCLOSURE_FIELDS, DISCLOSURE_MODES, disclosureDirectives(), DisclosureMode, disclosureModeFor(), DisclosureRow, DisclosureSetting (+12 more)
+Cohesion: 0.36
+Nodes (9): DISCLOSURE_MODES, disclosureModeFor(), fromRow(), parseDisclosureInput(), readDisclosureSetting(), saveDisclosureSetting(), choose(), directives() (+1 more)
 
-### Community 78 - ".resolveClientSession"
-Cohesion: 0.31
-Nodes (3): Action, ClientPrincipal, OperatorPrincipal
+### Community 78 - "IdentityService"
+Cohesion: 0.21
+Nodes (8): IdentityPolicy, Action, ClientPrincipal, OperatorPrincipal, Principal, principalId(), IdentityService, ScryptParams
 
 ### Community 79 - "worker.ts"
-Cohesion: 0.18
-Nodes (14): recordMediaUnderstanding(), understandTurnMedia(), AggregationPolicy, PreparedTurn, JobBoard, TURN_JOB_KIND, TurnScheduler, conversationHandlers() (+6 more)
+Cohesion: 0.16
+Nodes (15): DELIVERY_JOB_KIND, DeliveryAttemptOutcome, AggregationPolicy, PreparedTurn, JobBoard, TURN_JOB_KIND, TurnScheduler, conversationHandlers() (+7 more)
 
-### Community 80 - "Conversation Turn Admission & Locking"
-Cohesion: 0.15
-Nodes (13): dependencies, @zeddev/config, @zeddev/db, @zeddev/errors, @zeddev/secrets, @zeddev/time, @zeddev/vault, @zeddev/config (+5 more)
+### Community 80 - "whatsapp/package.json"
+Cohesion: 0.07
+Nodes (26): dependencies, @zeddev/config, @zeddev/db, @zeddev/errors, @zeddev/logging, @zeddev/secrets, @zeddev/time, @zeddev/vault (+18 more)
 
 ### Community 81 - "Postgres Value Codec"
 Cohesion: 0.17
@@ -519,21 +515,21 @@ Nodes (17): dependencies, @zeddev/config, @zeddev/errors, @zeddev/secrets, @zedd
 Cohesion: 0.22
 Nodes (8): devDependencies, @zeddev/testing, exports, @zeddev/testing, name, private, type, version
 
-### Community 85 - "context.ts"
-Cohesion: 0.33
-Nodes (9): ContextTurn, renderConversation(), RenderedConversation, renderMessage(), text(), TurnMessage, unsupportedNote(), MediaUnderstandingFailure (+1 more)
+### Community 85 - "inbound.test.ts"
+Cohesion: 0.28
+Nodes (4): withInboundScope(), attributeInboundNumber(), recordInboundRejection(), APP_SECRET
 
 ### Community 86 - "service.ts"
-Cohesion: 0.11
-Nodes (14): ClientSessionIssued, decoyHash(), OperatorSessionIssued, Outcome, SignUpInput, SignUpResult, TenantProvisioning, TOKEN_REJECTIONS (+6 more)
+Cohesion: 0.12
+Nodes (13): ClientSessionIssued, decoyHash(), OperatorSessionIssued, Outcome, SignUpInput, SignUpResult, TenantProvisioning, TOKEN_REJECTIONS (+5 more)
 
-### Community 87 - "WhatsApp Package Dependencies"
-Cohesion: 0.39
-Nodes (7): CONFIGURATION_CLASSES, FailureContext, mapPostgresFailure(), PostgresFailure, RETRYABLE_CLASSES, RETRYABLE_CODES, VALIDATION_CODES
+### Community 87 - "scheduler/tsconfig.json"
+Cohesion: 0.40
+Nodes (4): **/*.ts, ../../../tsconfig.base.json, extends, include
 
 ### Community 88 - "Mailer"
-Cohesion: 0.12
-Nodes (3): InMemoryMailer, Mailer, MailOutbox
+Cohesion: 0.13
+Nodes (3): MailFixture, InMemoryMailer, Mailer
 
 ### Community 89 - "time/index.ts"
 Cohesion: 0.12
@@ -543,21 +539,13 @@ Nodes (6): exponentialBackoff(), ExponentialBackoffOptions, FakeClock, Millis, S
 Cohesion: 0.05
 Nodes (37): dependencies, @zeddev/config, @zeddev/errors, @zeddev/secrets, @zeddev/time, devDependencies, @zeddev/testing, exports (+29 more)
 
-### Community 93 - "Implementation Plan"
-Cohesion: 0.15
-Nodes (20): compose.yaml (Docker Compose Stack), postgres Compose service, Decision: Readiness defined once in SQL with triggers, Decision: Round-robin tenant-fair queue dispatch, Decision: Hand-written PostgreSQL client, Decision: Hand-written SigV4 signer and HTTP client, Decision: Migrations are forward-only, Decision: Node 24 native TypeScript type stripping, no build step (+12 more)
-
-### Community 94 - "ScriptedCloudBackend"
-Cohesion: 0.21
-Nodes (3): ScriptedCloudBackend, route(), liveTenant()
+### Community 93 - "Cost-Efficient Operation Spec"
+Cohesion: 0.60
+Nodes (5): Decision: Hand-written PostgreSQL client, Decision: Hand-written SigV4 signer and HTTP client, Decision: PostgreSQL as the single persistent store, Decision: node:test and npm workspaces, zero test/build dependencies, Cost-Efficient Operation Spec
 
 ### Community 95 - "Identity Session Principals"
 Cohesion: 0.20
 Nodes (9): dependencies, devDependencies, @zeddev/testing, exports, @zeddev/testing, name, private, type (+1 more)
-
-### Community 97 - "conversation-worker/start.test.ts"
-Cohesion: 0.20
-Nodes (6): loadWorkerSettings(), WORKER_CONFIG_SCHEMA, WorkerConfig, WorkerSettings, RunningWorker, SEALING_KEY
 
 ### Community 98 - "Errors Package Dependencies"
 Cohesion: 0.25
@@ -663,57 +651,57 @@ Nodes (4): extends, include, **/*.ts, ../../../tsconfig.base.json
 Cohesion: 0.40
 Nodes (4): extends, include, **/*.ts, ../../../tsconfig.base.json
 
-### Community 131 - "ai/config.ts"
-Cohesion: 0.17
-Nodes (13): AI_CONFIG_SCHEMA, AiConfig, GEMINI_ENV, OPENAI_ENV, AI_PROVIDERS, createAiProvider(), AiStub, readBody() (+5 more)
+### Community 131 - "ai/config.test.ts"
+Cohesion: 0.14
+Nodes (12): AdapterDependencies, answer(), GEMINI_ENV, OPENAI_ENV, createAiProvider(), readBody(), startAiStub(), AiProvider (+4 more)
 
-### Community 132 - "media.ts"
+### Community 132 - "conversation/index.ts"
 Cohesion: 0.12
-Nodes (20): cleanTranscript(), CONTROL_CHARACTERS, IMAGE_UNDERSTANDING_INSTRUCTIONS, MEDIA_LIMITS, MEDIA_PRINCIPAL, MEDIA_UNDERSTANDING_FAILURES, MediaJobContext, MediaUnderstandingDependencies (+12 more)
-
-### Community 133 - "withIdentityScope"
-Cohesion: 0.12
-Nodes (16): newTenant(), newTenant(), newTenant(), newTenant(), newTenant(), newTenant(), withIdentityScope(), IdentityPolicy (+8 more)
+Nodes (31): ContextTurn, renderConversation(), RenderedConversation, renderMessage(), text(), TurnMessage, unsupportedNote(), cleanTranscript() (+23 more)
 
 ### Community 134 - "credentials.ts"
 Cohesion: 0.22
 Nodes (14): assertBusinessName(), COMMON_PASSWORD_STEMS, emailLocalPart(), isSequentialRun(), isSingleRepeatedCharacter(), MAX_BUSINESS_NAME_LENGTH, MAX_EMAIL_LENGTH, MAX_PASSWORD_LENGTH (+6 more)
 
-### Community 137 - "WhatsAppCloud"
-Cohesion: 0.12
-Nodes (15): Decision: cloudFailureDeterminacy for retry-without-duplication, feedConnection(), moveConnection(), settleDelivery(), businessVerificationBlocked(), cloudFailureDeterminacy(), cloudFailureReason(), isMediaTooLarge() (+7 more)
+### Community 137 - "cloud.ts"
+Cohesion: 0.10
+Nodes (24): Decision: cloudFailureDeterminacy for retry-without-duplication, assertSendableText(), businessVerificationBlocked(), classifyCloudFailure(), CLOUD_ERROR_CODES, CLOUD_RECOVERABLE_REASONS, cloudFailure(), cloudFailureDeterminacy() (+16 more)
 
-### Community 138 - "AiProvider"
-Cohesion: 0.23
-Nodes (4): answer(), InMemoryAiProvider, AiProvider, TranscriptionResult
+### Community 138 - "runAttempts"
+Cohesion: 0.33
+Nodes (5): once(), rejectionCode(), runAttempts(), TRANSIENT_STATUSES, InMemoryAiProvider
 
 ### Community 139 - "identity/package.json"
 Cohesion: 0.18
 Nodes (10): devDependencies, @zeddev/schema, @zeddev/testing, exports, @zeddev/schema, @zeddev/testing, name, private (+2 more)
+
+### Community 141 - "TenantObjectStore"
+Cohesion: 0.23
+Nodes (4): TenantObjectStore, assertTenantId(), isTenantId(), normalizeTenantId()
 
 ### Community 143 - "tokens.ts"
 Cohesion: 0.40
 Nodes (6): claimedTokenKind(), hashToken(), hasTokenKind(), TOKEN_KINDS, TOKEN_PREFIXES, TokenKind
 
 ## Knowledge Gaps
-- **563 isolated node(s):** `T0`, `HUMAN_REQUEST`, `listAll`, `Stored`, `Issue` (+558 more)
+- **593 isolated node(s):** `OutcomeRow`, `ConfigSection`, `name`, `version`, `private` (+588 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **15 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **13 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Implementation Plan` connect `Implementation Plan` to `WhatsAppCloud`, `mail/package.json`, `Specs Index`?**
-  _High betweenness centrality (0.078) - this node is a cross-community bridge._
-- **Why does `cloudFailureDeterminacy()` connect `WhatsAppCloud` to `whatsapp/index.ts`, `cloud.ts`, `conversation/index.ts`?**
-  _High betweenness centrality (0.077) - this node is a cross-community bridge._
-- **Why does `Decision: cloudFailureDeterminacy for retry-without-duplication` connect `WhatsAppCloud` to `Implementation Plan`?**
-  _High betweenness centrality (0.077) - this node is a cross-community bridge._
-- **What connects `T0`, `HUMAN_REQUEST`, `listAll` to the rest of the system?**
-  _563 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Why does `Implementation Plan` connect `Implementation Plan` to `cloud.ts`, `mail/package.json`, `conversation/package.json`, `Cost-Efficient Operation Spec`?**
+  _High betweenness centrality (0.137) - this node is a cross-community bridge._
+- **Why does `cloudFailureDeterminacy()` connect `cloud.ts` to `whatsapp/index.ts`, `delivery.ts`?**
+  _High betweenness centrality (0.134) - this node is a cross-community bridge._
+- **Why does `Decision: cloudFailureDeterminacy for retry-without-duplication` connect `cloud.ts` to `Implementation Plan`?**
+  _High betweenness centrality (0.134) - this node is a cross-community bridge._
+- **What connects `OutcomeRow`, `ConfigSection`, `name` to the rest of the system?**
+  _593 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Connection` be split into smaller, more focused modules?**
+  _Cohesion score 0.05039193729003359 - nodes in this community are weakly interconnected._
 - **Should `onboarding.test.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.07355769230769231 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.08974358974358974 - nodes in this community are weakly interconnected._
 - **Should `errors/index.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.11954022988505747 - nodes in this community are weakly interconnected._
-- **Should `persona.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.14245014245014245 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.0797979797979798 - nodes in this community are weakly interconnected._

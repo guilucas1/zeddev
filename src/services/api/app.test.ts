@@ -1938,6 +1938,72 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
   );
 
   specTest(
+    'operator-health-monitoring.md',
+    'AC1 the dashboard lists every tenant with its connection state',
+    'over HTTP the operator sees every tenant’s state and numbers, filtered and in depth, and nothing a customer wrote',
+    async () => {
+      const { tenantId } = await onboard();
+      await seedConversation(tenantId, '15557770042', 'the operator must not see this', 'nor this reply');
+
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const cookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+
+      const states = await call(served, 'GET', '/v1/operator/connections', { cookie });
+      assert.equal(states.status, 200);
+      assert.equal(states.body.tenants.find((t: any) => t.tenantId === tenantId).state, 'disconnected');
+
+      const health = await call(served, 'POST', '/v1/operator/tenants/health', {
+        cookie,
+        json: { window: '7d', connection: 'not_connected', sortBy: 'errorRate', sortDirection: 'desc' },
+      });
+      assert.equal(health.status, 200);
+      assert.equal(health.body.range.available, true);
+      const row = health.body.tenants.find((t: any) => t.tenantId === tenantId);
+      assert.equal(row.metrics.messagesReceived, 1);
+      assert.equal(row.metrics.turnsAnswered, 1);
+
+      const detail = await call(served, 'POST', '/v1/operator/tenants/detail', { cookie, json: { tenantId } });
+      assert.equal(detail.status, 200);
+      assert.equal(detail.body.tenant.tenantId, tenantId);
+      assert.deepEqual(detail.body.transitions, []);
+
+      for (const answer of [states, health, detail]) {
+        assert.ok(!answer.text.includes('must not see') && !answer.text.includes('nor this reply'));
+        assert.ok(!answer.text.includes('15557770042'));
+      }
+    },
+  );
+
+  unitTest('the operator health routes refuse bad input, an unknown tenant, and anyone but the operator', async () => {
+    const email = `ops-${nextEmail()}`;
+    await identity.createOperator({ email, password: PASSWORD });
+    const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+    const cookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+
+    const post = (path: string, json: unknown, asCookie: string | undefined = cookie) => call(served, 'POST', path, { json, cookie: asCookie });
+    assert.equal((await post('/v1/operator/tenants/health', { window: 'forever' })).status, 400);
+    assert.equal((await post('/v1/operator/tenants/health', { sortBy: 'password' })).status, 400);
+    assert.equal((await post('/v1/operator/tenants/detail', { tenantId: 'not-a-tenant' })).status, 400);
+    assert.equal((await post('/v1/operator/tenants/detail', { tenantId: '00000000-0000-4000-8000-00000000abcd' })).status, 404);
+
+    const { cookie: clientCookie } = await onboard();
+    const borrowed = `${OPERATOR_SESSION_COOKIE}=${clientCookie.split('=')[1]}`;
+    for (const asCookie of [undefined, borrowed]) {
+      const anonymous = asCookie === undefined;
+      const health = await call(served, 'POST', '/v1/operator/tenants/health', { json: {}, ...(anonymous ? {} : { cookie: asCookie }) });
+      assert.equal(health.status, 401);
+      const detail = await call(served, 'POST', '/v1/operator/tenants/detail', {
+        json: { tenantId: '00000000-0000-4000-8000-00000000abcd' },
+        ...(anonymous ? {} : { cookie: asCookie }),
+      });
+      assert.equal(detail.status, 401);
+      assert.equal((await call(served, 'GET', '/v1/operator/connections', anonymous ? {} : { cookie: asCookie })).status, 401);
+    }
+  });
+
+  specTest(
     'ai-provider-portability.md',
     'AC8 the operator can tell which provider is active',
     'the operator reads the active provider and model, with no credential or endpoint, and a client cannot',

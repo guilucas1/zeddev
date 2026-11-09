@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe } from 'node:test';
 import { InMemoryAiProvider } from '@zeddev/ai/testing';
 import { savePersona, setBotActive } from '@zeddev/bot';
-import { withIdentityScope, withTenant, type Pool } from '@zeddev/db';
+import { withIdentityScope, withPlatformScope, withTenant, type Pool } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { ConfigurationError } from '@zeddev/errors';
 import { MemorySink } from '@zeddev/logging';
@@ -274,6 +274,32 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
         [{ attempts: 2, understood_text: 'Do you open on Sunday?' }],
         'the attempt number must be the one the queue counted',
       );
+    },
+  );
+
+  unitTest(
+    'a real message through the running worker is counted as received, answered and sent, with what the customer waited',
+    async () => {
+      const { tenant, phoneNumberId } = await liveTenant();
+      provider.backend.script({ kind: 'text', text: '[reply]\nCounted.' });
+      await deliver(tenant, phoneNumberId, '15551230777', 'wamid.counted-1', 'hello');
+      await eventually(async () => sentTo('15551230777'), (sends) => sends.length > 0, 'the reply to be delivered');
+
+      const counts = () =>
+        withPlatformScope(pool, async (tx) => {
+          const rows = await tx.query<{ received: number; answered: number; sent: number; timed: number; waited: number }>(
+            `SELECT SUM(messages_received)::int AS received, SUM(turns_answered)::int AS answered, SUM(messages_sent)::int AS sent,
+                    SUM(responses_timed)::int AS timed, SUM(response_ms_total)::int AS waited
+               FROM tenant_metric_buckets WHERE tenant_id = $1`,
+            [tenant],
+          );
+          return rows.rows[0]!;
+        });
+      const counted = await eventually(counts, (row) => row.sent === 1, 'the send to be counted');
+      assert.equal(counted.received, 1);
+      assert.equal(counted.answered, 1);
+      assert.equal(counted.timed, 1);
+      assert.ok(counted.waited >= 600, `recorded ${counted.waited} ms, shorter than the aggregation window`);
     },
   );
 

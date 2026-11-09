@@ -15,6 +15,7 @@
 import { loadAll, loadConfig, type RawEnv } from '@zeddev/config';
 import { assertTenantIsolationEnforceable, createPool, loadDatabaseConfig, type Pool } from '@zeddev/db';
 import { Logger, LOGGING_CONFIG_SCHEMA, type LogSink } from '@zeddev/logging';
+import { purgeExpiredMetrics } from '@zeddev/monitoring';
 import { PostgresQueue } from '@zeddev/queue';
 import { migrateToLatest } from '@zeddev/schema';
 import { exponentialBackoff, SystemClock, type Clock } from '@zeddev/time';
@@ -106,6 +107,14 @@ export async function startScheduler(
         run: async () => {
           const count = await queue.purgeSucceeded(settings.jobRetentionMs);
           if (count > 0) logger.info('scheduler.jobs.purged', { queue: queue.name, count });
+        },
+      },
+      {
+        name: 'metric-purge',
+        intervalMs: settings.metricPurgeIntervalMs,
+        run: async () => {
+          const count = await purgeExpiredMetrics(pool, clock.now());
+          if (count > 0) logger.info('scheduler.metrics.purged', { count });
         },
       },
     ],

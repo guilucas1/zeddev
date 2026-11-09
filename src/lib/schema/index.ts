@@ -78,6 +78,7 @@ export const TENANT_SCOPED_TABLES = [
   'conversation_handoff_events',
   'whatsapp_connection_verifications',
   'inbound_media_understandings',
+  'tenant_metric_buckets',
 ] as const;
 
 /**
@@ -104,6 +105,10 @@ export const PLATFORM_READABLE_TABLES = [
   // Refused inbound notifications — reason, receiving number id, count, time.
   // Delivery diagnostics, never content (`message-delivery-reliability.md` AC17).
   'inbound_rejections',
+  // Counts per hour, in a table with no column that could hold text. The operator's
+  // numbers come from here because the tables they are derived from hold content
+  // (`operator-health-monitoring.md`).
+  'tenant_metric_buckets',
 ] as const;
 
 /**

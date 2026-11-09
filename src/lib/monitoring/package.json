@@ -1,0 +1,19 @@
+{
+  "name": "@zeddev/monitoring",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@zeddev/db": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/tenancy": "*",
+    "@zeddev/whatsapp": "*"
+  },
+  "devDependencies": {
+    "@zeddev/schema": "*",
+    "@zeddev/testing": "*"
+  }
+}

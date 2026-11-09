@@ -16,6 +16,7 @@ import { withDispatchScope, withIdentityScope, withTenant, type Pool } from '@ze
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { ConfigurationError } from '@zeddev/errors';
 import { Logger, MemorySink } from '@zeddev/logging';
+import { METRIC_RETENTION_DAYS } from '@zeddev/monitoring';
 import { PostgresQueue } from '@zeddev/queue';
 import { migrateToLatest } from '@zeddev/schema';
 import { generateSealingKey, parseSealingKey, SecretSealer } from '@zeddev/secrets';
@@ -339,6 +340,39 @@ describe('scheduler', { skip: testDatabaseConfigured() ? false : SKIP_REASON }, 
       await waitFor('the purge', async () => !(await survivors()).includes(old));
     });
     assert.deepEqual((await survivors()).sort(), [recent, dead].sort());
+  });
+
+  unitTest('metrics past their retention are deleted by the running scheduler; recent ones stay', async () => {
+    const tenant = await withIdentityScope(pool, async (tx) => {
+      const row = await tx.query<{ id: string }>(
+        `INSERT INTO tenants (business_name, provisioning_state) VALUES ('Metric Market', 'ready') RETURNING id`,
+      );
+      return row.rows[0]!.id;
+    });
+    const stored = (receivedAt: Date, externalId: string) =>
+      withTenant(pool, tenant, (tx) =>
+        tx.query(
+          `INSERT INTO inbound_messages
+             (tenant_id, external_id, phone_number_id, customer_id, message_type, upstream_type, content, sent_at, received_at)
+           VALUES (app.current_tenant_id(), $1, '4400000002', '15550002222', 'text', 'text', '{}'::jsonb, $2, $2)`,
+          [externalId, receivedAt],
+        ),
+      );
+    const hour = 3_600_000;
+    const longAgo = new Date(Date.now() - (METRIC_RETENTION_DAYS + 2) * 24 * hour);
+    await stored(longAgo, 'wamid.metric-old');
+    await stored(new Date(), 'wamid.metric-new');
+    const kept = () =>
+      withTenant(pool, tenant, async (tx) => {
+        const rows = await tx.query<{ bucket_start: Date }>(`SELECT bucket_start FROM tenant_metric_buckets ORDER BY 1`);
+        return rows.rows.map((row) => row.bucket_start.getTime());
+      });
+    assert.equal((await kept()).length, 2);
+
+    await during({}, async () => {
+      await waitFor('the metric purge', async () => (await kept()).length === 1);
+    });
+    assert.ok((await kept())[0]! > longAgo.getTime());
   });
 
   unitTest('stop is idempotent and leaves nothing running', async () => {

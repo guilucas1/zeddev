@@ -18,6 +18,7 @@
     "@zeddev/identity": "*",
     "@zeddev/logging": "*",
     "@zeddev/mail": "*",
+    "@zeddev/monitoring": "*",
     "@zeddev/schema": "*",
     "@zeddev/secrets": "*",
     "@zeddev/tenancy": "*",

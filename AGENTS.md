@@ -134,6 +134,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   timeout.
 - **A timer-driven task goes in the `tasks` list in `src/services/scheduler/start.ts`** and must be safe to run concurrently in another scheduler instance; there is no leader. Coordinate through a row, the way `claimRecoveryProbe` advances `recovery_next_at`.
 - **Automatic recovery is decided in exactly one place**: `recovery.ts` in `@zeddev/whatsapp`, and "does this link work" in `probeCloudLink` in `cloud.ts`, which the connection flow shares. Only a recoverable answer spends the allowance; a defect on this side must not, or a local bug takes a healthy bot off the air.
+- **An operator-visible number comes from `tenant_metric_buckets`**, never from a query over a table holding content (those have no platform policy, on purpose). A new metric needs a column and a trigger branch in a new migration, and an entry in `COUNT_COLUMNS` in `src/lib/monitoring/health.ts`. Retention is `METRIC_RETENTION_DAYS`, shared by the API's answer and the scheduler's sweep; keep it one value.
 
 ### Database-backed tests
 

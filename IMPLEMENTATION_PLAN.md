@@ -135,7 +135,9 @@ Client conversation visibility is done too: a client can now list their conversa
 
 The scheduler is done too: a new service, `services/scheduler`, runs the platform's timer-driven work. An interrupted WhatsApp connection is now retried with no traffic and no client action, restored when its link is found working, and moved to `error` with `recovery_exhausted` when its allowance runs out, which closes `whatsapp-number-connection.md` AC6. Old succeeded jobs are deleted at last. `recovery.ts` in `@zeddev/whatsapp` holds the rules and migration `0019_connection_recovery` holds the count. See §4x. That brings the totals to 1116 passing tests, zero skipped, 25 of 27 specs with covering tests, 525 spec-linked assertions.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is P3 metrics collection and knowledge retrieval grounding.
+Per-tenant metrics and the operator's health view are done too: an operator can see every tenant's connection, its numbers over a chosen period, which tenants stand out, and one tenant in depth, without any route that could reach a message. Migration `0020_tenant_metrics` counts each event in a counts-only hourly table, a new library, `@zeddev/monitoring`, reads it back, three operator routes expose it, and `services/scheduler` deletes what is past retention. See §4y. That brings the totals to 1159 passing tests, zero skipped, 25 of 27 specs with covering tests, 545 spec-linked assertions. The screens are `services/web`'s and are not built.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is knowledge retrieval grounding and the `services/web` dashboards; operator alerting is blocked on the notification channel decision.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -369,7 +371,7 @@ These are load-bearing — most items below assume them. Recorded here so they a
   rule enforcement, handoff decisions, fallback execution, and outbound send with retry — which is also
   where a send failure feeds back into the connection state.
 - `services/api` — client and operator HTTP API: auth, configuration, transcripts, metrics.
-- `services/scheduler` — timer-driven work. **Built (§4x):** connection recovery and job purging. Still to land here as their specs are built: alert evaluation and suppression, retention-window deletion, memory reset evaluation.
+- `services/scheduler` — timer-driven work. **Built (§4x):** connection recovery, job purging, and metric retention. Still to land here as their specs are built: alert evaluation and suppression, retention-window deletion, memory reset evaluation.
 - `services/web` — client dashboard and operator dashboard.
 
 The gateway is deliberately separate from the worker: `message-delivery-reliability.md` requires
@@ -562,13 +564,9 @@ call must never be able to cause Meta to redeliver.
 
 ### P3 — Visibility
 
-- Metrics collection: per-tenant message volume, error rate, response time, and failed deliveries, at a
-  granularity that supports the selectable time windows the operator dashboard needs.
+- **[DONE]** Metrics collection: per-tenant message volume, error rate, response time, and failed deliveries, in hourly rows that support any window within a 90-day retention. Migration `0020_tenant_metrics`, `@zeddev/monitoring`. See §4y.
 - **[DONE]** Client conversation visibility: conversation list, full chronological transcript with attribution, representations of image and voice content, search/filter by end-customer identity and recency, and handoff status with trigger reason. All 9 acceptance criteria covered, at the library and over HTTP; the screens are `services/web`'s and are not built. See §4w.
-- Operator health dashboard: consolidated all-tenant view, per-tenant detail with transition history,
-  last-known-good timestamps, error reasons, sorting and filtering by state and metric, historical
-  metrics within a retention window with explicit unavailability beyond it, and state updates propagating
-  without manual refresh.
+- **[PARTIAL]** Operator health dashboard: the data and API are done: the all-tenant view, per-tenant detail with transition history, last-known-good timestamps, error reasons, sorting and filtering, flags for unusual error rates and response times, and historical metrics with explicit unavailability past retention. All 11 acceptance criteria have tests at the library layer. The screens, including polling to keep state current (AC2), belong to `services/web`, which is not built. See §4y.
 - Operator proactive alerting: error-state and stalled-reconnect and error-spike triggers, per-tenant
   independence, suppression windows with escalation bypass, resolution notifications, delivery retry, and
   a queryable notification history including delivery outcomes.
@@ -616,7 +614,7 @@ call must never be able to cause Meta to redeliver.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
   `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
   457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
-  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.)
+  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.)
 
 ---
 
@@ -1841,6 +1839,30 @@ SMTP).
 - **The scheduler polls.** One indexed query a minute, which `cost-efficient-operation.md`'s idle-cost goal tolerates less gladly than the queue's `LISTEN`. This is the always-on tension §3 already records.
 - **Adding a queue means adding it to the purge task** in `src/services/scheduler/start.ts`, which names `INBOUND_QUEUE` only because that is the only queue.
 - **Not exercised live.** Tests use the scripted Cloud API, and the image was verified by building it, by confirming it refuses to start without configuration, and by Compose parsing it. It has not run in a full Compose stack, and no probe has reached real Meta.
+
+---
+
+## 4y. Findings from the metrics and operator health increment
+
+- **[DECISION] The operator's numbers come from a table that cannot hold text.** Every number is derived from rows that also carry content (`inbound_messages.content`, `conversation_turn_outcomes.message`), and row-level security cannot grant part of a row. So `tenant_metric_buckets` holds only ids, hours, and counts, and it is the one new table with a platform policy. A test asserts its column types, which makes "numbers, never content" a property of the schema instead of a promise about each query.
+- **[DECISION] Counted by triggers, in the transaction that made the event true.** Application-level counting can be lost to a crash between the event and the count, or repeated by a retried job. An `AFTER INSERT` trigger also does not fire for a row `ON CONFLICT DO NOTHING` skipped, so a redelivered webhook counts once with no extra code.
+- **[DECISION] The triggers are deferred to commit.** All of a tenant's work in an hour shares one row. Written mid-transaction, that row lock would be held across everything after it and taken before locks other transactions take in the opposite order (settling a delivery goes on to lock the connection). At commit it is always the last lock taken, which rules out a cycle. A test asserts the row is not written until commit.
+- **Only the first settlement of a delivery counts.** `settleDelivery`'s updates are not guarded by the current state, so a worker that lost its lease can report after another finished. The trigger counts only a move out of `pending` or `sending`, so one message is never counted twice. The cost is that a delivery recorded `failed` and later reported `sent` stays counted as failed.
+- **[DECISION] Ninety days of retention, as a constant.** The spec requires a defined window. The API that answers "is this retained?" and the scheduler that deletes have to agree, and two separately configured services could disagree, which would show exactly what AC8 forbids. A range that reaches past retention at all is unavailable as a whole, and its numbers are null rather than zero.
+- **What the numbers mean.** A failed response is a fallback with trigger `ai_error`; an out-of-scope or low-confidence fallback is the bot working. A withheld turn is not an attempt. A reply that missed the 24-hour window is reported but left out of the error rate, because it means a reply was late and not that anything is failing. Response time runs from the turn's first message to the answer being sent, including the quiet period, because the customer waits through that too. The single `errorRate` is both kinds of failure over both chances to fail, so it stays within 0 and 1 even when one turn fails twice.
+- **[DECISION] Hours are UTC, by the three-argument `date_trunc`.** The two-argument form follows the session's zone, which would put half-hour-offset zones on different hour boundaries from the reader's.
+- **[DECISION] A dashboard stays current by polling `GET /v1/operator/connections`.** It reads the current state of every tenant, so there is no cursor to miss a transition that commits out of id order, and it costs one join. Server-sent events would need a held connection and `LISTEN` per API instance for a requirement the spec leaves without a latency bound. The metrics are a separate, heavier read, asked for when the operator changes what they are viewing.
+- **The unusual-tenant thresholds are judgement calls** (`HEALTH_THRESHOLDS`): at least 10 attempts, an error rate of 20%, or at least 5% and double the tenant's previous seven days; an average response of 5 minutes, or double that same week. They have not been checked against real traffic. `assessHealth` is the function operator alerting should reuse.
+- **Testing the tests.** Sixteen deliberate breaks were applied after everything passed. Fifteen were caught. The one survivor, letting more states through the delivery trigger's `WHEN`, is an equivalent mutant: the function ignores those states. The first round also showed that deferral had no test, which is why it now has one.
+
+### Follow-ups the metrics increment leaves open
+
+- **Counting starts at the migration.** There is no backfill, because no deployment has carried real traffic. A deployment with history would show zero for the time before it, inside the retention window, which AC8 would not accept.
+- **An average only.** A rollup can add sums and counts but not percentiles, and the spec accepts "average/typical". A p95 would need a histogram per hour.
+- **No paging on the all-tenant view.** The spec forbids omitting a tenant, and sorting is over derived values. The cost grows with tenants times hours in the window, so a 30-day view of many tenants deserves a look when there are many tenants.
+- **Not counted:** media understanding failures on their own, AI token usage (still written and still unread), queue depth, and `inbound_rejections`.
+- **Offboarding (P4) must decide what happens to these rows.** They are deleted with the tenant by cascade, but nothing yet applies the offboarding retention window to them.
+- **Not exercised live.** The counters are proven against a real PostgreSQL and the worker's real pipeline with a scripted Cloud API. No screen shows them yet.
 
 ---
 

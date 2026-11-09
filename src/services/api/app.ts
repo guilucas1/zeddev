@@ -101,6 +101,13 @@ import { AuthenticationError, TransientTransportError, ValidationError } from '@
 import type { Action, ClientPrincipal, IdentityService } from '@zeddev/identity';
 import { Logger } from '@zeddev/logging';
 import type { Mailer } from '@zeddev/mail';
+import {
+  listConnectionHealth,
+  listTenantHealth,
+  parseTenantDetailInput,
+  parseTenantHealthInput,
+  readTenantHealth,
+} from '@zeddev/monitoring';
 import type { SecretSealer } from '@zeddev/secrets';
 import { SystemClock, type Clock } from '@zeddev/time';
 import {
@@ -1162,6 +1169,54 @@ export function createApi(dependencies: ApiDependencies): Api {
           async () => ai.descriptor,
         );
         return { status: 200, body: { provider } };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Watching every tenant — operator-health-monitoring.md. Connection states and
+    // counts only: what these routes read has no column that could hold a message.
+    // POST where a query has options, since the router matches exact paths.
+    // -----------------------------------------------------------------------
+    {
+      // The cheap read a dashboard polls so a state change shows up on its own (AC2).
+      method: 'GET',
+      path: '/v1/operator/connections',
+      handle: async (context) => {
+        const tenants = await identity.withOperatorAction(
+          sessionToken(context, OPERATOR_SESSION_COOKIE),
+          'platform.health.read',
+          'connection.health',
+          (tx) => listConnectionHealth(tx),
+        );
+        return { status: 200, body: { tenants } };
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v1/operator/tenants/health',
+      handle: async (context) => {
+        const query = parseTenantHealthInput(await context.body());
+        const body = await identity.withOperatorAction(
+          sessionToken(context, OPERATOR_SESSION_COOKIE),
+          'platform.metrics.read',
+          'tenant.health.list',
+          (tx) => listTenantHealth(tx, query, clock.now()),
+        );
+        return { status: 200, body };
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v1/operator/tenants/detail',
+      handle: async (context) => {
+        const { tenantId, selection } = parseTenantDetailInput(await context.body());
+        const body = await identity.withOperatorAction(
+          sessionToken(context, OPERATOR_SESSION_COOKIE),
+          'platform.metrics.read',
+          'tenant.health.detail',
+          (tx) => readTenantHealth(tx, tenantId, selection, clock.now()),
+        );
+        return { status: 200, body };
       },
     },
   ];

@@ -12,6 +12,7 @@
     "@zeddev/db": "*",
     "@zeddev/errors": "*",
     "@zeddev/logging": "*",
+    "@zeddev/monitoring": "*",
     "@zeddev/queue": "*",
     "@zeddev/schema": "*",
     "@zeddev/time": "*",

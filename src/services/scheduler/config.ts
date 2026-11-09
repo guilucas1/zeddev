@@ -55,6 +55,13 @@ export const SCHEDULER_CONFIG_SCHEMA = {
     default: 604_800_000,
     min: 3_600_000,
   },
+  SCHEDULER_METRIC_PURGE_INTERVAL: {
+    type: 'duration',
+    description:
+      'How often per-tenant operational metrics older than their retention window are deleted. The window itself is fixed in the code, because the API that reports what is retained and this deletion must agree on it.',
+    default: 3_600_000,
+    min: 60_000,
+  },
   SCHEDULER_SHUTDOWN_GRACE: {
     type: 'duration',
     description:
@@ -73,6 +80,7 @@ export interface SchedulerSettings {
   readonly reconnectMaxDelayMs: number;
   readonly jobPurgeIntervalMs: number;
   readonly jobRetentionMs: number;
+  readonly metricPurgeIntervalMs: number;
   readonly shutdownGraceMs: number;
 }
 
@@ -90,6 +98,7 @@ export function loadSchedulerSettings(env: RawEnv = process.env): SchedulerSetti
     reconnectMaxDelayMs: config.SCHEDULER_RECONNECT_MAX_DELAY,
     jobPurgeIntervalMs: config.SCHEDULER_JOB_PURGE_INTERVAL,
     jobRetentionMs: config.SCHEDULER_JOB_RETENTION,
+    metricPurgeIntervalMs: config.SCHEDULER_METRIC_PURGE_INTERVAL,
     shutdownGraceMs: config.SCHEDULER_SHUTDOWN_GRACE,
   };
 }
