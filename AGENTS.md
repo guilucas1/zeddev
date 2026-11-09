@@ -18,7 +18,7 @@ Run from the repo root.
 | --- | --- |
 | `npm install` | Links workspaces. Required after adding a package under `src/lib/*` or `src/services/*`. |
 | `npm test` | Runs the full suite with `--env-file-if-exists=.env.test`, so database settings are picked up automatically. |
-| `npm run typecheck` | `tsc --noEmit`. Type errors do **not** fail `npm test` — type stripping ignores types — so this must be run separately. |
+| `npm run typecheck` | `tsc --noEmit` for the repo, then for `src/services/web/ui/shell.ts`, the one browser-only file, under its own project with the DOM lib. Type errors do **not** fail `npm test` — type stripping ignores types — so this must be run separately. |
 | `npm run db:up` | Starts a disposable PostgreSQL 17 container (`zeddev-pg`) on `127.0.0.1:55432` and adds its settings to `.env.test`. Required before `npm run check`. |
 | `npm run db:down` | Removes the `zeddev-pg` container and its `.env.test` entries. |
 | `npm run storage:up` | Starts a disposable MinIO container (`zeddev-minio`) on `127.0.0.1:59000` and adds its settings to `.env.test`. Required before `npm run check`. |
@@ -33,6 +33,7 @@ Run from the repo root.
 | `node src/services/whatsapp-gateway/main.ts` | Runs the inbound WhatsApp webhook (`/v1/whatsapp/webhook`). Needs `DATABASE_*` and `WHATSAPP_*`. |
 | `node src/services/conversation-worker/main.ts` | Runs the conversation worker (no port; consumes the job queue, and sends the replies it decides). Needs `DATABASE_*`, `AI_*`, `VAULT_*`, and `WHATSAPP_*`. |
 | `node src/services/scheduler/main.ts` | Runs the scheduler (no port; retries interrupted WhatsApp connections and deletes old jobs). Needs `DATABASE_*`, `VAULT_*`, and `WHATSAPP_*`. |
+| `node src/services/web/main.ts` | Runs the dashboards and forwards `/v1/` to the API. Needs `WEB_API_UPSTREAM`. `API_PUBLIC_BASE_URL` must be this service's address, and `API_TRUSTED_PROXY_HOPS` counts it. |
 | `node src/services/api/cli.ts create-operator --email <addr>` | Creates the platform operator. Password is read from stdin. |
 | `docker compose up -d` (add `--profile local-mail` on a laptop) | Runs the platform from `compose.yaml`. Needs a `.env` and `deploy/secrets/postgres-superuser-password` — see the header of `compose.yaml`. |
 
@@ -136,6 +137,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - **A timer-driven task goes in the `tasks` list in `src/services/scheduler/start.ts`** and must be safe to run concurrently in another scheduler instance; there is no leader. Coordinate through a row, the way `claimRecoveryProbe` advances `recovery_next_at`.
 - **Automatic recovery is decided in exactly one place**: `recovery.ts` in `@zeddev/whatsapp`, and "does this link work" in `probeCloudLink` in `cloud.ts`, which the connection flow shares. Only a recoverable answer spends the allowance; a defect on this side must not, or a local bug takes a healthy bot off the air.
 - **An operator-visible number comes from `tenant_metric_buckets`**, never from a query over a table holding content (those have no platform policy, on purpose). A new metric needs a column and a trigger branch in a new migration, and an entry in `COUNT_COLUMNS` in `src/lib/monitoring/health.ts`. Retention is `METRIC_RETENTION_DAYS`, shared by the API's answer and the scheduler's sweep; keep it one value.
+- **A dashboard page is a `ScreenFactory` in `src/services/web/ui/`**, registered in `PAGES` (`paths.ts`) and `SCREENS` (`routes.ts`); `contract.test.ts` renders every one against the real API. Only `shell.ts` may touch the DOM. Browser modules import only relative `./x.ts` files. Markup comes only from the `html` template, never `new Html`. Nothing identifying a customer goes in an address.
 
 ### Database-backed tests
 
@@ -256,3 +258,4 @@ too. See PROMPT_build.md/PROMPT_plan.md Step 0 for how the build/plan loops use 
   drive aggregation windows deterministically with a `FakeClock` instead of sleeping — see
   `src/lib/conversation/turns.test.ts`.
 - A test proving that concurrent workers cannot both act on a row must hold the fake's call open. An in-memory port answers instantly, so the first worker settles before the others arrive, and the test passes with no lock at all.
+- `shell.ts` cannot run under `node:test`. After changing it, drive it in a real browser: Chrome headless with `--remote-debugging-port` and Node's global `WebSocket` is enough. Read a form's values before disabling its buttons, or the submitter is dropped from `FormData`.

@@ -43,6 +43,7 @@ import { STORAGE_CONFIG_SCHEMA } from '@zeddev/storage';
 import { VAULT_CONFIG_SCHEMA } from '@zeddev/vault';
 import { WHATSAPP_CONFIG_SCHEMA } from '@zeddev/whatsapp';
 import { GATEWAY_CONFIG_SCHEMA } from '@zeddev/whatsapp-gateway/config';
+import { WEB_CONFIG_SCHEMA } from '@zeddev/web/config';
 
 export interface ConfigSection {
   /** Heading in the generated reference. */
@@ -131,6 +132,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       "The platform's timer-driven work: recovering interrupted WhatsApp connections, and deleting finished jobs so the queue table does not grow forever. whatsapp-number-connection.md requires recovery be attempted automatically and be bounded, and leaves the bound to implementation, so the bound is here. It needs a tenant's WhatsApp token to try the connection, which is why it requires the sealing keys and the WhatsApp keys. It listens on no port and nothing waits on it: while it is down that work simply waits, and running two is safe, so it is the same artifact and the same values on every tier.",
     schema: SCHEDULER_CONFIG_SCHEMA,
+  },
+  {
+    title: 'Web dashboard service',
+    rationale:
+      "The client and operator dashboards, and the single origin they share with the API: session cookies are SameSite=Strict and the API answers no CORS, so this service forwards /v1/ to the API. It holds no data and needs nothing else, and it keeps serving pages while the API is down. Because it is itself a proxy in front of the API, API_TRUSTED_PROXY_HOPS counts it, and API_PUBLIC_BASE_URL must be the address at which this service is reached.",
+    schema: WEB_CONFIG_SCHEMA,
   },
 ];
 

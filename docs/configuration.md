@@ -200,6 +200,18 @@ The platform's timer-driven work: recovering interrupted WhatsApp connections, a
 | `SCHEDULER_RECONNECT_MAX_DELAY` | duration | no | `1800000` | The longest wait between recovery attempts. Must be at least SCHEDULER_RECONNECT_BASE_DELAY. |
 | `SCHEDULER_SHUTDOWN_GRACE` | duration | no | `30000` | On a stop signal, how long in-flight work is given to finish before the process exits. Nothing cut short is lost: a recovery attempt that never reported back has spent none of the allowance and simply runs again. |
 
+## Web dashboard service
+
+The client and operator dashboards, and the single origin they share with the API: session cookies are SameSite=Strict and the API answers no CORS, so this service forwards /v1/ to the API. It holds no data and needs nothing else, and it keeps serving pages while the API is down. Because it is itself a proxy in front of the API, API_TRUSTED_PROXY_HOPS counts it, and API_PUBLIC_BASE_URL must be the address at which this service is reached.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `WEB_API_UPSTREAM` | url | yes | — | Where this service reaches the API, an origin with no path. Requests under /v1/ are forwarded there, which is how the dashboard and the API share the single origin API_PUBLIC_BASE_URL names: session cookies are SameSite=Strict and the API answers no CORS. This service counts as one proxy in front of the API, so API_TRUSTED_PROXY_HOPS must include it. |
+| `WEB_HTTP_HOST` | string | no | `0.0.0.0` | Address the HTTP listener binds to. The default listens on every interface, which is what a container needs; set it to a loopback address to keep a process on a shared host reachable only through a local reverse proxy. |
+| `WEB_HTTP_PORT` | integer | no | `8082` | TCP port the HTTP listener binds to. 0 asks the operating system for any free port, which is only useful to a test harness. |
+| `WEB_SHUTDOWN_GRACE` | duration | no | `10000` | On a stop signal, how long requests in flight are given to finish before their connections are closed. |
+| `WEB_UPSTREAM_TIMEOUT` | duration | no | `120000` | How long a forwarded request may wait for the API before the browser is told the service is unavailable. It must outlast the slowest thing a dashboard asks for, a reply preview that makes a real AI call with retries. |
+
 ## Template
 
 ```sh
@@ -511,6 +523,25 @@ VAULT_ACTIVE_SEALING_KEY=
 
 # Comma-separated list of the keys that encrypt every stored credential the platform must be able to *use* — a tenant's WhatsApp access token above all. Each entry is "<key id>:<32 bytes, base64>". Generate one with `node -e "import('@zeddev/secrets').then(m => console.log(m.generateSealingKey('k1')))"`. More than one entry is how a key is rotated: values sealed under an older id keep unsealing for as long as that id is still listed. Without this the database alone would be enough to use every tenant's number (credential-and-secret-handling.md AC4).
 VAULT_SEALING_KEYS=k1:REPLACE_WITH_32_RANDOM_BYTES_BASE64
+
+# Where this service reaches the API, an origin with no path. Requests under /v1/ are forwarded there, which is how the dashboard and the API share the single origin API_PUBLIC_BASE_URL names: session cookies are SameSite=Strict and the API answers no CORS. This service counts as one proxy in front of the API, so API_TRUSTED_PROXY_HOPS must include it.
+WEB_API_UPSTREAM=http://example.com:8080
+
+# Address the HTTP listener binds to. The default listens on every interface, which is what a container needs; set it to a loopback address to keep a process on a shared host reachable only through a local reverse proxy.
+# default: 0.0.0.0
+WEB_HTTP_HOST=0.0.0.0
+
+# TCP port the HTTP listener binds to. 0 asks the operating system for any free port, which is only useful to a test harness.
+# default: 8082
+WEB_HTTP_PORT=8082
+
+# On a stop signal, how long requests in flight are given to finish before their connections are closed.
+# default: 10000
+WEB_SHUTDOWN_GRACE=10000
+
+# How long a forwarded request may wait for the API before the browser is told the service is unavailable. It must outlast the slowest thing a dashboard asks for, a reply preview that makes a real AI call with retries.
+# default: 120000
+WEB_UPSTREAM_TIMEOUT=120000
 
 # Versioned Graph API root the adapter appends its paths to, including the version segment. Always stated, never defaulted: an embedded vendor URL pins the deployment to one upstream and to one API version, so it could be pointed at neither a sandbox nor a recorded stub without a code change, and a version bump would stop being a configuration change.
 WHATSAPP_API_BASE_URL=https://example.com/v21.0

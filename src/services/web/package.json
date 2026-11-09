@@ -1,0 +1,27 @@
+{
+  "name": "@zeddev/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./config": "./config.ts"
+  },
+  "dependencies": {
+    "@zeddev/config": "*",
+    "@zeddev/errors": "*",
+    "@zeddev/http": "*",
+    "@zeddev/logging": "*"
+  },
+  "devDependencies": {
+    "@zeddev/ai": "*",
+    "@zeddev/api": "*",
+    "@zeddev/db": "*",
+    "@zeddev/identity": "*",
+    "@zeddev/mail": "*",
+    "@zeddev/schema": "*",
+    "@zeddev/secrets": "*",
+    "@zeddev/testing": "*",
+    "@zeddev/whatsapp": "*"
+  }
+}

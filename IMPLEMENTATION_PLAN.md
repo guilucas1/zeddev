@@ -139,7 +139,9 @@ Per-tenant metrics and the operator's health view are done too: an operator can 
 
 Knowledge selection is done too: a tenant whose knowledge no longer fits one prompt now sends only the entries that matter to the conversation, and the model is told it holds a selection. A tenant within the 12,000-character budget still sends everything, exactly as before. `knowledge-selection.ts` in `@zeddev/bot` holds it, `generateReply` calls it, and no table or migration changes. See §4z. That brings the totals to 1195 passing tests, zero skipped, 25 of 27 specs with covering tests, 569 spec-linked assertions. Uploaded documents are not part of it, since upload is still blocked on §4.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. The next unblocked work is the `services/web` dashboards; operator alerting is blocked on the notification channel decision.
+The dashboards are done: `services/web` serves the client and operator screens and is the one origin they share with the API, forwarding `/v1/`. A client can now sign up, confirm the mailed link, configure the bot, connect a number, go live, and read conversations in a browser, and an operator can watch every tenant, which also ends the mailed links landing on nothing. The screens are checked against the real API over PostgreSQL, and the stack was walked end to end in Chrome through Compose. See §4aa. That brings the totals to 1266 passing tests, zero skipped, 25 of 27 specs with covering tests, 611 spec-linked assertions.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. The next unblocked work is AI provider verification mode, then the component-independence and environment-portability validation in P4.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -373,7 +375,7 @@ These are load-bearing — most items below assume them. Recorded here so they a
   where a send failure feeds back into the connection state.
 - `services/api` — client and operator HTTP API: auth, configuration, transcripts, metrics.
 - `services/scheduler` — timer-driven work. **Built (§4x):** connection recovery, job purging, and metric retention. Still to land here as their specs are built: alert evaluation and suppression, retention-window deletion, memory reset evaluation.
-- `services/web` — client dashboard and operator dashboard.
+- `services/web` — client dashboard and operator dashboard, and the single origin they share with the API. **Built (§4aa).**
 
 The gateway is deliberately separate from the worker: `message-delivery-reliability.md` requires
 acknowledging inbound notifications promptly and independently of reply-generation time, and a slow AI
@@ -565,8 +567,8 @@ call must never be able to cause Meta to redeliver.
 ### P3 — Visibility
 
 - **[DONE]** Metrics collection: per-tenant message volume, error rate, response time, and failed deliveries, in hourly rows that support any window within a 90-day retention. Migration `0020_tenant_metrics`, `@zeddev/monitoring`. See §4y.
-- **[DONE]** Client conversation visibility: conversation list, full chronological transcript with attribution, representations of image and voice content, search/filter by end-customer identity and recency, and handoff status with trigger reason. All 9 acceptance criteria covered, at the library and over HTTP; the screens are `services/web`'s and are not built. See §4w.
-- **[PARTIAL]** Operator health dashboard: the data and API are done: the all-tenant view, per-tenant detail with transition history, last-known-good timestamps, error reasons, sorting and filtering, flags for unusual error rates and response times, and historical metrics with explicit unavailability past retention. All 11 acceptance criteria have tests at the library layer. The screens, including polling to keep state current (AC2), belong to `services/web`, which is not built. See §4y.
+- **[DONE]** Client conversation visibility: conversation list, full chronological transcript with attribution, representations of image and voice content, search/filter by end-customer identity and recency, and handoff status with trigger reason. All 9 acceptance criteria covered, at the library and over HTTP; the screens are in `services/web`. See §4w.
+- **[DONE]** Operator health dashboard: the data and API are done: the all-tenant view, per-tenant detail with transition history, last-known-good timestamps, error reasons, sorting and filtering, flags for unusual error rates and response times, and historical metrics with explicit unavailability past retention. All 11 acceptance criteria have tests at the library layer. The screens, including polling to keep state current (AC2), are in `services/web`. See §4y, §4aa.
 - Operator proactive alerting: error-state and stalled-reconnect and error-spike triggers, per-tenant
   independence, suppression windows with escalation bypass, resolution notifications, delivery retry, and
   a queryable notification history including delivery outcomes.
@@ -614,7 +616,7 @@ call must never be able to cause Meta to redeliver.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
   `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
   457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
-  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.) (After the knowledge selection increment: 25 of 27 specs, 569 assertions.)
+  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.) (After the knowledge selection increment: 25 of 27 specs, 569 assertions.) (After the dashboard increment: 25 of 27 specs, 611 assertions.)
 
 ---
 
@@ -1044,9 +1046,6 @@ SMTP).
 
 ### Follow-ups the API increment leaves open
 
-- `services/web` must implement `/verify-email` and `/reset-password` pages that read the token from the
-  URL fragment and POST it to the API as JSON. Until that exists, the links `services/api` mails land on
-  nothing.
 - The API image copies the whole `src/` tree, including other services' sources once they exist. Harmless
   today with one service, but worth narrowing to the service's own workspace closure once a second service
   lands, so a change to an unrelated service does not change this image's bytes.
@@ -1099,8 +1098,6 @@ SMTP).
   `bot-activation-control.md` AC12 (the operator can *view* readiness and activation) therefore needs a
   derived readiness/activation state the platform scope can read, such as columns on `tenants` or a small
   table of its own. It must not add a platform policy to `bot_personas`. The readiness increment owns this.
-- The persona screen in `services/web` does not exist. `GET /v1/bot/persona` already returns the options
-  and limits the form needs, so the form has no reason to hard-code them.
 
 ---
 
@@ -1155,7 +1152,6 @@ SMTP).
 - Readiness currently requires only persona and a connection, as the spec assumes. If business knowledge or
   behavior rules ever gate readiness, that is a new clause in `app.bot_readiness_unmet`, a new trigger, and
   a new entry in `READINESS_CONDITIONS` (a test asserts the TS list equals the SQL function's output).
-- The web screens for status/toggle/connection do not exist (`services/web`).
 
 ---
 
@@ -1203,7 +1199,6 @@ SMTP).
 
 - AC2–AC8 need output-level tests once P2's reply path exists; today's tests only prove the instruction layer
   is correct.
-- The web screen for rules does not exist (`services/web`).
 - The spec leaves structured-rules-versus-freeform-instructions precedence open — both are binding
   simultaneously, with no precedence between them — and `behaviorDirectives` renders them accordingly
   (both sections present, neither overriding the other). Revisit only if a real conflict between the two
@@ -1263,7 +1258,6 @@ SMTP).
   per-language, since `language-configuration.md` requires fallback text in the configured language.
 - The spec's own new open question: whether the fallback screen should show the client's active behaviour
   rules and persona, to help the client author compliant text.
-- The web screen for fallback configuration does not exist (`services/web`).
 
 ---
 
@@ -1296,7 +1290,6 @@ SMTP).
 - The disclosure statement's exact wording is left to the model in the persona's voice. If deterministic
   wording is ever required (e.g., for a regulated client), the reply path would prepend literal text instead,
   the way fallback text is sent verbatim.
-- The web screen for disclosure does not exist (`services/web`).
 
 ---
 
@@ -1336,7 +1329,6 @@ SMTP).
 - The spec's "unless the client's trigger configuration explicitly says otherwise" (cross-conversation scope)
   is not offered; handoff state is per conversation only.
 - The notification channel is still a §4 decision.
-- The web screen for handoff does not exist (`services/web`).
 
 ---
 
@@ -1371,7 +1363,6 @@ SMTP).
   §1's object-storage decision), processing with a visible failed state, and inclusion in `describeKnowledge`,
   `knowledgeConfigured`, and `knowledgeDirectives`' input. This is also the first service to hold an object
   store, which puts MinIO in `compose.yaml` and requires calling `verifyAccess()` at startup (§4e).
-- The web screen for knowledge does not exist (`services/web`).
 
 ## 4p. Findings from the AI provider port increment
 
@@ -1464,7 +1455,6 @@ SMTP).
 - Language, retrieved knowledge, and conversation memory are not yet sections of `replyInstructions`.
 - The preview rate limit is per-process; a multi-instance deployment admits N× the limit. Acceptable while the
   platform runs one API instance.
-- The web screen for preview does not exist (`services/web`).
 
 ---
 
@@ -1874,6 +1864,27 @@ SMTP).
 - **Documents.** When upload lands, a document must reach `selectKnowledge` as chunks no longer than `KNOWLEDGE_LIMITS.entryMaxLength`, or the guarantee that the most relevant item fits the budget stops holding. `knowledgeDirectives` needs them too.
 - **Not exercised against a live model.** Tests prove what the model is shown, through the real worker and PostgreSQL. Whether a real model obeys the partial-knowledge sentence, or avoids contradicting a fact (AC5, AC6), has not been checked.
 - **The budget and ranking constants are judgement, not measurement.** There is no real tenant traffic yet to tune `promptBudget` or the turn weights against. How often a tenant is over budget is not logged.
+
+---
+
+## 4aa. Findings from the dashboard increment
+
+- **[DECISION] The dashboard service forwards `/v1/` to the API rather than relying on a reverse proxy.** §1 requires one origin, and a laptop has no proxy to arrange it, so the service that owns the origin does, on every tier. It holds no data and stays up while the API is down, answering in the API's own error shape. It counts as a proxy: `API_TRUSTED_PROXY_HOPS` includes it, so `compose.yaml` defaults that to 1, and a VPS with TLS in front sets 2. `API_PUBLIC_BASE_URL` is now the address of `web`, and the API has no published port in Compose.
+- **[DECISION] No build step for the browser either.** Browser modules are TypeScript in `ui/`, type-stripped once at startup by `node:module`'s `stripTypeScriptTypes`, the same transformation Node applies to the services, and held in a table so no part of a URL reaches the filesystem. The `--disable-warning=ExperimentalWarning` in the Dockerfile is because that function is still marked experimental in Node 24.
+- **[DECISION] A screen never touches the DOM.** It is a closure with `load`, `view`, and handlers, so `contract.test.ts` drives every page against the real API with only `fetch`. `shell.ts` is the one browser-only file and is deliberately thin.
+- **[DECISION] Markup is made only by the `html` tagged template, which escapes.** The transcript renders text written by anyone with a phone. The page CSP has no `'unsafe-inline'`, so inline styles and scripts are off the table as well. Confirmed in Chrome: a message carrying `<img onerror>` and `<script>` renders as text and runs nothing.
+- **[DECISION] Which conversation or tenant is open is held in memory and never in the address,** because a customer's phone number must not reach a URL. The cost is that a refresh returns to the list.
+- **[DECISION] The operator dashboard polls the cheap `GET /v1/operator/connections` and re-reads health only when a state changed.** Filtering and sorting stay on the server so "not connected" has one definition.
+- **Adding `lib: dom` to the shared TypeScript project breaks server code.** DOM's `Headers`, `BodyInit`, and `ReadableStream` replace Node's and four unrelated files stopped compiling. `shell.ts` has its own project (`ui/tsconfig.json`), and `npm run typecheck` runs both.
+- **A real browser found what `node:test` could not.** The form was disabled before its values were read, and a disabled button is not a submitter, so "Preview without saving" silently saved. Read a form's values before changing its controls.
+
+### Follow-ups the dashboard increment leaves open
+
+- `credential-and-secret-handling.md` AC6 says a client sees that a credential is configured "and when". The screen says "Configured", because `setup.number` carries no timestamp. It needs a `configuredAt` from `@zeddev/vault` metadata.
+- Screens still to come with their blocked features: language setting, document upload, memory reset, offboarding.
+- `API_PUBLIC_BASE_URL` with a path prefix is accepted by the API but does not work end to end: pages use absolute `/assets/` and `/v1/` paths, and the operator cookie is `Path=/v1/operator`.
+- The browser walkthrough was a one-off script, not part of `npm test`. `shell.ts` therefore has no automated coverage; `contract.test.ts` stops at the screens.
+- No password-strength hint beyond a sentence on signup: no route exposes the minimum length.
 
 ---
 

@@ -60,13 +60,13 @@ services:
       # The one value that is a property of this Compose file rather than of the
       # deployment: the database is the `postgres` service on the internal network.
       DATABASE_HOST: postgres
+      # A property of this file: `web` is always one proxy in front of the API. A
+      # VPS with a TLS-terminating reverse proxy before `web` sets 2 in .env.
+      API_TRUSTED_PROXY_HOPS: ${API_TRUSTED_PROXY_HOPS:-1}
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      # Loopback by default. On a VPS a reverse proxy terminating TLS sits in
-      # front and forwards here — set API_TRUSTED_PROXY_HOPS=1 in .env to match.
-      - "${API_PUBLISHED_ADDRESS:-127.0.0.1}:${API_PUBLISHED_PORT:-8080}:${API_HTTP_PORT:-8080}"
+    # No published port: browsers reach the API through `web`, on one origin.
     healthcheck:
       test:
         - CMD
@@ -78,6 +78,38 @@ services:
       retries: 3
       start_period: 20s
     # Longer than API_SHUTDOWN_GRACE's default, so a stop drains rather than kills.
+    stop_grace_period: 15s
+
+  # The dashboards, and the one origin browsers use for them and for the API.
+  # API_PUBLIC_BASE_URL in .env must be the address this is reached at.
+  web:
+    build:
+      context: .
+      dockerfile: src/services/web/Dockerfile
+    image: zeddev-web
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      # Which API this forwards to is a property of this file, as the database host is.
+      WEB_API_UPSTREAM: http://api:${API_HTTP_PORT:-8080}
+    # Deliberately no depends_on: the dashboard starts, and says the platform is
+    # unavailable, whether or not the API is up.
+    ports:
+      # Loopback by default. On a VPS a reverse proxy terminating TLS sits in
+      # front and forwards here.
+      - "${WEB_PUBLISHED_ADDRESS:-127.0.0.1}:${WEB_PUBLISHED_PORT:-8080}:${WEB_HTTP_PORT:-8082}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:' + (process.env.WEB_HTTP_PORT || 8082) + '/health/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     stop_grace_period: 15s
 
   whatsapp-gateway:

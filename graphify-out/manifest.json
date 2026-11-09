@@ -200,19 +200,19 @@
     "semantic_hash": "379d6632a227b60ba64a84dc90e61aad"
   },
   "src/lib/bot/index.ts": {
-    "mtime": 1789819172.5629506,
-    "ast_hash": "ddbfb26a7d6e46548708260f76054b06",
-    "semantic_hash": "ddbfb26a7d6e46548708260f76054b06"
+    "mtime": 1794237483.4308631,
+    "ast_hash": "00b3d5f2a3d548d5bdf7581d94cfda24",
+    "semantic_hash": ""
   },
   "src/lib/bot/knowledge.test.ts": {
-    "mtime": 1789843099.1096668,
-    "ast_hash": "b5d1ec1ebab205ca8b6a120bd4509d23",
-    "semantic_hash": "b5d1ec1ebab205ca8b6a120bd4509d23"
+    "mtime": 1794237562.4121106,
+    "ast_hash": "e2e0d2c66bef0ce471a27b62241e334d",
+    "semantic_hash": ""
   },
   "src/lib/bot/knowledge.ts": {
-    "mtime": 1789817673.952623,
-    "ast_hash": "22fa4b751726deb887f88f9f79f9bdc6",
-    "semantic_hash": "22fa4b751726deb887f88f9f79f9bdc6"
+    "mtime": 1794237477.714484,
+    "ast_hash": "fcb7d7483a83217792fba9ba02de53c6",
+    "semantic_hash": ""
   },
   "src/lib/bot/package.json": {
     "mtime": 1789819172.5224824,
@@ -230,13 +230,13 @@
     "semantic_hash": "dffb9b38670e27730932461b36b95e99"
   },
   "src/lib/bot/reply.test.ts": {
-    "mtime": 1789843081.9283035,
-    "ast_hash": "0b74353f591d4a0606664a55ae613b18",
-    "semantic_hash": "0b74353f591d4a0606664a55ae613b18"
+    "mtime": 1794237631.3199077,
+    "ast_hash": "e677021ef8e0cbe616e5feb4e94d36d5",
+    "semantic_hash": ""
   },
   "src/lib/bot/reply.ts": {
-    "mtime": 1793739335.8343713,
-    "ast_hash": "77a28345263a3bac61153fef65103683",
+    "mtime": 1794237480.816451,
+    "ast_hash": "1d6264dae473e07bcf5eb0efde3ac6e4",
     "semantic_hash": ""
   },
   "src/lib/bot/shared.ts": {
@@ -300,8 +300,8 @@
     "semantic_hash": "e146d3233b6cca252095ccce3cbe202e"
   },
   "src/lib/conversation/turns.test.ts": {
-    "mtime": 1793740557.1723993,
-    "ast_hash": "89c3d5ccb13fc57a54c7eea34fdb5e6c",
+    "mtime": 1794237559.7163603,
+    "ast_hash": "dad10e0b19e74445aaa18792e1828ea2",
     "semantic_hash": ""
   },
   "src/lib/conversation/turns.ts": {
@@ -1210,13 +1210,13 @@
     "semantic_hash": "a60e52b66a40462226a64fd5d007249f"
   },
   "AGENTS.md": {
-    "mtime": 1794237158.9402468,
-    "ast_hash": "51b57bc0ded9ae81a36ddc9b2dfeffa9",
+    "mtime": 1794237849.5111032,
+    "ast_hash": "f877d557e493cb672c87784d1a379ce3",
     "semantic_hash": ""
   },
   "IMPLEMENTATION_PLAN.md": {
-    "mtime": 1794237158.9402468,
-    "ast_hash": "d6e45ca62cd6b81e0cb4d446723a3c91",
+    "mtime": 1794237861.6650434,
+    "ast_hash": "d2bafaff269604905cb3cdc3b01790d5",
     "semantic_hash": ""
   },
   "PROMPT_build.md": {
@@ -1507,6 +1507,16 @@
   "src/lib/schema/migrations/0020_tenant_metrics.sql": {
     "mtime": 1794237003.9884193,
     "ast_hash": "1f2be2ba14ef1037e5e73549034f5c3b",
+    "semantic_hash": ""
+  },
+  "src/lib/bot/knowledge-selection.test.ts": {
+    "mtime": 1794237649.9572957,
+    "ast_hash": "44fc5c4ced72c79c8070beb463fc8e45",
+    "semantic_hash": ""
+  },
+  "src/lib/bot/knowledge-selection.ts": {
+    "mtime": 1794237653.3635013,
+    "ast_hash": "eda4b24e1633be0ef1848d5db08a8ea6",
     "semantic_hash": ""
   }
 }
