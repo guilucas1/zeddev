@@ -145,6 +145,8 @@ AI provider verification is done too: an operator can put the active provider or
 
 Component status is done too: an operator can now see which component is down, including the two that listen on no port. Every database-backed service reports itself on a timer to `component_heartbeats` (migration `0021_component_heartbeats`, under a sixth, single-table scope), `GET /v1/operator/components` reads it back, and the operator dashboard shows each component as up, degraded, or down with the reason. A 503 now names the dependency that failed (`database`, `api`, and so on) rather than only `service.unavailable`. See §4ac. Covers `component-independence.md` AC9, plus AC3 and AC6 at the heartbeat layer. That brings the totals to 1301 passing tests, zero skipped, 25 of 27 specs with covering tests, 633 spec-linked assertions.
 
+Component independence is now proven on the running services, not just on their definitions: `src/lib/deployment/independence.test.ts` starts the gateway, the worker, and the API from configuration against one real PostgreSQL and stops, restarts, redeploys, scales, and crashes each while two tenants keep talking to the bot. Doing so found a queue defect: a turn held by a worker that died was taken over only at the next 30 s sweep and idle wake *after* its lease ran out, up to about two minutes of silence for that customer with production defaults. Both queue adapters now wake when a lease runs out, and an idle consumer sweeps before it sleeps. See §4ad. That brings the totals to 1315 passing tests, zero skipped, 25 of 27 specs with covering tests, 643 spec-linked assertions; `component-independence.md` has tests for 10 of its 11 criteria.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. The next unblocked work is the component-independence and environment-portability validation in P4.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
@@ -587,10 +589,11 @@ call must never be able to cause Meta to redeliver.
 - Environment portability validation: bring the same artifacts up on all three tiers from configuration
   alone, and add an automated check that fails the build if environment-detection branching appears in the
   source. `environment-portability.md` states this as an inspectable criterion, so it should be a test.
-- **[PARTIAL]** Component independence validation. **Done:** which component is down is observable
-  (AC9), including the worker and scheduler, via heartbeats and `GET /v1/operator/components` (§4ac).
-  **Still to do:** a Compose-level check that redeploys, restarts, and scales each service in isolation and
-  asserts the others stay available and uncorrupted (AC1, AC2, AC5, AC7, AC8, AC11 end to end).
+- **[DONE]** Component independence validation. Which component is down is observable (AC9) via heartbeats
+  and `GET /v1/operator/components` (§4ac). Redeploy, restart, scale, crash, and replacement are proven on the
+  running gateway, worker, and API in-process against one PostgreSQL (AC1–AC3, AC5–AC8, AC10, AC11), in
+  `src/lib/deployment/independence.test.ts`. See §4ad. What is not automated: the same exercise against
+  containers under Compose (a real SIGKILL, a real image swap) — see §4ad's follow-ups.
 
 ### Cross-cutting, runs alongside everything
 
@@ -1933,6 +1936,24 @@ SMTP).
 - **No alert.** Seeing a component down requires the dashboard to be open; `operator-proactive-alerting.md` is still blocked on the notification channel decision. `readComponentStatus` is what an alert should reuse.
 - **The poll-failure message is not covered by an automated test.** When the components read itself fails, the card says which dependency was unreachable (`unavailableReason`); the message mapping is tested, but the screen path through a failing poll is not.
 - **The end-to-end independence check is still to do:** stop, restart, and scale each Compose service in a temporary project and assert the others keep serving and their data is intact.
+
+---
+
+## 4ad. Findings from the component independence increment
+
+- **[DECISION] Independence is proven in-process, against real services and a real database, not under Compose.** `independence.test.ts` calls each service's own `start*` from configuration, the same function `main.ts` calls, so what differs from a container is only the process boundary. It runs inside `npm test` in about 22 s, where a Compose-driven check would need image builds, minutes, and a Docker daemon in every check. The services share nothing but the database by construction (no service calls another; the gateway hands the worker a row and a job), so the process boundary is not what the criteria depend on. The model and Meta are faked at their ports.
+- **What it shows.** With no worker, the gateway still acknowledges and stores, and clients still log in, configure, and read (AC5). A restarted worker answers the backlog once per turn for both tenants (AC6). With the API down, customers are still answered, and a restarted API honours sessions its predecessor issued, because sessions are rows (AC2). With the gateway down, a message it had already accepted is still answered (AC5). Two workers answer every turn of both tenants exactly once (AC3). A worker killed while the model is thinking leaves its turn to the next worker, answered once, with both connections and all earlier history intact (AC7, AC8). A producer written differently from the gateway, honouring only its contract (a stored message and its job), is answered by the unchanged worker (AC10). "Was not restarted" is asserted as "the same `component_heartbeats` instance is still live", which is also how an operator would see it.
+- **Bug found and fixed: a dead worker's turn waited far longer than its lease.** `waitForWork` woke for a delayed job's due time but not for a lease running out, and the consumer swept expired leases only every `reclaimIntervalMs` (30 s). A crashed worker's turn therefore sat for the lease (`WORKER_VISIBILITY_TIMEOUT`, 60 s by default) plus up to 30 s for the sweep, plus up to 30 s for the idle wake, all while the customer waited. The fix is in the queue, so it holds for every consumer. Both adapters' `waitForWork` now also wake at the earliest running lease's expiry. The consumer sweeps before every sleep after a look that found nothing, and looks again at once if the sweep returned anything. A lease "until T" is now expired at T in both adapters (it was `<` in both): the in-memory fake wakes exactly at T, and with `<` it would find nothing to reclaim and go back to sleep. Three conformance tests hold this, and each was confirmed to fail without the fix.
+- **Cost of the fix.** A waiting consumer now also wakes once each time another worker's running job nears its old lease expiry, because renewals move it. That is one query per wake, and only for a consumer with nothing to do. The busy path is unchanged.
+- **A conformance test was passing without testing anything.** "A waiting consumer wakes when a delayed job comes due" advanced the simulated clock before the consumer had reached its sleep, so the in-memory fake passed with or without a wake. Both wake tests now let the consumer fall asleep first (`asleep()` in `conformance.ts`).
+- **A first version of the scaling test was flaky,** and the flaw was in the test. It posted a customer's two messages concurrently with the same one-second WhatsApp timestamp, so their order within the turn was genuinely undefined. The test now sends them in order, the second stamped a second later.
+
+### Follow-ups the component independence increment leaves open
+
+- **AC4** (a fix to one component deploys without redeploying others) has no test of its own; AC1's redeploy test and the per-service image test (`@zeddev/deployment`) are the evidence.
+- **Not exercised under Compose.** A real `docker kill` of a container (no clean shutdown, no heartbeat stop), `docker compose up --scale conversation-worker=2`, and an image swap with `--no-deps` have not been run as a scripted check. The in-process crash closes the pool under the dying handler, which is the closest in-process equivalent.
+- **The scheduler and `web` are not in this suite.** The scheduler's restart is covered in its own `start.test.ts` (AC6), and `web` serving with the API down in `web/app.test.ts`.
+- **The crash test costs 10 s,** the minimum `WORKER_VISIBILITY_TIMEOUT`. That minimum is now also the floor on how long a dead worker's customer waits, so it may be worth lowering once renewals are proven against real provider latency.
 
 ---
 

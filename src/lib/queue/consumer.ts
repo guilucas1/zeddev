@@ -52,7 +52,11 @@ export interface ConsumerOptions {
    * nobody when they become due.
    */
   readonly idleWaitMs?: number | undefined;
-  /** How often expired leases are swept back into the ready pool. */
+  /**
+   * How often a busy loop sweeps expired leases back into the ready pool. An idle
+   * loop also sweeps before every sleep, and its sleep ends when the next lease
+   * runs out, so a job whose worker died is taken over as soon as its lease ends.
+   */
   readonly reclaimIntervalMs?: number | undefined;
   readonly clock?: Clock | undefined;
   readonly logger?: Logger | undefined;
@@ -84,18 +88,22 @@ export async function runConsumer(options: ConsumerOptions): Promise<void> {
       : { maxInFlightPerTenant: options.maxInFlightPerTenant }),
   };
 
+  /** Returns how many jobs came back, so an idle loop can look again rather than sleep. */
+  const sweep = async (): Promise<number> => {
+    lastReclaimAt = clock.monotonicMs();
+    try {
+      return await queue.reclaimExpired();
+    } catch (error) {
+      logger?.error('queue.reclaim.failed', error, { queue: queue.name });
+      return 0;
+    }
+  };
+
   while (!signal.aborted) {
     // Swept from the consumer rather than from a dedicated timer, so a deployment
     // with no consumer running also has nothing sweeping — there is no background
     // process whose only job is to exist.
-    if (clock.monotonicMs() - lastReclaimAt >= reclaimIntervalMs) {
-      lastReclaimAt = clock.monotonicMs();
-      try {
-        await queue.reclaimExpired();
-      } catch (error) {
-        logger?.error('queue.reclaim.failed', error, { queue: queue.name });
-      }
-    }
+    if (clock.monotonicMs() - lastReclaimAt >= reclaimIntervalMs) await sweep();
 
     if (inFlight.size >= concurrency) {
       await Promise.race(inFlight);
@@ -112,6 +120,12 @@ export async function runConsumer(options: ConsumerOptions): Promise<void> {
     }
 
     if (job === undefined) {
+      // Nothing claimable. Before sleeping, take back any job whose worker died:
+      // `waitForWork` wakes this loop when a lease runs out, and the wake would be
+      // wasted if the periodic sweep were not due yet — the job would sit until it
+      // was, up to `reclaimIntervalMs` after its lease had already made a customer
+      // wait (component-independence.md AC7). Only a look that found nothing pays this query.
+      if ((await sweep()) > 0) continue;
       await waitForSomething(queue, inFlight, idleWaitMs, signal);
       continue;
     }

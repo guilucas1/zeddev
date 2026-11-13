@@ -131,9 +131,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   resuming) is taken under that customer's `conversations` row lock in `src/lib/conversation/turns.ts`; a
   turn's answer is written only by `recordTurnOutcome`, and `conversation_turn_outcomes` is keyed by turn so a
   second answer is impossible. Do not write turn outcomes elsewhere.
-- **`waitForWork` in both queue adapters must wake by the next delayed job's due time** (conformance-tested); a
-  consumer that only woke at its idle timeout would delay every turn close and every retry by up to that
-  timeout.
+- **`waitForWork` in both queue adapters must wake by the next delayed job's due time and the next running lease's expiry** (conformance-tested), and the consumer sweeps expired leases before sleeping; otherwise every turn close, retry, and dead worker's turn waits up to the idle timeout.
 - **A timer-driven task goes in the `tasks` list in `src/services/scheduler/start.ts`** and must be safe to run concurrently in another scheduler instance; there is no leader. Coordinate through a row, the way `claimRecoveryProbe` advances `recovery_next_at`.
 - **Automatic recovery is decided in exactly one place**: `recovery.ts` in `@zeddev/whatsapp`, and "does this link work" in `probeCloudLink` in `cloud.ts`, which the connection flow shares. Only a recoverable answer spends the allowance; a defect on this side must not, or a local bug takes a healthy bot off the air.
 - **An operator-visible number comes from `tenant_metric_buckets`**, never from a query over a table holding content (those have no platform policy, on purpose). A new metric needs a column and a trigger branch in a new migration, and an entry in `COUNT_COLUMNS` in `src/lib/monitoring/health.ts`. Retention is `METRIC_RETENTION_DAYS`, shared by the API's answer and the scheduler's sweep; keep it one value.
@@ -262,4 +260,6 @@ too. See PROMPT_build.md/PROMPT_plan.md Step 0 for how the build/plan loops use 
   `src/lib/conversation/turns.test.ts`.
 - A test proving that concurrent workers cannot both act on a row must hold the fake's call open. An in-memory port answers instantly, so the first worker settles before the others arrive, and the test passes with no lock at all.
 - The first `npm run check` right after starting Docker Desktop and `db:up` can cancel whole suites with SQLSTATE 57014 (a statement timeout in fixture setup on a cold container). Re-run before debugging. Docker Desktop lives at `%LOCALAPPDATA%\Programs\DockerDesktop\Docker Desktop.exe`.
+- A conformance test of "wakes by time T" must let the consumer reach its sleep (`asleep()` in `src/lib/queue/conformance.ts`) before advancing a `FakeClock`, or it passes with no wake at all.
+- Cross-service behaviour (stop/restart/scale/crash one service) is tested in-process in `src/lib/deployment/independence.test.ts`, which starts the real services from configuration; extend it rather than adding a Compose script.
 - `shell.ts` cannot run under `node:test`. After changing it, drive it in a real browser: Chrome headless with `--remote-debugging-port` and Node's global `WebSocket` is enough. Read a form's values before disabling its buttons, or the submitter is dropped from `FormData`.

@@ -54,6 +54,15 @@ export interface QueueHarness {
 
 const PAYLOAD = { messageId: 'm-1', text: 'hello' };
 
+/**
+ * Let a consumer started just now reach its sleep before time moves. Without it,
+ * a simulated clock can be advanced past the deadline before the consumer first
+ * looks, and a test of "wakes by the deadline" passes with no wake at all.
+ */
+async function asleep(): Promise<void> {
+  for (let tick = 0; tick < 20; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
 /** Declares the shared suite. Call once per implementation. */
 export function runQueueConformance(harness: QueueHarness): void {
   describe(`queue conformance: ${harness.label}`, () => {
@@ -458,10 +467,51 @@ export function runQueueConformance(harness: QueueHarness): void {
           }
           return undefined;
         })();
+        await asleep();
         await fixture.advance(timeUnitMs * 4);
         const outcome = await Promise.race([consumer, fixture.advance(timeUnitMs * 2).then(() => 'still asleep' as const)]);
         assert.ok(outcome !== 'still asleep', 'the consumer slept past the delayed job');
         assert.ok(outcome !== undefined, 'the consumer woke but found no job');
+      });
+    });
+
+    unitTest(`[${harness.label}] a waiting consumer wakes when an abandoned lease runs out, not at its idle timeout`, async () => {
+      await withFixture({}, async (fixture) => {
+        const { queue, tenants, timeUnitMs } = fixture;
+        await queue.enqueue(tenants[0]!, { kind: 'reply', payload: PAYLOAD });
+        // Claimed by a worker that then died: nobody will complete, fail, or
+        // renew it, and nothing will notify anyone when its lease runs out.
+        const abandoned = await queue.claim({ visibilityTimeoutMs: timeUnitMs * 2 });
+        assert.ok(abandoned !== undefined);
+        // What an idle consumer does: wait, sweep, look, repeat.
+        const consumer = (async () => {
+          for (let round = 0; round < 5; round += 1) {
+            await queue.waitForWork(timeUnitMs * 1000);
+            await queue.reclaimExpired();
+            const job = await queue.claim();
+            if (job !== undefined) return job;
+          }
+          return undefined;
+        })();
+        await asleep();
+        await fixture.advance(timeUnitMs * 4);
+        const outcome = await Promise.race([consumer, fixture.advance(timeUnitMs * 2).then(() => 'still asleep' as const)]);
+        assert.ok(outcome !== 'still asleep', 'the consumer slept past the expired lease');
+        assert.ok(outcome !== undefined, 'the consumer woke but found no job');
+        assert.equal(outcome.id, abandoned.id);
+        assert.equal(outcome.attempt, 2);
+      });
+    });
+
+    unitTest(`[${harness.label}] a lease is expired at the instant it runs out`, async () => {
+      await withFixture({}, async (fixture) => {
+        const { queue, tenants, timeUnitMs } = fixture;
+        await queue.enqueue(tenants[0]!, { kind: 'reply', payload: PAYLOAD });
+        assert.ok((await queue.claim({ visibilityTimeoutMs: timeUnitMs * 2 })) !== undefined);
+        // A waiter woken by the lease running out must find it reclaimable then,
+        // not one tick later, or it goes back to sleep until its idle timeout.
+        await fixture.advance(timeUnitMs * 2);
+        assert.equal(await queue.reclaimExpired(), 1);
       });
     });
 

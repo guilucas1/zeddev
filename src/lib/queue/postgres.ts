@@ -494,7 +494,7 @@ export class PostgresQueue implements Queue {
                 run_at      = CASE WHEN attempt >= max_attempts THEN run_at ELSE now() END,
                 last_error_kind = 'internal',
                 last_error_code = 'queue.lease_expired'
-          WHERE queue = $1 AND state = 'running' AND leased_until < now()`,
+          WHERE queue = $1 AND state = 'running' AND leased_until <= now()`,
         [this.name],
       ),
     );
@@ -551,8 +551,14 @@ export class PostgresQueue implements Queue {
   }
 
   /**
-   * Milliseconds until the next delayed job of this queue comes due, or
-   * `Infinity` if none is waiting.
+   * Milliseconds until the next delayed job of this queue comes due or the next
+   * running job's lease runs out, or `Infinity` if neither is pending.
+   *
+   * A lease running out is the other thing nobody is told about: a worker that
+   * died holding a job notifies no one. Without it a sleeping consumer would take
+   * the job over only at its idle timeout, after the lease itself had already made
+   * the customer wait. A live worker renews its leases, so this also wakes a
+   * waiter once per renewal of someone else's job, at one query each.
    *
    * A job enqueued with a delay — a retry's backoff, a conversation turn's
    * aggregation window — notifies when it is *inserted*, not when it becomes due,
@@ -567,9 +573,12 @@ export class PostgresQueue implements Queue {
     try {
       const result = await withDispatchScope(this.#pool, (tx) =>
         tx.query<{ due_in_ms: number | null }>(
-          `SELECT (EXTRACT(EPOCH FROM (min(run_at) - now())) * 1000)::float8 AS due_in_ms
-             FROM queue_jobs
-            WHERE queue = $1 AND state = 'ready' AND run_at > now()`,
+          `SELECT (EXTRACT(EPOCH FROM (min(due) - now())) * 1000)::float8 AS due_in_ms
+             FROM (SELECT run_at AS due FROM queue_jobs
+                    WHERE queue = $1 AND state = 'ready' AND run_at > now()
+                   UNION ALL
+                   SELECT leased_until FROM queue_jobs
+                    WHERE queue = $1 AND state = 'running' AND leased_until > now()) upcoming`,
           [this.name],
         ),
       );

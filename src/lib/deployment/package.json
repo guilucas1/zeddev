@@ -23,6 +23,9 @@
     "@zeddev/vault": "*"
   },
   "devDependencies": {
+    "@zeddev/bot": "*",
+    "@zeddev/queue": "*",
+    "@zeddev/secrets": "*",
     "@zeddev/testing": "*"
   }
 }

@@ -276,7 +276,9 @@ export class InMemoryQueue implements Queue {
     let reclaimed = 0;
     for (const job of this.#jobs) {
       if (job.state !== 'running') continue;
-      if (job.leasedUntilMs === undefined || job.leasedUntilMs >= now) continue;
+      // Expired at the instant it runs out, as in the real adapter: a waiter woken
+      // exactly then must find it reclaimable, or it would sleep to its idle timeout.
+      if (job.leasedUntilMs === undefined || job.leasedUntilMs > now) continue;
       reclaimed += 1;
       job.lastErrorKind = 'internal';
       job.lastErrorCode = 'queue.lease_expired';
@@ -310,12 +312,19 @@ export class InMemoryQueue implements Queue {
       this.#woken = false;
       return;
     }
-    // Same rule as the real adapter: a delayed job notifies nobody when it comes
-    // due, so the wait ends no later than the next one does.
+    // Same rule as the real adapter: neither a delayed job coming due nor an
+    // abandoned lease running out notifies anybody, so the wait ends no later than
+    // the next of either.
     const now = this.#now();
     const nextDue = this.#jobs
-      .filter((job) => job.state === 'ready' && job.runAtMs > now)
-      .reduce((soonest, job) => Math.min(soonest, job.runAtMs - now), Infinity);
+      .flatMap((job) =>
+        job.state === 'ready' && job.runAtMs > now
+          ? [job.runAtMs - now]
+          : job.state === 'running' && job.leasedUntilMs !== undefined && job.leasedUntilMs > now
+            ? [job.leasedUntilMs - now]
+            : [],
+      )
+      .reduce((soonest, dueInMs) => Math.min(soonest, dueInMs), Infinity);
     const waitMs = Math.min(timeoutMs, nextDue);
     await new Promise<void>((resolvePromise) => {
       let settled = false;
