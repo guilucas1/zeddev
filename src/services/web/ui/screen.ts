@@ -66,6 +66,7 @@ function humanize(key: string): string {
 }
 
 const CODE_MESSAGES: Readonly<Record<string, string>> = {
+  'ai.no_candidate': 'No candidate AI provider is configured. Set the AI_CANDIDATE_* keys and restart the API to verify one.',
   'auth.forbidden': "You don't have access to that.",
   'network': "We couldn't reach the server. Check your connection and try again.",
   'request.cross_origin': 'This page was not opened from the address the platform is configured for.',

@@ -93,7 +93,9 @@ import {
   parseConversationListInput,
   parseResumeInput,
   parseTranscriptInput,
+  parseVerificationInput,
   readTranscript,
+  verifyAiProvider,
   resumeConversation,
 } from '@zeddev/conversation';
 import type { Connection, Pool } from '@zeddev/db';
@@ -161,6 +163,12 @@ export interface ApiDependencies {
   readonly mailer: Mailer;
   /** The platform's AI provider. Used by the reply preview, and described to the operator. */
   readonly ai: AiProvider;
+  /**
+   * The provider in the candidate slot (`AI_CANDIDATE_*`), if one is configured.
+   * Reachable only through operator verification: no client route and no reply
+   * path is given it, which is what keeps it off live conversations.
+   */
+  readonly candidateAi?: AiProvider | undefined;
   /** Meta's Cloud API, used by the connection flow to prove a number works. */
   readonly cloud: WhatsAppCloud;
   /**
@@ -212,7 +220,7 @@ interface Route {
 const ACCEPTED = { status: 'accepted' } as const;
 
 export function createApi(dependencies: ApiDependencies): Api {
-  const { identity, pool, settings, ai, cloud, sealer, verificationTtlMs } = dependencies;
+  const { identity, pool, settings, ai, candidateAi, cloud, sealer, verificationTtlMs } = dependencies;
   const clock = dependencies.clock ?? new SystemClock();
   const logger = (dependencies.logger ?? new Logger()).child({ component: 'api' });
   const outbox = new MailOutbox(dependencies.mailer, logger);
@@ -1158,17 +1166,51 @@ export function createApi(dependencies: ApiDependencies): Api {
     },
     {
       // Which provider and model is answering every tenant — ai-provider-
-      // portability.md AC8. The descriptor carries no credential and no endpoint.
+      // portability.md AC8 — and which, if any, waits in the candidate slot. The
+      // descriptors carry no credential and no endpoint.
       method: 'GET',
       path: '/v1/operator/ai-provider',
       handle: async (context) => {
-        const provider = await identity.withOperatorAction(
+        const body = await identity.withOperatorAction(
           sessionToken(context, OPERATOR_SESSION_COOKIE),
           'platform.health.read',
           'ai.provider',
-          async () => ai.descriptor,
+          async () => ({ provider: ai.descriptor, candidate: candidateAi?.descriptor ?? null }),
         );
-        return { status: 200, body: { provider } };
+        return { status: 200, body };
+      },
+    },
+    {
+      // ai-provider-portability.md AC4: put the active or the candidate provider
+      // through the verification suite, which drives the live reply and media
+      // paths with a made-up business. Shares the preview's per-key budget under
+      // a key no tenant id can equal, since both spend the one AI quota. The
+      // model is called after the operator's transaction commits.
+      method: 'POST',
+      path: '/v1/operator/ai-provider/verify',
+      handle: async (context) => {
+        const target = parseVerificationInput(await context.body());
+        const provider = await identity.withOperatorAction(
+          sessionToken(context, OPERATOR_SESSION_COOKIE),
+          'platform.ai.verify',
+          'ai.provider',
+          async () => {
+            const chosen = target === 'active' ? ai : candidateAi;
+            if (chosen === undefined) throw new HttpError(409, 'ai.no_candidate');
+            const decision = previewLimiter.take('platform:ai-verification');
+            if (!decision.allowed) {
+              throw new HttpError(429, 'request.rate_limited', {
+                'retry-after': String(Math.max(1, Math.ceil(decision.retryAfterMs / 1000))),
+              });
+            }
+            return chosen;
+          },
+        );
+        const verification = await verifyAiProvider(provider, { active: ai.descriptor, clock });
+        logger.info(`api.ai_verification.${target}`, {
+          count: verification.checks.filter((check) => check.outcome === 'failed').length,
+        });
+        return { status: 200, body: { target, verification } };
       },
     },
 

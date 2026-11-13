@@ -15,7 +15,15 @@
 
 export { AdapterCore, DEFAULT_AI_BACKOFF, type AdapterDependencies } from './adapter.ts';
 export { MAX_ERROR_BODY_BYTES, MAX_RETRY_WAIT_MS, parseRetryAfter, runAttempts, safeProviderCode, type AttemptOutcome, type AttemptPolicy } from './attempts.ts';
-export { AI_CONFIG_SCHEMA, loadAiConfig, loadAiSettings, type AiConfig } from './config.ts';
+export {
+  AI_CANDIDATE_CONFIG_SCHEMA,
+  AI_CONFIG_SCHEMA,
+  loadAiCandidateSettings,
+  loadAiConfig,
+  loadAiSettings,
+  type AiCandidateConfig,
+  type AiConfig,
+} from './config.ts';
 export { GEMINI_TRANSCRIPTION_INSTRUCTIONS, GeminiProvider, geminiTranscriptionPrompt } from './gemini.ts';
 export { OpenAiCompatibleProvider } from './openai.ts';
 export { AI_PROVIDERS, createAiProvider, type ProviderEntry } from './registry.ts';

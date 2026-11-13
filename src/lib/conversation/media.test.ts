@@ -57,7 +57,8 @@ unitTest('a model that was declared without the capability is asked for nothing'
   // The port refuses before any request leaves, so the verdict is a technical one.
   const provider = new InMemoryAiProvider({ capabilities: ['text'] });
   const verdict = await understandMedia(provider, { kind: 'image', caption: undefined, mimeType: 'image/jpeg', data: PHOTO });
-  assert.deepEqual(verdict, { failure: 'provider_failed' });
+  assert.equal(verdict.failure, 'provider_failed');
+  assert.equal(verdict.cause?.code, 'ai.capability_unsupported', 'the cause says which failure it was');
   assert.equal(provider.backend.requests.length, 0);
 });
 

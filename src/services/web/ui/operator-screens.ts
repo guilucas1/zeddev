@@ -79,8 +79,94 @@ interface BotStatuses {
   }[];
 }
 
+interface ProviderDescriptor {
+  readonly provider: string;
+  readonly model: string;
+  readonly transcriptionModel: string;
+  readonly capabilities: readonly string[];
+}
+
 interface AiProviderAnswer {
-  readonly provider: { readonly provider: string; readonly model: string; readonly transcriptionModel: string; readonly capabilities: readonly string[] };
+  readonly provider: ProviderDescriptor;
+  readonly candidate: ProviderDescriptor | null;
+}
+
+interface VerificationAnswer {
+  readonly target: string;
+  readonly verification: {
+    readonly provider: ProviderDescriptor;
+    readonly passed: boolean;
+    readonly capabilityGaps: readonly string[];
+    readonly verifiedAt: string;
+    readonly checks: readonly {
+      readonly check: string;
+      readonly outcome: 'passed' | 'failed' | 'skipped';
+      readonly expected: string;
+      readonly observed: string | null;
+      readonly errorCode: string | null;
+      readonly durationMs: number;
+    }[];
+  };
+}
+
+const CHECK_NAMES: Readonly<Record<string, string>> = {
+  reply: 'Answers from what it was told',
+  handoff: 'Hands over when asked',
+  decline: 'Declines a topic it must avoid',
+  vision: 'Reads a photo',
+  audio: 'Takes a voice note',
+};
+
+const OUTCOME_PILLS = { passed: ['Passed', 'good'], failed: ['Failed', 'bad'], skipped: ['Not supported', 'muted'] } as const;
+
+function describeProvider(descriptor: ProviderDescriptor): string {
+  const transcription = descriptor.transcriptionModel === descriptor.model ? '' : `, transcribing with ${descriptor.transcriptionModel}`;
+  return `${descriptor.provider}, model ${descriptor.model}${transcription}. Handles ${descriptor.capabilities.join(', ')}.`;
+}
+
+/**
+ * The AI provider card (ai-provider-portability.md AC4, AC5, AC8). Promotion and
+ * revert are configuration, so the card says how rather than offering a button
+ * that could not do it.
+ */
+function aiProviderCard(answer: AiProviderAnswer, result: VerificationAnswer | undefined): Html {
+  const { provider, candidate } = answer;
+  return html`<section class="card">
+    <h2>AI provider</h2>
+    <dl class="facts">
+      <dt>Answering conversations</dt><dd>${describeProvider(provider)}</dd>
+      <dt>Candidate</dt><dd>${candidate === null ? 'None configured.' : describeProvider(candidate)}</dd>
+    </dl>
+    <p>
+      <button data-action="verify" data-target="active">Verify the active provider</button>
+      ${candidate !== null && html`<button data-action="verify" data-target="candidate">Verify the candidate</button>`}
+    </p>
+    <p class="hint">Verification asks the provider a few questions as a made-up bakery, through the same steps a real conversation takes. Each run uses AI quota that every business shares. To promote the candidate, exchange each AI_CANDIDATE_* value with its AI_* counterpart and restart the API and the conversation worker; the old provider then becomes the candidate, and exchanging them back reverts.</p>
+    ${result !== undefined && verificationView(result)}
+  </section>`;
+}
+
+function verificationView({ target, verification }: VerificationAnswer): Html {
+  return html`<h3>${target === 'candidate' ? 'Candidate' : 'Active provider'}: ${verification.provider.provider}, model ${verification.provider.model}
+      ${verification.passed ? pill('Passed', 'good') : pill('Failed', 'bad')}</h3>
+    <p class="hint">Verified ${when(verification.verifiedAt)}</p>
+    ${verification.capabilityGaps.length > 0 &&
+    html`<p class="warning">This provider does not handle ${verification.capabilityGaps.join(', ')}. After a swap, those messages would get each business's fallback message instead of an answer.</p>`}
+    <table>
+      <thead><tr><th>Check</th><th>Result</th><th>Expected</th><th>What came back</th><th class="number">Time</th></tr></thead>
+      <tbody>
+        ${verification.checks.map((check) => {
+          const [label, tone] = OUTCOME_PILLS[check.outcome];
+          return html`<tr>
+            <td>${CHECK_NAMES[check.check] ?? check.check}</td>
+            <td>${pill(label, tone)}</td>
+            <td>${check.expected}</td>
+            <td>${check.observed ?? (check.errorCode === null ? '—' : `Error: ${check.errorCode}`)}</td>
+            <td class="number">${check.outcome === 'skipped' ? '—' : milliseconds(check.durationMs)}</td>
+          </tr>`;
+        })}
+      </tbody>
+    </table>`;
 }
 
 /** How quickly a state change reaches an operator watching the page (`operator-health-monitoring.md` AC2). */
@@ -135,7 +221,8 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
   let lastSignature = '';
   let stale = false;
   let statuses = new Map<string, BotStatuses['tenants'][number]>();
-  let provider: AiProviderAnswer['provider'] | undefined;
+  let provider: AiProviderAnswer | undefined;
+  let verification: VerificationAnswer | undefined;
   let detail: DetailAnswer | undefined;
 
   const rangeBody = (): Record<string, unknown> =>
@@ -193,8 +280,6 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
 
   const listView = (): Html => html`<h1>Platform health</h1>
     ${stale && html`<p class="warning">Couldn't refresh just now. This may be out of date.</p>`}
-    ${provider !== undefined &&
-    html`<p class="hint">AI provider: ${provider.provider}, model ${provider.model}. Handles ${provider.capabilities.join(', ')}.</p>`}
     <section class="card">${controlsForm()}</section>
     ${unavailable(health.range)}
     <section class="card table">
@@ -204,7 +289,8 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
             <thead><tr><th>Business</th><th>Connection</th><th class="number">Received</th><th class="number">Sent</th><th class="number">Error rate</th><th class="number">Avg response</th><th>Flags</th></tr></thead>
             <tbody>${health.tenants.map(tenantRow)}</tbody>
           </table>`}
-    </section>`;
+    </section>
+    ${provider !== undefined && aiProviderCard(provider, verification)}`;
 
   const detailView = ({ tenant, transitions, range }: DetailAnswer): Html => {
     const { metrics, connection } = tenant;
@@ -266,7 +352,7 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
       ]);
       lastSignature = signature(connections);
       statuses = new Map(botStatuses.tenants.map((tenant) => [tenant.tenantId, tenant]));
-      provider = ai.provider;
+      provider = ai;
     },
     pollAfterMs: () => OPERATOR_POLL_MS,
     poll: async () => {
@@ -307,6 +393,9 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
       },
       close: () => {
         detail = undefined;
+      },
+      verify: async ({ target }) => {
+        verification = await context.api.post<VerificationAnswer>('/v1/operator/ai-provider/verify', { target });
       },
     },
   };

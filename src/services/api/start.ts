@@ -25,7 +25,7 @@
 
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createAiProvider, loadAiSettings, type AiProvider } from '@zeddev/ai';
+import { createAiProvider, loadAiCandidateSettings, loadAiSettings, type AiProvider } from '@zeddev/ai';
 import { loadAll, loadConfig, type RawEnv } from '@zeddev/config';
 import { assertTenantIsolationEnforceable, createPool, loadDatabaseConfig, type Pool } from '@zeddev/db';
 import { IdentityService, loadIdentityPolicy, type IdentityServiceOptions } from '@zeddev/identity';
@@ -43,6 +43,8 @@ export interface StartOptions {
   readonly mailer?: Mailer | undefined;
   /** Replace the configured AI provider. Tests use this; a deployment never does. */
   readonly ai?: AiProvider | undefined;
+  /** Replace the candidate provider. Tests use this; a deployment never does. */
+  readonly candidateAi?: AiProvider | undefined;
   /** Replace the WhatsApp Cloud API. Tests use this; a deployment never does. */
   readonly cloud?: WhatsAppCloud | undefined;
   /** Test-only scrypt cost. See `IdentityServiceOptions.credentialParams` for why this is not configuration. */
@@ -61,7 +63,7 @@ export interface RunningApi {
 }
 
 export async function startApi(env: RawEnv = process.env, options: StartOptions = {}): Promise<RunningApi> {
-  const [database, policy, smtp, ai, settings, logging, sealer, whatsapp] = loadAll([
+  const [database, policy, smtp, ai, candidate, settings, logging, sealer, whatsapp] = loadAll([
     () => loadDatabaseConfig(env),
     () => loadIdentityPolicy(env),
     // Parsed even when a test supplies its own mailer, so a deployment missing a
@@ -72,6 +74,9 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
     // tenant's conversations share, and a wrong one surfaces on the first preview
     // as a logged `ai_generation` failure rather than silently.
     () => loadAiSettings(env),
+    // The candidate slot (ai-provider-portability.md AC4). Only this service reads
+    // it, and only operator verification is handed what it builds.
+    () => loadAiCandidateSettings(env),
     () => loadServerSettings(env),
     () => loadConfig(LOGGING_CONFIG_SCHEMA, env),
     // The sealing keys. Built here, not inside `@zeddev/whatsapp`, so a missing
@@ -111,6 +116,7 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
     identity,
     mailer,
     ai: options.ai ?? createAiProvider(ai),
+    candidateAi: options.candidateAi ?? (candidate === undefined ? undefined : createAiProvider(candidate)),
     cloud: options.cloud ?? new GraphWhatsAppCloud(loadGraphCloudSettings(env)),
     sealer,
     verificationTtlMs: whatsapp.WHATSAPP_VERIFICATION_TTL,

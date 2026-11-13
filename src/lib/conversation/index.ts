@@ -113,4 +113,21 @@ export {
   type TranscriptPage,
   type TranscriptQuery,
 } from './transcript.ts';
+export {
+  parseVerificationInput,
+  SILENT_WAV,
+  SOLID_RED_PNG,
+  VERIFICATION_CHECKS,
+  VERIFICATION_CONFIGURATION,
+  VERIFICATION_FIELDS,
+  VERIFICATION_MESSAGES,
+  VERIFICATION_OUTCOMES,
+  VERIFICATION_TARGETS,
+  verifyAiProvider,
+  type ProviderVerification,
+  type VerificationCheck,
+  type VerificationCheckResult,
+  type VerificationOutcome,
+  type VerificationTarget,
+} from './verification.ts';
 export { conversationHandlers, type ConversationWorkerDependencies } from './worker.ts';

@@ -141,7 +141,9 @@ Knowledge selection is done too: a tenant whose knowledge no longer fits one pro
 
 The dashboards are done: `services/web` serves the client and operator screens and is the one origin they share with the API, forwarding `/v1/`. A client can now sign up, confirm the mailed link, configure the bot, connect a number, go live, and read conversations in a browser, and an operator can watch every tenant, which also ends the mailed links landing on nothing. The screens are checked against the real API over PostgreSQL, and the stack was walked end to end in Chrome through Compose. See §4aa. That brings the totals to 1266 passing tests, zero skipped, 25 of 27 specs with covering tests, 611 spec-linked assertions.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. The next unblocked work is AI provider verification mode, then the component-independence and environment-portability validation in P4.
+AI provider verification is done too: an operator can put the active provider or a staged candidate (`AI_CANDIDATE_*`, read only by the API) through a fixed suite that drives the live reply and media paths, and see each check's result and what came back before a swap. Promoting and reverting are the same exchange of configuration values. `verification.ts` in `@zeddev/conversation`, a new operator action `platform.ai.verify`, and `POST /v1/operator/ai-provider/verify`. See §4ab. That brings the totals to 1282 passing tests, zero skipped, 25 of 27 specs with covering tests, 619 spec-linked assertions; `ai-provider-portability.md` now has covering tests for all 8 of its criteria.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. The next unblocked work is the component-independence and environment-portability validation in P4.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -533,7 +535,7 @@ call must never be able to cause Meta to redeliver.
   independence) needs the memory reset policy. Per `message-burst-aggregation.md`.
 - **[DONE]** `src/lib/ai` provider port with declared capabilities (text generation, vision, audio transcription),
   a registry, and configuration-driven selection. Two adapters (Gemini, OpenAI-compatible), an in-memory fake,
-  and a shared conformance suite. AC1, AC2, AC3, AC5, AC8 covered; AC4 (verification mode) is P4; AC6/AC7 are
+  and a shared conformance suite. AC1–AC5, AC8 covered (AC4 by the verification suite, §4ab); AC6/AC7 are
   structural (no tenant on any port call, instructions sent unchanged) but have no dedicated test. See §4p.
 - **[DECISION] Default provider: Google Gemini free tier**, because it covers text, vision, and audio in
   one free-tier provider, which keeps the v1 dependency count at one. A second adapter should be built
@@ -578,9 +580,8 @@ call must never be able to cause Meta to redeliver.
 - Offboarding: immediate stop of auto-responses, WhatsApp revocation, entry into the retention window,
   reactivation during the window, automatic deletion at window end, and on-demand permanent deletion with
   explicit irreversibility confirmation. Deletion must reach secrets and any backup or archived copy.
-- AI provider verification mode — exercising a candidate provider before it serves live traffic — and
-  revert to the prior provider. Required by `ai-provider-portability.md` and easy to skip until it is
-  needed urgently, which is the wrong time to build it.
+- **[DONE]** AI provider verification mode and revert: the `AI_CANDIDATE_*` slot, `verifyAiProvider`, and
+  `POST /v1/operator/ai-provider/verify`; promotion and revert are one exchange of configuration values. See §4ab.
 - Environment portability validation: bring the same artifacts up on all three tiers from configuration
   alone, and add an automated check that fails the build if environment-detection branching appears in the
   source. `environment-portability.md` states this as an inspectable criterion, so it should be a test.
@@ -616,7 +617,7 @@ call must never be able to cause Meta to redeliver.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
   `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
   457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
-  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.) (After the knowledge selection increment: 25 of 27 specs, 569 assertions.) (After the dashboard increment: 25 of 27 specs, 611 assertions.)
+  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.) (After the knowledge selection increment: 25 of 27 specs, 569 assertions.) (After the dashboard increment: 25 of 27 specs, 611 assertions.) (After the AI provider verification increment: 25 of 27 specs, 619 assertions.)
 
 ---
 
@@ -1402,7 +1403,7 @@ SMTP).
 
 ### Follow-ups the AI port increment leaves open
 
-- AC4 verification mode and a candidate-provider configuration: P4.
+- ~~AC4 verification mode and a candidate-provider configuration: P4.~~ Done, §4ab.
 - AC7: an output-level check that no provider identity reaches an end-customer needs the reply path.
 
 ---
@@ -1885,6 +1886,28 @@ SMTP).
 - `API_PUBLIC_BASE_URL` with a path prefix is accepted by the API but does not work end to end: pages use absolute `/assets/` and `/v1/` paths, and the operator cookie is `Path=/v1/operator`.
 - The browser walkthrough was a one-off script, not part of `npm test`. `shell.ts` therefore has no automated coverage; `contract.test.ts` stops at the screens.
 - No password-strength hint beyond a sentence on signup: no route exposes the minimum length.
+
+---
+
+## 4ab. Findings from the AI provider verification increment
+
+- **[DECISION] The candidate is a second configuration slot, `AI_CANDIDATE_*`, read only by the API.** `ai-provider-portability.md` AC4 asks that a new model be confirmed before it serves live conversations. A slot that only `services/api` loads means no setting can route a customer to the candidate: the conversation worker is built from `AI_*` alone, and a structural test (`verification.test.ts`) fails the build if any other service names `loadAiCandidateSettings`, `AI_CANDIDATE_CONFIG_SCHEMA`, or `candidateAi`. The alternative, a traffic-splitting "canary" in the worker, would have put real customers on an unverified model, which is what AC4 exists to prevent.
+- **[DECISION] Promotion and revert are one move: exchange each `AI_*` value with its `AI_CANDIDATE_*` counterpart and restart the API and the worker.** After a promotion the previous provider sits in the candidate slot, still verifiable and one exchange from being restored (AC5). A promote button was not built: the selection is configuration (AC1), and the API cannot rewrite a deployment's environment on any of the three tiers. The operator screen says how instead.
+- **The two slots share one validator, `settingsFrom` in `src/lib/ai/config.ts`.** A candidate held to looser rules could pass verification and then refuse to start once promoted. Each issue names the key in its own slot (`AI_CANDIDATE_CAPABILITIES`, not `AI_CAPABILITIES`). The candidate runs under the shared `AI_REQUEST_TIMEOUT` and `AI_MAX_ATTEMPTS`, so it is judged on the budget it would serve under. A candidate key set while `AI_CANDIDATE_PROVIDER=none` is refused, not ignored.
+- **The suite (`verifyAiProvider`, `src/lib/conversation/verification.ts`) drives the live functions, never its own prompt.** A made-up bakery (`VERIFICATION_CONFIGURATION`) goes through `generateReply` for three text checks (`reply` quotes a fact it was given, `handoff` on a request for a person, `decline` on a topic a rule says to avoid) and through `understandMedia` for `vision` (a generated solid red PNG) and `audio` (a generated second of WAV silence). The text checks exist mainly because a model that ignores the tagged output protocol fails silently live, as a rise in `unusable_output` fallbacks and handoffs never taken.
+- **Why made-up and not a tenant's configuration:** the operator has no access to any tenant's configuration (`tenant-data-isolation.md`), and a fixed business makes two providers verified weeks apart comparable.
+- **What it cannot judge.** The platform holds no recording of speech, so `audio` proves only that the transcription model and its credential answer. The clip is WAV, not a WhatsApp voice note's Ogg Opus, because producing Opus would need an encoder; both are in the port's accepted set. Whether a reply *reads* well is left to the operator, which is why every check returns what came back.
+- **A capability the active provider has and the candidate lacks is reported (`capabilityGaps`), and its check is skipped, not failed.** The spec makes such a gap the operator's decision to accept.
+- **`MediaVerdict` gained an optional `cause`** (the `ai_generation` error behind `provider_failed`), so verification can show `ai.unauthorized` and not just "failed". It is never stored.
+- **New operator action `platform.ai.verify`**, separate from `platform.health.read`, because each use spends AI quota that every tenant shares. It is the first operator action that is not a read; it still touches no tenant. The route shares the preview's `FixedWindowRateLimiter` under the key `platform:ai-verification`, which no tenant id can equal, so verification neither starves nor is starved by a tenant's previews.
+- **Routes:** `GET /v1/operator/ai-provider` now also returns `candidate` (a descriptor or `null`). The new `POST /v1/operator/ai-provider/verify` takes `{ "target": "active" | "candidate" }` and returns 409 `ai.no_candidate` when the slot is empty. The operator dashboard has an "AI provider" card with both descriptors, verify buttons, and a results table.
+- **Flake seen once, not caused by this change:** the first `npm run check` straight after `db:up` on a cold Docker Desktop cancelled 30 tests. Fixture setup hit a statement timeout (SQLSTATE 57014) under full parallel load. An immediate re-run passed all 1282 tests.
+
+### Follow-ups the verification increment leaves open
+
+- **Neither adapter has run the suite against a real upstream yet.** This is the natural form of the §4p smoke test: put the real Gemini key in the candidate slot and press "Verify the candidate".
+- A verification result is not kept. An operator who wants a record before promoting has only the `access_records` row for `platform.ai.verify`, which says that a verification ran but not its outcome.
+- The suite is English-only. Once language configuration lands (blocked on §4), a check in the configured language would be worth adding.
 
 ---
 

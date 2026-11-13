@@ -96,7 +96,8 @@ export function principalId(principal: Principal): string {
  *
  * The operator entries are the complete list of what
  * `operator-health-monitoring.md` and `operator-proactive-alerting.md` grant, and
- * they are all reads. There is no operator action that writes tenant state,
+ * apart from AI provider verification they are all reads. There is no operator
+ * action that writes tenant state,
  * because `tenant-data-isolation.md` gives the operator visibility and never
  * authority.
  */
@@ -126,6 +127,10 @@ export const ACTION_PRINCIPALS = {
   'platform.metrics.read': 'operator',
   'platform.notifications.read': 'operator',
   'platform.access_records.read': 'operator',
+  // ai-provider-portability.md AC4. Not a read, but it touches no tenant: it puts a
+  // made-up business to a provider. Its own action, apart from the health read,
+  // because each use spends AI quota every tenant's conversations share.
+  'platform.ai.verify': 'operator',
 } as const;
 
 export type Action = keyof typeof ACTION_PRINCIPALS;

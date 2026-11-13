@@ -30,7 +30,7 @@
  * register one is the only way this could still drift, and it is closed.
  */
 
-import { AI_CONFIG_SCHEMA } from '@zeddev/ai';
+import { AI_CANDIDATE_CONFIG_SCHEMA, AI_CONFIG_SCHEMA } from '@zeddev/ai';
 import { API_CONFIG_SCHEMA } from '@zeddev/api/config';
 import { renderEnvTemplate, renderReference, type ConfigSchema } from '@zeddev/config';
 import { WORKER_CONFIG_SCHEMA } from '@zeddev/conversation-worker/config';
@@ -96,6 +96,12 @@ export const PLATFORM_CONFIG_SCHEMAS: readonly ConfigSection[] = [
     rationale:
       'The model that writes every bot reply, reads images, and transcribes voice notes. ai-provider-portability.md requires swapping it — and reverting the swap — be a configuration change, so these keys are the whole mechanism: one platform-wide selection, applied to every tenant at once, with no per-provider tenant state to migrate. The base URL is always stated rather than defaulted, so a deployment can point the same adapter at a vendor, a gateway, or a local model server without a code change. AI_CAPABILITIES records what the chosen model can do; a message needing anything else is answered with the fallback message the client wrote rather than sent to a model that cannot handle it.',
     schema: AI_CONFIG_SCHEMA,
+  },
+  {
+    title: 'AI provider candidate',
+    rationale:
+      'A second provider the operator can try before it answers anyone. ai-provider-portability.md AC4 asks that a new model be confirmed before it serves live conversations, and AC5 that a swap be reversible; both are this one slot. Only the API reads these keys, to run the verification suite from the operator dashboard, and the conversation worker never does, so no setting here can route a real customer to the candidate. Promoting and reverting are the same exchange of values between the AI_* keys and these, which leaves the previous provider in the candidate slot, still verifiable, after every swap. Unset, the slot is empty and verification is offered for the active provider only.',
+    schema: AI_CANDIDATE_CONFIG_SCHEMA,
   },
   {
     title: 'WhatsApp',

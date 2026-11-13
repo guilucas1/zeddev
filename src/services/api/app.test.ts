@@ -193,12 +193,14 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
     readonly identity?: IdentityService;
     readonly mailer?: Mailer;
     readonly ai?: InMemoryAiProvider;
+    readonly candidateAi?: InMemoryAiProvider;
     readonly cloud?: InMemoryWhatsAppCloud;
   } = {}): Api {
     return createApi({
       identity: options.identity ?? identity,
       mailer: options.mailer ?? mailer,
       ai: options.ai ?? ai,
+      candidateAi: options.candidateAi,
       cloud: options.cloud ?? cloud,
       sealer: SEALER,
       verificationTtlMs: 15 * 60_000,
@@ -2029,6 +2031,99 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
       assert.equal(peeked.status, 401);
     },
   );
+
+  specTest(
+    'ai-provider-portability.md',
+    'AC4 a new provider can be verified before it serves live conversations',
+    'the operator sees and verifies the candidate over the API, while client replies stay with the active provider',
+    async () => {
+      const candidate = new InMemoryAiProvider({ model: 'candidate-model', capabilities: ['text'], reply: () => '[reply]\nWe open at 8:00.' });
+      const staged = apiWith({ candidateAi: candidate });
+      const stagedServed = await serve(staged);
+      extra.push(stagedServed);
+
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(stagedServed, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const operatorCookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+
+      const described = await call(stagedServed, 'GET', '/v1/operator/ai-provider', { cookie: operatorCookie });
+      assert.equal(described.body.provider.model, 'memory-model');
+      assert.deepEqual(described.body.candidate, { provider: 'memory', model: 'candidate-model', transcriptionModel: 'candidate-model', capabilities: ['text'] });
+
+      const verified = await call(stagedServed, 'POST', '/v1/operator/ai-provider/verify', { cookie: operatorCookie, json: { target: 'candidate' } });
+      assert.equal(verified.status, 200);
+      assert.equal(verified.body.target, 'candidate');
+      const { verification } = verified.body;
+      assert.equal(verification.provider.model, 'candidate-model');
+      assert.equal(verification.passed, false);
+      assert.deepEqual(verification.capabilityGaps, ['vision', 'audio']);
+      assert.deepEqual(
+        verification.checks.map((check: { check: string; outcome: string }) => `${check.check}:${check.outcome}`),
+        ['reply:passed', 'handoff:failed', 'decline:failed', 'vision:skipped', 'audio:skipped'],
+      );
+      assert.equal(verification.checks[0].observed, 'We open at 8:00.');
+      assert.equal(candidate.backend.requests.length, 3);
+
+      // A client's preview on the same service is answered by the active provider.
+      const { cookie } = await onboard();
+      const before = ai.backend.requests.length;
+      assert.equal((await call(stagedServed, 'POST', '/v1/bot/preview', { cookie, json: { message: 'Hello?' } })).status, 200);
+      assert.equal(ai.backend.requests.length, before + 1);
+      assert.equal(candidate.backend.requests.length, 3, 'the candidate answered nothing a client sent');
+
+      // Verification is the operator's alone.
+      const clientToken = cookie.split('=')[1];
+      const asClient = await call(stagedServed, 'POST', '/v1/operator/ai-provider/verify', {
+        cookie: `${OPERATOR_SESSION_COOKIE}=${clientToken}`,
+        json: { target: 'candidate' },
+      });
+      assert.equal(asClient.status, 401);
+      assert.equal((await call(stagedServed, 'POST', '/v1/operator/ai-provider/verify', { json: { target: 'active' } })).status, 401);
+      assert.equal(candidate.backend.requests.length, 3);
+    },
+  );
+
+  specTest(
+    'ai-provider-portability.md',
+    'AC4 a new provider can be verified before it serves live conversations',
+    'with no candidate configured the slot reads as empty, verifying it is a conflict, and the active provider can still be verified',
+    async () => {
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const operatorCookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+
+      assert.equal((await call(served, 'GET', '/v1/operator/ai-provider', { cookie: operatorCookie })).body.candidate, null);
+      const missing = await call(served, 'POST', '/v1/operator/ai-provider/verify', { cookie: operatorCookie, json: { target: 'candidate' } });
+      assert.equal(missing.status, 409);
+      assert.equal(missing.body.error.code, 'ai.no_candidate');
+      const invalid = await call(served, 'POST', '/v1/operator/ai-provider/verify', { cookie: operatorCookie, json: { target: 'both' } });
+      assert.equal(invalid.status, 400);
+
+      const active = await call(served, 'POST', '/v1/operator/ai-provider/verify', { cookie: operatorCookie, json: { target: 'active' } });
+      assert.equal(active.status, 200);
+      assert.deepEqual(active.body.verification.capabilityGaps, []);
+      assert.equal(active.body.verification.checks.length, 5);
+    },
+  );
+
+  unitTest('operator verification spends the preview budget under its own key, so it can neither starve nor be starved by a tenant', async () => {
+    const budgeted = apiWith({ settings: { previewRateLimit: 1 } });
+    const budgetedServed = await serve(budgeted);
+    extra.push(budgetedServed);
+    const email = `ops-${nextEmail()}`;
+    await identity.createOperator({ email, password: PASSWORD });
+    const login = await call(budgetedServed, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+    const operatorCookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+    const verify = () => call(budgetedServed, 'POST', '/v1/operator/ai-provider/verify', { cookie: operatorCookie, json: { target: 'active' } });
+    assert.equal((await verify()).status, 200);
+    const limited = await verify();
+    assert.equal(limited.status, 429);
+    assert.ok(Number(limited.headers.get('retry-after')) >= 1);
+    const { cookie } = await onboard();
+    assert.equal((await call(budgetedServed, 'POST', '/v1/bot/preview', { cookie, json: { message: 'hi' } })).status, 200);
+  });
 
   // -------------------------------------------------------------------------
   // Transport defences

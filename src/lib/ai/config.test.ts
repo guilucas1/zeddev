@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { ConfigurationError } from '@zeddev/errors';
 import { specTest, unitTest } from '@zeddev/testing';
-import { loadAiSettings } from './config.ts';
+import { loadAiCandidateSettings, loadAiSettings } from './config.ts';
 import { GeminiProvider } from './gemini.ts';
 import { OpenAiCompatibleProvider } from './openai.ts';
 import { createAiProvider } from './registry.ts';
@@ -160,3 +160,82 @@ unitTest('a base URL that is not http(s) is refused', () => {
     (error: unknown) => error instanceof ConfigurationError && error.keys.join() === 'AI_BASE_URL',
   );
 });
+
+// ---------------------------------------------------------------------------
+// The candidate slot — AC4 and AC5
+// ---------------------------------------------------------------------------
+
+/** The candidate keys for an active-slot environment: what an operator writes to stage a provider. */
+function asCandidate(env: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env)
+      .filter(([key]) => key !== 'AI_REQUEST_TIMEOUT' && key !== 'AI_MAX_ATTEMPTS')
+      .map(([key, value]) => [key.replace(/^AI_/, 'AI_CANDIDATE_'), value]),
+  );
+}
+
+/** Promotion and revert: exchange every AI_* value with its AI_CANDIDATE_* counterpart. */
+function exchange(env: Readonly<Record<string, string>>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of ['PROVIDER', 'BASE_URL', 'API_KEY', 'MODEL', 'TRANSCRIPTION_MODEL', 'CAPABILITIES']) {
+    const active = env[`AI_${key}`];
+    const candidate = env[`AI_CANDIDATE_${key}`];
+    if (candidate !== undefined) out[`AI_${key}`] = candidate;
+    if (active !== undefined) out[`AI_CANDIDATE_${key}`] = active;
+  }
+  return out;
+}
+
+const describeSettings = (settings: ReturnType<typeof loadAiSettings> | undefined) =>
+  settings === undefined ? undefined : { ...settings, apiKey: settings.apiKey.expose() };
+
+unitTest('the candidate slot is empty unless a provider is named, and then holds the same settings the active slot would', () => {
+  assert.equal(loadAiCandidateSettings(GEMINI_ENV), undefined);
+  assert.equal(loadAiCandidateSettings({ ...GEMINI_ENV, AI_CANDIDATE_PROVIDER: 'none' }), undefined);
+  const staged = loadAiCandidateSettings({ ...GEMINI_ENV, ...asCandidate(OPENAI_ENV), AI_MAX_ATTEMPTS: '2' });
+  assert.deepEqual(describeSettings(staged), { ...describeSettings(loadAiSettings(OPENAI_ENV)), maxAttempts: 2 });
+  assert.equal(staged?.maxAttempts, 2, 'exercised under the attempt budget it would serve under');
+});
+
+unitTest('a candidate is held to the active slot\'s rules, and every issue names the candidate key to fix', () => {
+  assert.throws(
+    () => loadAiCandidateSettings({ AI_CANDIDATE_PROVIDER: 'openai_compatible', AI_CANDIDATE_CAPABILITIES: 'text,audio' }),
+    (error: unknown) =>
+      error instanceof ConfigurationError &&
+      error.keys.join() === 'AI_CANDIDATE_BASE_URL,AI_CANDIDATE_MODEL,AI_CANDIDATE_TRANSCRIPTION_MODEL',
+  );
+  assert.throws(
+    () => loadAiCandidateSettings({ ...asCandidate(GEMINI_ENV), AI_CANDIDATE_CAPABILITIES: 'vision' }),
+    (error: unknown) => error instanceof ConfigurationError && error.keys.join() === 'AI_CANDIDATE_CAPABILITIES',
+  );
+  assert.throws(
+    () => loadAiCandidateSettings({ ...asCandidate(GEMINI_ENV), AI_CANDIDATE_BASE_URL: 'ftp://example.com/v1' }),
+    (error: unknown) => error instanceof ConfigurationError && error.keys.join() === 'AI_CANDIDATE_BASE_URL',
+  );
+});
+
+unitTest('a candidate key set while no candidate provider is named is refused, not ignored', () => {
+  assert.throws(
+    () => loadAiCandidateSettings({ ...GEMINI_ENV, AI_CANDIDATE_MODEL: 'gpt-4o-mini', AI_CANDIDATE_API_KEY: 'x' }),
+    (error: unknown) => error instanceof ConfigurationError && error.keys.join() === 'AI_CANDIDATE_API_KEY,AI_CANDIDATE_MODEL',
+  );
+});
+
+specTest(
+  'ai-provider-portability.md',
+  'AC5 reverting to the previous provider restores it without loss of any client configuration',
+  'promoting the candidate and reverting are the same exchange of values, and after a promotion the previous provider waits in the candidate slot',
+  () => {
+    const staged = { ...GEMINI_ENV, ...asCandidate(OPENAI_ENV) };
+    const promoted = exchange(staged);
+    assert.deepEqual(describeSettings(loadAiSettings(promoted)), describeSettings(loadAiSettings(OPENAI_ENV)), 'the candidate now answers');
+    assert.deepEqual(
+      describeSettings(loadAiCandidateSettings(promoted)),
+      describeSettings(loadAiSettings(GEMINI_ENV)),
+      'the previous provider is the candidate, still verifiable',
+    );
+    const reverted = exchange(promoted);
+    assert.deepEqual(describeSettings(loadAiSettings(reverted)), describeSettings(loadAiSettings(GEMINI_ENV)));
+    assert.deepEqual(describeSettings(loadAiCandidateSettings(reverted)), describeSettings(loadAiCandidateSettings(staged)));
+  },
+);

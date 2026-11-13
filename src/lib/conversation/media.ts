@@ -209,8 +209,14 @@ const CONTROL_CHARACTERS = new RegExp('[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u
 
 /** What became of one media message. */
 export type MediaVerdict =
-  | { readonly text: string; readonly failure?: undefined; readonly usage: TokenUsage | undefined }
-  | { readonly text?: undefined; readonly failure: MediaUnderstandingFailure; readonly usage?: TokenUsage | undefined };
+  | { readonly text: string; readonly failure?: undefined; readonly usage: TokenUsage | undefined; readonly cause?: undefined }
+  | {
+      readonly text?: undefined;
+      readonly failure: MediaUnderstandingFailure;
+      readonly usage?: TokenUsage | undefined;
+      /** The provider's error behind `provider_failed`, so a caller can say which failure it was. Never stored. */
+      readonly cause?: ZedError | undefined;
+    };
 
 /**
  * Ask the model what the bytes hold.
@@ -256,7 +262,7 @@ export async function understandMedia(
   } catch (error) {
     // Only what the port itself raises. A bug here should fail loudly, not read as
     // a customer's blurry photo.
-    if (error instanceof ZedError && error.kind === 'ai_generation') return { failure: 'provider_failed' };
+    if (error instanceof ZedError && error.kind === 'ai_generation') return { failure: 'provider_failed', cause: error };
     throw error;
   }
 }

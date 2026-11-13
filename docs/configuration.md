@@ -121,6 +121,19 @@ The model that writes every bot reply, reads images, and transcribes voice notes
 | `AI_REQUEST_TIMEOUT` | duration | no | `60000` | How long one request to the provider may take, including reading the response. A request that exceeds it counts as a transient failure and is retried within AI_MAX_ATTEMPTS. |
 | `AI_TRANSCRIPTION_MODEL` | string | no | `` | Model that transcribes voice notes, when it is not AI_MODEL. Required for "openai_compatible" when AI_CAPABILITIES includes audio, because those servers transcribe with a dedicated speech model (e.g. whisper-large-v3) rather than the chat model. Empty means AI_MODEL. |
 
+## AI provider candidate
+
+A second provider the operator can try before it answers anyone. ai-provider-portability.md AC4 asks that a new model be confirmed before it serves live conversations, and AC5 that a swap be reversible; both are this one slot. Only the API reads these keys, to run the verification suite from the operator dashboard, and the conversation worker never does, so no setting here can route a real customer to the candidate. Promoting and reverting are the same exchange of values between the AI_* keys and these, which leaves the previous provider in the candidate slot, still verifiable, after every swap. Unset, the slot is empty and verification is offered for the active provider only.
+
+| Variable | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `AI_CANDIDATE_API_KEY` | string | no | `<secret>` | The candidate's credential, as AI_API_KEY. **(secret)** |
+| `AI_CANDIDATE_BASE_URL` | url | no | `` | The candidate's API root, as AI_BASE_URL. Required when AI_CANDIDATE_PROVIDER is not "none". |
+| `AI_CANDIDATE_CAPABILITIES` | string | no | `text,vision,audio` | What the candidate model can do, as AI_CAPABILITIES. A capability the active provider lists and the candidate does not is reported by verification as a gap the swap would open. |
+| `AI_CANDIDATE_MODEL` | string | no | `` | The candidate's reply model, as AI_MODEL. Required when AI_CANDIDATE_PROVIDER is not "none". |
+| `AI_CANDIDATE_PROVIDER` | enum(none\|gemini\|openai_compatible) | no | `none` | A provider the operator can verify from the operator dashboard before it answers any conversation: "none", or an AI_PROVIDER value. Never used for a live reply. To promote it, exchange each AI_CANDIDATE_* value with its AI_* counterpart and restart the API and the conversation worker; the previous provider is then the candidate, and exchanging them back reverts. |
+| `AI_CANDIDATE_TRANSCRIPTION_MODEL` | string | no | `` | The candidate's transcription model, as AI_TRANSCRIPTION_MODEL. |
+
 ## WhatsApp
 
 The platform's one Meta app, which every client's number is authorized to. Platform-wide rather than per tenant: a client's own access token is a tenant secret and never an environment value. The app secret is what proves an inbound notification came from Meta (message-delivery-reliability.md AC2), and without it anyone who found the webhook URL could inject messages into any tenant's conversations. The app id is needed as well as the secret because connecting a number subscribes the client's WhatsApp Business Account to this app by id, and the connection flow checks that subscription. WHATSAPP_API_BASE_URL is stated rather than defaulted for the reason AI_BASE_URL is: an embedded vendor URL pins the deployment to one upstream and to one API version, so a version bump would stop being a configuration change.
@@ -220,6 +233,30 @@ AI_API_KEY=
 
 # API root the adapter appends its paths to — the Gemini "v1beta" root, or the "/v1" root of an OpenAI-compatible server. Always stated, never defaulted, so the deployment names its upstream in configuration rather than in code.
 AI_BASE_URL=https://example.com/v1
+
+# The candidate's credential, as AI_API_KEY.
+AI_CANDIDATE_API_KEY=
+
+# The candidate's API root, as AI_BASE_URL. Required when AI_CANDIDATE_PROVIDER is not "none".
+# default: 
+AI_CANDIDATE_BASE_URL=
+
+# What the candidate model can do, as AI_CAPABILITIES. A capability the active provider lists and the candidate does not is reported by verification as a gap the swap would open.
+# default: text,vision,audio
+AI_CANDIDATE_CAPABILITIES=text,vision,audio
+
+# The candidate's reply model, as AI_MODEL. Required when AI_CANDIDATE_PROVIDER is not "none".
+# default: 
+AI_CANDIDATE_MODEL=
+
+# A provider the operator can verify from the operator dashboard before it answers any conversation: "none", or an AI_PROVIDER value. Never used for a live reply. To promote it, exchange each AI_CANDIDATE_* value with its AI_* counterpart and restart the API and the conversation worker; the previous provider is then the candidate, and exchanging them back reverts.
+# one of: none, gemini, openai_compatible
+# default: none
+AI_CANDIDATE_PROVIDER=none
+
+# The candidate's transcription model, as AI_TRANSCRIPTION_MODEL.
+# default: 
+AI_CANDIDATE_TRANSCRIPTION_MODEL=
 
 # Comma-separated list of what the configured model can do: text, vision (understand images), audio (transcribe voice notes). "text" is required. A message needing a capability not listed here is answered with the client's fallback message instead of being sent to a model that cannot handle it.
 # default: text,vision,audio
