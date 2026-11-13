@@ -76,6 +76,22 @@ const CODE_MESSAGES: Readonly<Record<string, string>> = {
   'signup.provisioning_failed': "We couldn't finish setting up your workspace. Nothing was created. Please try again.",
 };
 
+/** What an unreachable part of the platform is called, for `service.unavailable` (component-independence.md AC9). */
+const UNAVAILABLE_COMPONENTS: Readonly<Record<string, string>> = {
+  'api': 'the API service is not answering',
+  'database': 'the database cannot be reached',
+  'mail': 'the mail server cannot be reached',
+  'ai-provider': 'the AI provider cannot be reached',
+  'whatsapp-cloud': 'WhatsApp cannot be reached',
+  'object-storage': 'file storage cannot be reached',
+};
+
+/** Why the platform is unavailable, when the answer named the part that failed. */
+export function unavailableReason(error: unknown): string | undefined {
+  if (!(error instanceof ApiError) || error.code !== 'service.unavailable' || error.component === undefined) return undefined;
+  return UNAVAILABLE_COMPONENTS[error.component];
+}
+
 /** A sentence for a failure. Every validation issue is named, because the API reports all of them at once. */
 export function failureMessages(error: unknown): readonly string[] {
   if (!(error instanceof ApiError)) return ['Something went wrong. Please try again.'];
@@ -88,6 +104,8 @@ export function failureMessages(error: unknown): readonly string[] {
         : `Too many attempts. Please wait about ${Math.ceil(error.retryAfterSeconds / 60)} minute(s) and try again.`,
     ];
   }
+  const reason = unavailableReason(error);
+  if (reason !== undefined) return [`The platform is unavailable right now: ${reason}. Please try again in a moment.`];
   return [CODE_MESSAGES[error.code] ?? 'Something went wrong. Please try again.'];
 }
 

@@ -20,6 +20,7 @@ import { conversationHandlers } from '@zeddev/conversation';
 import { assertTenantIsolationEnforceable, createPool, loadDatabaseConfig, type Pool } from '@zeddev/db';
 import { Logger, LOGGING_CONFIG_SCHEMA, type LogSink } from '@zeddev/logging';
 import { PostgresQueue, runConsumer } from '@zeddev/queue';
+import { startHeartbeat } from '@zeddev/monitoring';
 import { migrateToLatest } from '@zeddev/schema';
 import { SystemClock, type Clock } from '@zeddev/time';
 import { loadSealer } from '@zeddev/vault';
@@ -45,6 +46,8 @@ export interface StartWorkerOptions {
 export interface RunningWorker {
   readonly pool: Pool;
   readonly settings: WorkerSettings;
+  /** This process's row in `component_heartbeats`: how the operator sees it (component-independence.md AC9). */
+  readonly instanceId: string;
   /** Stop claiming, let in-flight jobs finish within the grace period, release everything. Idempotent. */
   stop(): Promise<void>;
 }
@@ -110,6 +113,9 @@ export async function startWorker(env: RawEnv = process.env, options: StartWorke
   }).catch((error: unknown) => {
     logger.error('worker.consumer.failed', error);
   });
+  // Reported only once consuming, so "live" means able to do its work. Stopped before the
+  // pool closes, so a clean shutdown is recorded as one (component-independence.md AC9).
+  const heartbeat = await startHeartbeat({ pool, component: 'conversation-worker', logger });
   logger.info('worker.started', { provider: provider.descriptor.provider, model: provider.descriptor.model });
 
   let stopping: Promise<void> | undefined;
@@ -126,6 +132,7 @@ export async function startWorker(env: RawEnv = process.env, options: StartWorke
       ]);
       clearTimeout(timer);
       if (!drained) logger.warn('worker.stop.grace_expired', { windowMs: settings.shutdownGraceMs });
+      await heartbeat.stop();
       await queue.close().catch((error: unknown) => logger.error('worker.stop.queue_failed', error));
       await pool.end().catch((error: unknown) => logger.error('worker.stop.pool_failed', error));
       logger.info('worker.stopped');
@@ -133,5 +140,5 @@ export async function startWorker(env: RawEnv = process.env, options: StartWorke
     return stopping;
   };
 
-  return { pool, settings, stop };
+  return { pool, settings, instanceId: heartbeat.instanceId, stop };
 }

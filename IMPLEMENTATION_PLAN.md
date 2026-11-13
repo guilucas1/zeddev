@@ -143,6 +143,8 @@ The dashboards are done: `services/web` serves the client and operator screens a
 
 AI provider verification is done too: an operator can put the active provider or a staged candidate (`AI_CANDIDATE_*`, read only by the API) through a fixed suite that drives the live reply and media paths, and see each check's result and what came back before a swap. Promoting and reverting are the same exchange of configuration values. `verification.ts` in `@zeddev/conversation`, a new operator action `platform.ai.verify`, and `POST /v1/operator/ai-provider/verify`. See §4ab. That brings the totals to 1282 passing tests, zero skipped, 25 of 27 specs with covering tests, 619 spec-linked assertions; `ai-provider-portability.md` now has covering tests for all 8 of its criteria.
 
+Component status is done too: an operator can now see which component is down, including the two that listen on no port. Every database-backed service reports itself on a timer to `component_heartbeats` (migration `0021_component_heartbeats`, under a sixth, single-table scope), `GET /v1/operator/components` reads it back, and the operator dashboard shows each component as up, degraded, or down with the reason. A 503 now names the dependency that failed (`database`, `api`, and so on) rather than only `service.unavailable`. See §4ac. Covers `component-independence.md` AC9, plus AC3 and AC6 at the heartbeat layer. That brings the totals to 1301 passing tests, zero skipped, 25 of 27 specs with covering tests, 633 spec-linked assertions.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. The next unblocked work is the component-independence and environment-portability validation in P4.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
@@ -585,8 +587,10 @@ call must never be able to cause Meta to redeliver.
 - Environment portability validation: bring the same artifacts up on all three tiers from configuration
   alone, and add an automated check that fails the build if environment-detection branching appears in the
   source. `environment-portability.md` states this as an inspectable criterion, so it should be a test.
-- Component independence validation: redeploy, restart, and scale each service in isolation and assert the
-  others stay available and uncorrupted.
+- **[PARTIAL]** Component independence validation. **Done:** which component is down is observable
+  (AC9), including the worker and scheduler, via heartbeats and `GET /v1/operator/components` (§4ac).
+  **Still to do:** a Compose-level check that redeploys, restarts, and scales each service in isolation and
+  asserts the others stay available and uncorrupted (AC1, AC2, AC5, AC7, AC8, AC11 end to end).
 
 ### Cross-cutting, runs alongside everything
 
@@ -617,7 +621,7 @@ call must never be able to cause Meta to redeliver.
   The four specs still at zero are `client-conversation-visibility.md`, `image-message-understanding.md`,
   `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the outbound sender increment:
   457 assertions; `message-delivery-reliability.md` covers 23 criteria across the gateway, the worker, and the
-  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.) (After the knowledge selection increment: 25 of 27 specs, 569 assertions.) (After the dashboard increment: 25 of 27 specs, 611 assertions.) (After the AI provider verification increment: 25 of 27 specs, 619 assertions.)
+  sender, and `whatsapp-number-connection.md` 20.) (After the media understanding increment: 24 of 27 specs, 494 assertions; `image-message-understanding.md` covers all 8 criteria and `voice-message-understanding.md` all 9. The three specs still at zero are `client-conversation-visibility.md`, `language-configuration.md`, and `operator-proactive-alerting.md`.) (After the conversation visibility increment: 25 of 27 specs, 516 assertions; `client-conversation-visibility.md` covers all 9 criteria, and `bot-disclosure-setting.md` gains AC6. The two specs still at zero are `language-configuration.md` and `operator-proactive-alerting.md`.) (After the scheduler increment: 25 of 27 specs, 525 assertions.) (After the metrics increment: 25 of 27 specs, 545 assertions.) (After the knowledge selection increment: 25 of 27 specs, 569 assertions.) (After the dashboard increment: 25 of 27 specs, 611 assertions.) (After the AI provider verification increment: 25 of 27 specs, 619 assertions.) (After the component status increment: 25 of 27 specs, 633 assertions.)
 
 ---
 
@@ -1908,6 +1912,27 @@ SMTP).
 - **Neither adapter has run the suite against a real upstream yet.** This is the natural form of the §4p smoke test: put the real Gemini key in the candidate slot and press "Verify the candidate".
 - A verification result is not kept. An operator who wants a record before promoting has only the `access_records` row for `platform.ai.verify`, which says that a verification ran but not its outcome.
 - The suite is English-only. Once language configuration lands (blocked on §4), a check in the configured language would be worth adding.
+
+---
+
+## 4ac. Findings from the component status increment
+
+- **[DECISION] Heartbeats in the database, not probes from the API.** The worker and the scheduler listen on no port, so the API cannot ask them anything, and giving them a port would add a listener and a published address to two services whose independence rests on having neither. Every service already holds the database, so each writes one row per process (`component_heartbeats`) every 15 s, and the operator's read judges lateness by the database's clock on both sides, so hosts whose clocks disagree are still judged consistently.
+- **[DECISION] A sixth scope, `app.heartbeat_scope`, reaching one table.** The rows belong to no tenant, so no tenant binding can admit them, and writing them under the platform scope would hand every background service the operator's cross-tenant read access in order to write one row. `HEARTBEAT_SCOPE_TABLES` and a structural test hold its reach to that table, scanning both `USING` and `WITH CHECK`.
+- **[DECISION] One row per process, not per component.** It is what lets the operator count a scaled component's live instances (AC3) and keeps two instances from overwriting each other's evidence. A random instance id per start; `host` is the container's host name, so a dead replica can be told apart.
+- **Three states with reasons.** `up`; `degraded` when an instance went silent while another was running alongside it and nothing replaced it; `down` with `stopped` (clean shutdown recorded), `silent` (crash, hang, or lost database), or `never_reported`. A silent instance whose last report predates every live one was replaced by a restart and is history, not a fault. Silent means three missed beats (45 s).
+- **The reporter never throws and never stops its service.** A failed beat is logged once per run of failures. Taking a service down because the database is unreachable would turn one component's outage into two.
+- **Pruning needs no scheduler.** Each process deletes instances unseen for 7 days as it starts, so the table grows only with restarts and stays bounded even if the scheduler is the thing that is down.
+- **The database and the API are not rows: their failure is the answer.** When either is down, `GET /v1/operator/components` cannot be served, so a 503 now names the dependency: `toReply` maps a transient error's code prefix (`db.`, `mail.`, `ai.`, `whatsapp.`, `storage.`) to a `component`, and `services/web` names `api` when it cannot forward. Before this, a dead API and a dead database reached the dashboard as the same `service.unavailable`. Only the name is added, never the error's message.
+- **`web` does not report.** It holds no database settings, and whether it is up is answered by whether the dashboard loads at all.
+- **The dashboard polls components on every 15 s tick,** separately from the connection signature, because a process going quiet changes no connection.
+
+### Follow-ups the component status increment leaves open
+
+- **Queue backlog is not visible.** A worker that is alive but stuck, or too few workers, shows as `up`. The oldest due job's age would show it, but `queue_jobs` has no platform policy on purpose (0004); a counts-only view would need the same treatment `tenant_metric_buckets` gave the metrics.
+- **No alert.** Seeing a component down requires the dashboard to be open; `operator-proactive-alerting.md` is still blocked on the notification channel decision. `readComponentStatus` is what an alert should reuse.
+- **The poll-failure message is not covered by an automated test.** When the components read itself fails, the card says which dependency was unreachable (`unavailableReason`); the message mapping is tested, but the screen path through a failing poll is not.
+- **The end-to-end independence check is still to do:** stop, restart, and scale each Compose service in a temporary project and assert the others keep serving and their data is intact.
 
 ---
 

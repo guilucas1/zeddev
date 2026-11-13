@@ -14,7 +14,19 @@
 
 import { html, type Html } from './html.ts';
 import { accountScreen } from './client-bot-screens.ts';
-import { connectionPill, errorSlot, field, pill, rethrowIfSignedOut, text, when, type FormValues, type Screen, type ScreenContext } from './screen.ts';
+import {
+  connectionPill,
+  errorSlot,
+  field,
+  pill,
+  rethrowIfSignedOut,
+  text,
+  unavailableReason,
+  when,
+  type FormValues,
+  type Screen,
+  type ScreenContext,
+} from './screen.ts';
 
 interface ConnectionView {
   readonly state: string;
@@ -107,6 +119,72 @@ interface VerificationAnswer {
       readonly durationMs: number;
     }[];
   };
+}
+
+interface ComponentStatus {
+  readonly component: string;
+  readonly state: 'up' | 'degraded' | 'down';
+  readonly reason: 'stopped' | 'silent' | 'never_reported' | 'instance_silent' | null;
+  readonly live: number;
+  readonly lastSeenAt: string | null;
+  readonly instances: readonly {
+    readonly instanceId: string;
+    readonly host: string;
+    readonly state: 'live' | 'stopped' | 'silent';
+    readonly startedAt: string;
+    readonly lastSeenAt: string;
+    readonly stoppedAt: string | null;
+  }[];
+}
+
+interface ComponentsAnswer {
+  readonly checkedAt: string;
+  readonly components: readonly ComponentStatus[];
+}
+
+const COMPONENT_NAMES: Readonly<Record<string, string>> = {
+  'api': 'API',
+  'whatsapp-gateway': 'WhatsApp gateway',
+  'conversation-worker': 'Conversation worker',
+  'scheduler': 'Scheduler',
+};
+
+const COMPONENT_PILLS = { up: ['Up', 'good'], degraded: ['Degraded', 'warn'], down: ['Down', 'bad'] } as const;
+
+const COMPONENT_REASONS: Readonly<Record<string, string>> = {
+  stopped: 'Shut down cleanly.',
+  silent: 'Stopped reporting without shutting down: crashed, hung, or cut off from the database.',
+  never_reported: 'No instance has ever reported. Is it running?',
+  instance_silent: 'An instance stopped reporting and nothing replaced it.',
+};
+
+/**
+ * Which part of the platform is down (component-independence.md AC9). The database
+ * and the API are not rows here: when either is unreachable this read fails, and
+ * the failure itself names which one.
+ */
+function componentsCard(answer: ComponentsAnswer | undefined, unreachable: string | undefined): Html {
+  return html`<section class="card">
+    <h2>Components</h2>
+    ${unreachable !== undefined && html`<p class="warning">Couldn't check: ${unreachable}.</p>`}
+    ${answer !== undefined &&
+    html`<table>
+      <thead><tr><th>Component</th><th>State</th><th class="number">Running</th><th>Last heard from</th><th>Notes</th></tr></thead>
+      <tbody>
+        ${answer.components.map((component) => {
+          const [label, tone] = COMPONENT_PILLS[component.state];
+          return html`<tr>
+            <td>${COMPONENT_NAMES[component.component] ?? component.component}</td>
+            <td>${pill(label, tone)}</td>
+            <td class="number">${String(component.live)}</td>
+            <td>${when(component.lastSeenAt)}</td>
+            <td>${component.reason === null ? '' : COMPONENT_REASONS[component.reason] ?? component.reason}</td>
+          </tr>`;
+        })}
+      </tbody>
+    </table>
+    <p class="hint">Checked ${when(answer.checkedAt)}. The database is reachable and the API is answering, or this could not have been read.</p>`}
+  </section>`;
 }
 
 const CHECK_NAMES: Readonly<Record<string, string>> = {
@@ -224,6 +302,8 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
   let provider: AiProviderAnswer | undefined;
   let verification: VerificationAnswer | undefined;
   let detail: DetailAnswer | undefined;
+  let components: ComponentsAnswer | undefined;
+  let unreachable: string | undefined;
 
   const rangeBody = (): Record<string, unknown> =>
     controls.window === 'custom' ? { from: controls.from, to: controls.to } : { window: controls.window };
@@ -280,6 +360,7 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
 
   const listView = (): Html => html`<h1>Platform health</h1>
     ${stale && html`<p class="warning">Couldn't refresh just now. This may be out of date.</p>`}
+    ${componentsCard(components, unreachable)}
     <section class="card">${controlsForm()}</section>
     ${unavailable(health.range)}
     <section class="card table">
@@ -344,12 +425,14 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
   return {
     title: 'Platform health',
     load: async () => {
-      const [, connections, botStatuses, ai] = await Promise.all([
+      const [, connections, botStatuses, ai, componentStatus] = await Promise.all([
         loadHealth(),
         context.api.get<ConnectionsAnswer>('/v1/operator/connections'),
         context.api.get<BotStatuses>('/v1/operator/bot-statuses'),
         context.api.get<AiProviderAnswer>('/v1/operator/ai-provider'),
+        context.api.get<ComponentsAnswer>('/v1/operator/components'),
       ]);
+      components = componentStatus;
       lastSignature = signature(connections);
       statuses = new Map(botStatuses.tenants.map((tenant) => [tenant.tenantId, tenant]));
       provider = ai;
@@ -357,7 +440,14 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
     pollAfterMs: () => OPERATOR_POLL_MS,
     poll: async () => {
       try {
-        const connections = await context.api.get<ConnectionsAnswer>('/v1/operator/connections');
+        // Components are re-read every time: a process going quiet changes no
+        // connection, so the signature below would never notice it.
+        const [connections, componentStatus] = await Promise.all([
+          context.api.get<ConnectionsAnswer>('/v1/operator/connections'),
+          context.api.get<ComponentsAnswer>('/v1/operator/components'),
+        ]);
+        components = componentStatus;
+        unreachable = undefined;
         const next = signature(connections);
         if (next !== lastSignature) {
           await loadHealth();
@@ -368,6 +458,7 @@ export function operatorDashboardScreen(context: ScreenContext): Screen {
       } catch (error) {
         rethrowIfSignedOut(error);
         stale = true;
+        unreachable = unavailableReason(error);
       }
     },
     view: () => (detail === undefined ? listView() : detailView(detail)),

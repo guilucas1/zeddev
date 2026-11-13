@@ -303,8 +303,22 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
     },
   );
 
-  unitTest('the worker stops cleanly and idempotently', async () => {
-    const second = await startWorker(envFor(db), { ai: provider, sink: new MemorySink() });
-    await Promise.all([second.stop(), second.stop()]);
-  });
+  specTest(
+    'component-independence.md',
+    'AC9 the affected component is identifiable',
+    'the worker, which listens on no port, reports itself while running and records a clean stop',
+    async () => {
+      const second = await startWorker(envFor(db), { ai: provider, sink: new MemorySink() });
+      const heartbeat = () => withPlatformScope(pool, async (tx) =>
+        (await tx.query<{ component: string; stopped: boolean }>(
+          'SELECT component, stopped_at IS NOT NULL AS stopped FROM component_heartbeats WHERE instance_id = $1',
+          [second.instanceId],
+        )).rows[0],
+      );
+      assert.deepEqual(await heartbeat(), { component: 'conversation-worker', stopped: false });
+      // Idempotent: two signals during shutdown are harmless.
+      await Promise.all([second.stop(), second.stop()]);
+      assert.deepEqual(await heartbeat(), { component: 'conversation-worker', stopped: true });
+    },
+  );
 });

@@ -38,3 +38,18 @@ export {
   type TenantHealthQuery,
   type TenantHealthSort,
 } from './health.ts';
+export {
+  COMPONENTS,
+  HEARTBEAT,
+  readComponentStatus,
+  startHeartbeat,
+  type Component,
+  type ComponentReason,
+  type ComponentReport,
+  type ComponentState,
+  type ComponentStatus,
+  type Heartbeat,
+  type HeartbeatOptions,
+  type InstanceState,
+  type InstanceStatus,
+} from './components.ts';

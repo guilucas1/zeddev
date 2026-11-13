@@ -136,6 +136,26 @@ describe('error replies', () => {
     assert.equal(reply.status, 503);
     assert.equal(reply.headers?.['retry-after'], '3');
   });
+
+  specTest(
+    'component-independence.md',
+    'AC9 the affected component is identifiable',
+    'a 503 names the dependency that failed, by code prefix, and nothing else from the error',
+    () => {
+      const named = (code: string) =>
+        (toReply(new TransientTransportError('secret detail', { code }), 'r').body as { error: Record<string, unknown> }).error;
+      assert.deepEqual(named('db.connect_failed'), { code: 'service.unavailable', component: 'database', requestId: 'r' });
+      assert.equal(named('mail.unreachable').component, 'mail');
+      assert.equal(named('ai.unavailable').component, 'ai-provider');
+      assert.equal(named('whatsapp.unavailable').component, 'whatsapp-cloud');
+      assert.equal(named('storage.throttled').component, 'object-storage');
+      // Unattributable codes name nothing rather than guessing, and an inherited
+      // property name is not mistaken for a prefix.
+      assert.deepEqual(named('net.reset'), { code: 'service.unavailable', requestId: 'r' });
+      assert.equal(named('constructor.x').component, undefined);
+      assert.equal(named('toString').component, undefined);
+    },
+  );
 });
 
 describe('fixed-window rate limiter', () => {

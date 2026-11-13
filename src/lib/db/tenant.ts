@@ -76,6 +76,9 @@ export const DISPATCH_SCOPE_SETTING = 'app.dispatch_scope';
 /** Session setting that, when `on`, admits the number routes an inbound notification is attributed by. */
 export const INBOUND_SCOPE_SETTING = 'app.inbound_scope';
 
+/** Session setting that, when `on`, admits the table a running process reports itself in. */
+export const HEARTBEAT_SCOPE_SETTING = 'app.heartbeat_scope';
+
 /**
  * Run `fn` with every query scoped to one tenant.
  *
@@ -197,6 +200,25 @@ export async function withInboundScope<T>(
 ): Promise<T> {
   return pool.transaction(async (connection) => {
     await connection.query('SELECT set_config($1, $2, true)', [INBOUND_SCOPE_SETTING, 'on']);
+    return fn(connection);
+  });
+}
+
+/**
+ * Run `fn` with access to the component heartbeat table, and nothing else.
+ *
+ * The sixth scope. A process reporting that it is alive belongs to no tenant, so
+ * no tenant binding can admit the write, and the platform scope would give every
+ * background service the operator's cross-tenant read access just to write one
+ * row. Migration 0021 grants this scope that one table, which holds no tenant id
+ * and no content.
+ */
+export async function withHeartbeatScope<T>(
+  pool: Pool,
+  fn: (connection: Connection) => Promise<T>,
+): Promise<T> {
+  return pool.transaction(async (connection) => {
+    await connection.query('SELECT set_config($1, $2, true)', [HEARTBEAT_SCOPE_SETTING, 'on']);
     return fn(connection);
   });
 }

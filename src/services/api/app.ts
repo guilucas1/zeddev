@@ -108,6 +108,7 @@ import {
   listTenantHealth,
   parseTenantDetailInput,
   parseTenantHealthInput,
+  readComponentStatus,
   readTenantHealth,
 } from '@zeddev/monitoring';
 import type { SecretSealer } from '@zeddev/secrets';
@@ -1231,6 +1232,23 @@ export function createApi(dependencies: ApiDependencies): Api {
           (tx) => listConnectionHealth(tx),
         );
         return { status: 200, body: { tenants } };
+      },
+    },
+    {
+      // component-independence.md AC9: which component is down, not just that
+      // something is. Each process reports itself (`startHeartbeat`), including the
+      // worker and the scheduler, which no probe can reach. Polled by the dashboard
+      // with the connections route.
+      method: 'GET',
+      path: '/v1/operator/components',
+      handle: async (context) => {
+        const body = await identity.withOperatorAction(
+          sessionToken(context, OPERATOR_SESSION_COOKIE),
+          'platform.health.read',
+          'component.status',
+          (tx) => readComponentStatus(tx),
+        );
+        return { status: 200, body };
       },
     },
     {

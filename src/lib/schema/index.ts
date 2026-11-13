@@ -109,7 +109,18 @@ export const PLATFORM_READABLE_TABLES = [
   // numbers come from here because the tables they are derived from hold content
   // (`operator-health-monitoring.md`).
   'tenant_metric_buckets',
+  // Which processes are alive (`component-independence.md` AC9). No tenant id and
+  // no content: a component name, a host name, and timestamps.
+  'component_heartbeats',
 ] as const;
+
+/**
+ * Tables reachable under the heartbeat scope — the context a running process
+ * reports itself in. Enumerated, and its complement asserted, for the same reason
+ * as the lists around it: the scope is held by every service, so a policy granting
+ * it a table that holds tenant data would hand that table to all of them.
+ */
+export const HEARTBEAT_SCOPE_TABLES = ['component_heartbeats'] as const;
 
 /**
  * Tables reachable under the dispatch scope — the cross-tenant context a queue

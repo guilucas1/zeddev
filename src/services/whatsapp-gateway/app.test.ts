@@ -329,6 +329,14 @@ describe('whatsapp gateway', { skip: testDatabaseConfigured() ? false : SKIP_REA
       });
       assert.equal(response.status, 200);
       await second.stop();
+      // The stop was recorded as one, so the operator reads it as stopped rather than crashed.
+      const heartbeat = await withPlatformScope(pool, async (tx) =>
+        (await tx.query<{ component: string; stopped: boolean }>(
+          'SELECT component, stopped_at IS NOT NULL AS stopped FROM component_heartbeats WHERE instance_id = $1',
+          [second.instanceId],
+        )).rows[0],
+      );
+      assert.deepEqual(heartbeat, { component: 'whatsapp-gateway', stopped: true });
 
       // A consumer that did not exist when the message was acknowledged.
       const consumer = new PostgresQueue({ name: INBOUND_QUEUE, pool });

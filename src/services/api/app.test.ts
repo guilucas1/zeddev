@@ -26,7 +26,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe } from 'node:test';
 import { InMemoryAiProvider, type ObservedGeneration } from '@zeddev/ai/testing';
-import { withTenant } from '@zeddev/db';
+import { withHeartbeatScope, withTenant } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { actionPrincipalType, IdentityService, TOKEN_PREFIXES, type IdentityPolicy, type TenantProvisioning } from '@zeddev/identity';
 import { Logger, MemorySink } from '@zeddev/logging';
@@ -2004,6 +2004,46 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
       assert.equal((await call(served, 'GET', '/v1/operator/connections', anonymous ? {} : { cookie: asCookie })).status, 401);
     }
   });
+
+  specTest(
+    'component-independence.md',
+    'AC9 the affected component is identifiable',
+    'the operator reads which component is up, which went quiet, and which never reported; a client cannot',
+    async () => {
+      await withHeartbeatScope(db.pool, async (tx) => {
+        await tx.query('DELETE FROM component_heartbeats');
+        await tx.query(
+          `INSERT INTO component_heartbeats (instance_id, component, host, interval_ms, started_at, last_seen_at)
+           VALUES (gen_random_uuid(), 'api', 'api-1', 60000, now(), now()),
+                  (gen_random_uuid(), 'conversation-worker', 'worker-1', 1000, now() - interval '1 hour', now() - interval '10 minutes')`,
+        );
+      });
+      const email = `ops-${nextEmail()}`;
+      await identity.createOperator({ email, password: PASSWORD });
+      const login = await call(served, 'POST', '/v1/operator/session', { json: { email, password: PASSWORD } });
+      const cookie = `${OPERATOR_SESSION_COOKIE}=${cookieValue(login, OPERATOR_SESSION_COOKIE)}`;
+
+      const answer = await call(served, 'GET', '/v1/operator/components', { cookie });
+      assert.equal(answer.status, 200);
+      const byName = new Map(answer.body.components.map((entry: any) => [entry.component, entry]));
+      assert.deepEqual([...byName.keys()], ['api', 'whatsapp-gateway', 'conversation-worker', 'scheduler']);
+      assert.deepEqual(
+        [...byName.values()].map((entry: any) => [entry.component, entry.state, entry.reason]),
+        [
+          ['api', 'up', null],
+          ['whatsapp-gateway', 'down', 'never_reported'],
+          ['conversation-worker', 'down', 'silent'],
+          ['scheduler', 'down', 'never_reported'],
+        ],
+      );
+      assert.ok(!Number.isNaN(Date.parse(answer.body.checkedAt)));
+
+      const { cookie: clientCookie } = await onboard();
+      const borrowed = `${OPERATOR_SESSION_COOKIE}=${clientCookie.split('=')[1]}`;
+      assert.equal((await call(served, 'GET', '/v1/operator/components', { cookie: borrowed })).status, 401);
+      assert.equal((await call(served, 'GET', '/v1/operator/components', { cookie: clientCookie })).status, 401);
+    },
+  );
 
   specTest(
     'ai-provider-portability.md',

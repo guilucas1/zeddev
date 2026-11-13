@@ -19,11 +19,18 @@ export class ApiError extends Error {
   /** Only a conflict carries human-readable text from the API. */
   readonly detail: string | undefined;
   readonly retryAfterSeconds: number | undefined;
+  /** On `service.unavailable`, which part of the platform could not be reached, when it is known. */
+  readonly component: string | undefined;
 
   constructor(
     status: number,
     code: string,
-    extra: { readonly issues?: readonly ApiIssue[]; readonly detail?: string | undefined; readonly retryAfterSeconds?: number | undefined } = {},
+    extra: {
+      readonly issues?: readonly ApiIssue[];
+      readonly detail?: string | undefined;
+      readonly retryAfterSeconds?: number | undefined;
+      readonly component?: string | undefined;
+    } = {},
   ) {
     super(code);
     this.name = 'ApiError';
@@ -32,6 +39,7 @@ export class ApiError extends Error {
     this.issues = extra.issues ?? [];
     this.detail = extra.detail;
     this.retryAfterSeconds = extra.retryAfterSeconds;
+    this.component = extra.component;
   }
 }
 
@@ -49,7 +57,12 @@ export type FetchLike = (
 ) => Promise<ResponseLike>;
 
 interface ErrorBody {
-  readonly error?: { readonly code?: string; readonly issues?: readonly ApiIssue[]; readonly message?: string };
+  readonly error?: {
+    readonly code?: string;
+    readonly issues?: readonly ApiIssue[];
+    readonly message?: string;
+    readonly component?: string;
+  };
 }
 
 export class Api {
@@ -104,6 +117,7 @@ export class Api {
       issues: error?.issues ?? [],
       detail: error?.message,
       retryAfterSeconds: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined,
+      component: typeof error?.component === 'string' ? error.component : undefined,
     });
   }
 }

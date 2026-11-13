@@ -137,6 +137,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
 - **A timer-driven task goes in the `tasks` list in `src/services/scheduler/start.ts`** and must be safe to run concurrently in another scheduler instance; there is no leader. Coordinate through a row, the way `claimRecoveryProbe` advances `recovery_next_at`.
 - **Automatic recovery is decided in exactly one place**: `recovery.ts` in `@zeddev/whatsapp`, and "does this link work" in `probeCloudLink` in `cloud.ts`, which the connection flow shares. Only a recoverable answer spends the allowance; a defect on this side must not, or a local bug takes a healthy bot off the air.
 - **An operator-visible number comes from `tenant_metric_buckets`**, never from a query over a table holding content (those have no platform policy, on purpose). A new metric needs a column and a trigger branch in a new migration, and an entry in `COUNT_COLUMNS` in `src/lib/monitoring/health.ts`. Retention is `METRIC_RETENTION_DAYS`, shared by the API's answer and the scheduler's sweep; keep it one value.
+- **Every database-backed service calls `startHeartbeat`** (`@zeddev/monitoring`) once it can do its work, and `heartbeat.stop()` before closing its pool, or the operator's component view reads it as down or crashed. A new service also needs an entry in `COMPONENTS` and in migration 0021's CHECK (a test asserts they agree). A 503's `component` comes from the error code prefix in `UNAVAILABLE_COMPONENTS` (`src/services/api/http.ts`).
 - **The AI candidate slot (`AI_CANDIDATE_*`) is loaded only by `services/api`**, and only operator verification is given it; a structural test fails if another service names it. `verifyAiProvider` (`src/lib/conversation/verification.ts`) drives `generateReply` and `understandMedia` and must never build a prompt of its own.
 - **A dashboard page is a `ScreenFactory` in `src/services/web/ui/`**, registered in `PAGES` (`paths.ts`) and `SCREENS` (`routes.ts`); `contract.test.ts` renders every one against the real API. Only `shell.ts` may touch the DOM. Browser modules import only relative `./x.ts` files. Markup comes only from the `html` template, never `new Html`. Nothing identifying a customer goes in an address.
 
@@ -152,6 +153,7 @@ Run a single file with `node --test src/lib/<pkg>/index.test.ts`.
   check them.
 - Tables with a policy granting `app.has_inbound_scope()` (the gateway's attribution context) must be listed in
   `INBOUND_SCOPE_TABLES`; the structural test scans both `USING` and `WITH CHECK`.
+- Tables with a policy granting `app.has_heartbeat_scope()` must be listed in `HEARTBEAT_SCOPE_TABLES`; every service holds that scope.
 - Tables reachable from the queue's cross-tenant dispatch context must also be listed in
   `DISPATCH_READABLE_TABLES` in `src/lib/schema/index.ts`; a structural test fails the build if a
   table grants `app.has_dispatch_scope()` without being declared there.

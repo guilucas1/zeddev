@@ -31,6 +31,7 @@ import { assertTenantIsolationEnforceable, createPool, loadDatabaseConfig, type 
 import { IdentityService, loadIdentityPolicy, type IdentityServiceOptions } from '@zeddev/identity';
 import { Logger, LOGGING_CONFIG_SCHEMA, type LogSink } from '@zeddev/logging';
 import { loadSmtpSettings, SmtpMailer, type Mailer } from '@zeddev/mail';
+import { startHeartbeat } from '@zeddev/monitoring';
 import { migrateToLatest } from '@zeddev/schema';
 import { loadSealer } from '@zeddev/vault';
 import { GraphWhatsAppCloud, loadGraphCloudSettings, loadWhatsAppConfig, type WhatsAppCloud } from '@zeddev/whatsapp';
@@ -58,6 +59,8 @@ export interface RunningApi {
   readonly settings: ServerSettings;
   /** The bound address — useful when the configured port was 0. */
   readonly url: string;
+  /** This process's row in `component_heartbeats`: how the operator sees it (component-independence.md AC9). */
+  readonly instanceId: string;
   /** Stop accepting, finish in-flight work within the grace period, release everything. Idempotent. */
   stop(): Promise<void>;
 }
@@ -142,6 +145,9 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
 
   const address = server.address() as AddressInfo;
   const host = address.family === 'IPv6' ? `[${address.address}]` : address.address;
+  // Reported only once listening, so "live" means able to do its work. Stopped before the
+  // pool closes, so a clean shutdown is recorded as one (component-independence.md AC9).
+  const heartbeat = await startHeartbeat({ pool, component: 'api', logger });
   logger.info('api.started', { port: address.port });
 
   let stopping: Promise<void> | undefined;
@@ -159,6 +165,7 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
       const drained = await api.outbox.drain(settings.shutdownGraceMs);
       if (!drained) logger.warn('api.mail.undelivered_at_shutdown', { count: api.outbox.pending });
 
+      await heartbeat.stop();
       await mailer.close().catch((error: unknown) => logger.error('api.stop.mailer_failed', error));
       await pool.end().catch((error: unknown) => logger.error('api.stop.pool_failed', error));
       logger.info('api.stopped');
@@ -166,7 +173,7 @@ export async function startApi(env: RawEnv = process.env, options: StartOptions 
     return stopping;
   };
 
-  return { server, api, pool, settings, url: `http://${host}:${address.port}`, stop };
+  return { server, api, pool, settings, url: `http://${host}:${address.port}`, instanceId: heartbeat.instanceId, stop };
 }
 
 export { loadAll } from '@zeddev/config';

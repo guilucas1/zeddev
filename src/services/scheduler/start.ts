@@ -15,7 +15,7 @@
 import { loadAll, loadConfig, type RawEnv } from '@zeddev/config';
 import { assertTenantIsolationEnforceable, createPool, loadDatabaseConfig, type Pool } from '@zeddev/db';
 import { Logger, LOGGING_CONFIG_SCHEMA, type LogSink } from '@zeddev/logging';
-import { purgeExpiredMetrics } from '@zeddev/monitoring';
+import { purgeExpiredMetrics, startHeartbeat } from '@zeddev/monitoring';
 import { PostgresQueue } from '@zeddev/queue';
 import { migrateToLatest } from '@zeddev/schema';
 import { exponentialBackoff, SystemClock, type Clock } from '@zeddev/time';
@@ -44,6 +44,8 @@ export interface StartSchedulerOptions {
 export interface RunningScheduler {
   readonly pool: Pool;
   readonly settings: SchedulerSettings;
+  /** This process's row in `component_heartbeats`: how the operator sees it (component-independence.md AC9). */
+  readonly instanceId: string;
   /** Stop starting work, let what is in flight finish within the grace period, release everything. Idempotent. */
   stop(): Promise<void>;
 }
@@ -119,6 +121,9 @@ export async function startScheduler(
       },
     ],
   });
+  // Reported only once its tasks run, so "live" means able to do its work. Stopped before the
+  // pool closes, so a clean shutdown is recorded as one (component-independence.md AC9).
+  const heartbeat = await startHeartbeat({ pool, component: 'scheduler', logger });
   logger.info('scheduler.started');
 
   let stopping: Promise<void> | undefined;
@@ -135,6 +140,7 @@ export async function startScheduler(
       ]);
       clearTimeout(timer);
       if (!drained) logger.warn('scheduler.stop.grace_expired', { windowMs: settings.shutdownGraceMs });
+      await heartbeat.stop();
       await queue.close().catch((error: unknown) => logger.error('scheduler.stop.queue_failed', error));
       await pool.end().catch((error: unknown) => logger.error('scheduler.stop.pool_failed', error));
       logger.info('scheduler.stopped');
@@ -142,5 +148,5 @@ export async function startScheduler(
     return stopping;
   };
 
-  return { pool, settings, stop };
+  return { pool, settings, instanceId: heartbeat.instanceId, stop };
 }

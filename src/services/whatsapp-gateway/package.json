@@ -13,6 +13,7 @@
     "@zeddev/errors": "*",
     "@zeddev/http": "*",
     "@zeddev/logging": "*",
+    "@zeddev/monitoring": "*",
     "@zeddev/queue": "*",
     "@zeddev/schema": "*",
     "@zeddev/secrets": "*",

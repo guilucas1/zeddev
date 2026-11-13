@@ -210,12 +210,26 @@ describe('the dashboard service', () => {
         const response = await fetch(`${lonely.url}/v1/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         assert.equal(response.status, 503);
         const answer = new Api((path, init) => fetch(`${lonely.url}${path}`, init)).get('/v1/session');
-        await assert.rejects(answer, (error: ApiError) => error.code === 'service.unavailable');
+        // Named, so the dashboard can tell the API being down from the API's own
+        // 503 for an unreachable database (component-independence.md AC9).
+        await assert.rejects(answer, (error: ApiError) => {
+          assert.equal(error.code, 'service.unavailable');
+          assert.equal(error.component, 'api');
+          assert.match(failureMessages(error)[0]!, /the API service is not answering/);
+          return true;
+        });
       } finally {
         await close(lonely.server);
       }
     },
   );
+
+  unitTest('an unavailable dependency the API names is named on screen, and an unknown one falls back', () => {
+    const database = new ApiError(503, 'service.unavailable', { component: 'database' });
+    assert.deepEqual(failureMessages(database), ['The platform is unavailable right now: the database cannot be reached. Please try again in a moment.']);
+    const unknown = new ApiError(503, 'service.unavailable', { component: 'flux-capacitor' });
+    assert.deepEqual(failureMessages(unknown), ['The platform is unavailable right now. Please try again in a moment.']);
+  });
 
   unitTest('nothing about a caller or a path is logged when the forward fails', () => {
     for (const record of sink.records) {

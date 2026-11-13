@@ -17,7 +17,7 @@ import { after, before, describe } from 'node:test';
 import { InMemoryAiProvider } from '@zeddev/ai/testing';
 import { createApi, type Api as ApiService } from '@zeddev/api';
 import { loadServerSettings } from '@zeddev/api/config';
-import { withTenant } from '@zeddev/db';
+import { withHeartbeatScope, withTenant } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { IdentityService, type IdentityPolicy } from '@zeddev/identity';
 import { Logger, MemorySink } from '@zeddev/logging';
@@ -709,6 +709,34 @@ describe('the dashboards against the real API', { skip: testDatabaseConfigured()
     const view = (await page.open('/operator')).view().text;
     assert.match(view, /Alpha Bakery/);
     assert.match(view, /pill bad">Error/);
+  });
+
+  specTest('component-independence.md', 'AC9 the affected component is identifiable', 'the dashboard names each component and says which are down and why', async () => {
+    await withHeartbeatScope(db.pool, async (tx) => {
+      await tx.query('DELETE FROM component_heartbeats');
+      await tx.query(
+        `INSERT INTO component_heartbeats (instance_id, component, host, interval_ms, started_at, last_seen_at)
+         VALUES (gen_random_uuid(), 'conversation-worker', 'worker-1', 60000, now(), now()),
+                (gen_random_uuid(), 'whatsapp-gateway', 'gateway-1', 1000, now() - interval '1 hour', now() - interval '10 minutes')`,
+      );
+    });
+    const page = await operator();
+    const screen = await page.open('/operator');
+    const row = (text: string, name: string): string => text.split('<tr>').find((part) => part.includes(`<td>${name}</td>`))!;
+    let view = screen.view().text;
+    assert.match(row(view, 'Conversation worker'), /pill good">Up/);
+    assert.match(row(view, 'WhatsApp gateway'), /pill bad">Down/);
+    assert.match(row(view, 'WhatsApp gateway'), /Stopped reporting without shutting down/);
+    assert.match(row(view, 'Scheduler'), /No instance has ever reported/);
+
+    // A worker that stops is noticed by the poll, though no connection changed.
+    await withHeartbeatScope(db.pool, (tx) =>
+      tx.query(`UPDATE component_heartbeats SET stopped_at = now() WHERE component = 'conversation-worker'`),
+    );
+    await screen.poll!();
+    view = screen.view().text;
+    assert.match(row(view, 'Conversation worker'), /pill bad">Down/);
+    assert.match(row(view, 'Conversation worker'), /Shut down cleanly/);
   });
 
   specTest('operator-health-monitoring.md', 'AC2 a change reaches the page without a reload', 'a poll after a state change redraws from fresh data', async () => {

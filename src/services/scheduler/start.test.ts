@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe } from 'node:test';
 import { readBotStatus, savePersona, setBotActive } from '@zeddev/bot';
-import { withDispatchScope, withIdentityScope, withTenant, type Pool } from '@zeddev/db';
+import { withDispatchScope, withIdentityScope, withPlatformScope, withTenant, type Pool } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { ConfigurationError } from '@zeddev/errors';
 import { Logger, MemorySink } from '@zeddev/logging';
@@ -242,6 +242,26 @@ describe('scheduler', { skip: testDatabaseConfigured() ? false : SKIP_REASON }, 
       await running.stop();
     }
   }
+
+  specTest(
+    'component-independence.md',
+    'AC9 the affected component is identifiable',
+    'the scheduler, which listens on no port, reports itself while running and records a clean stop',
+    async () => {
+      let instanceId = '';
+      const heartbeat = () => withPlatformScope(pool, async (tx) =>
+        (await tx.query<{ component: string; stopped: boolean }>(
+          'SELECT component, stopped_at IS NOT NULL AS stopped FROM component_heartbeats WHERE instance_id = $1',
+          [instanceId],
+        )).rows[0],
+      );
+      await during({}, async (running) => {
+        instanceId = running.instanceId;
+        assert.deepEqual(await heartbeat(), { component: 'scheduler', stopped: false });
+      });
+      assert.deepEqual(await heartbeat(), { component: 'scheduler', stopped: true });
+    },
+  );
 
   function connectionOf(tenant: string) {
     return withTenant(pool, tenant, (tx) => readConnection(tx));

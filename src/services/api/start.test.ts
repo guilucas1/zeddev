@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { after, before, describe } from 'node:test';
+import { withPlatformScope } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { ConfigurationError } from '@zeddev/errors';
 import { IdentityService } from '@zeddev/identity';
@@ -148,6 +149,13 @@ describe('api startup against a database', { skip: testDatabaseConfigured() ? fa
       const mailer = new InMemoryMailer();
       const sink = new MemorySink();
       const running = await startApi(envFor(db), { mailer, sink, credentialParams: FAST_SCRYPT });
+      const heartbeat = () =>
+        withPlatformScope(db.pool, async (tx) =>
+          (await tx.query<{ component: string; stopped: boolean }>(
+            'SELECT component, stopped_at IS NOT NULL AS stopped FROM component_heartbeats WHERE instance_id = $1',
+            [running.instanceId],
+          )).rows[0],
+        );
       try {
         const ready = await fetch(`${running.url}/health/ready`);
         assert.equal(ready.status, 200);
@@ -158,9 +166,11 @@ describe('api startup against a database', { skip: testDatabaseConfigured() ? fa
           body: JSON.stringify({ businessName: 'Start Co', email: 'start@example.com', password: PASSWORD }),
         });
         assert.equal(signup.status, 201);
+        assert.deepEqual(await heartbeat(), { component: 'api', stopped: false });
       } finally {
         await running.stop();
       }
+      assert.deepEqual(await heartbeat(), { component: 'api', stopped: true });
 
       // Shutdown drained the outbox rather than dropping the message.
       assert.equal(mailer.delivered.length, 1);

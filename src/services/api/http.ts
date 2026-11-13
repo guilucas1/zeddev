@@ -69,13 +69,35 @@ export function toReply(error: unknown, requestId: string): Reply {
   }
   if (error instanceof TransientTransportError) {
     const seconds = Math.max(1, Math.ceil((error.retryAfterMs ?? 1000) / 1000));
+    const component = unavailableComponent(error.code);
     return {
       status: 503,
       headers: { 'retry-after': String(seconds) },
-      body: { error: { code: 'service.unavailable', requestId } },
+      body: { error: { code: 'service.unavailable', ...(component === undefined ? {} : { component }), requestId } },
     };
   }
   return { status: 500, body: { error: { code: 'internal', requestId } } };
+}
+
+/**
+ * Which dependency a transient failure came from, by its error code's prefix.
+ *
+ * `component-independence.md` AC9: without it, "the database is down" and "the
+ * API is down" reach the dashboard as the same `service.unavailable` (the web
+ * service answers that too, naming `api`). Only the dependency's name is added,
+ * never the error's message. A code from no listed dependency names nothing.
+ */
+const UNAVAILABLE_COMPONENTS: Readonly<Record<string, string>> = {
+  db: 'database',
+  mail: 'mail',
+  ai: 'ai-provider',
+  whatsapp: 'whatsapp-cloud',
+  storage: 'object-storage',
+};
+
+export function unavailableComponent(code: string): string | undefined {
+  const prefix = code.split('.', 1)[0] ?? '';
+  return Object.hasOwn(UNAVAILABLE_COMPONENTS, prefix) ? UNAVAILABLE_COMPONENTS[prefix] : undefined;
 }
 
 /**

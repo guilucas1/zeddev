@@ -22,7 +22,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe } from 'node:test';
 import { TenantAccessError, ConflictError } from '@zeddev/errors';
-import { withIdentityScope, withPlatformScope, withTenant, type Pool } from '@zeddev/db';
+import { withHeartbeatScope, withIdentityScope, withPlatformScope, withTenant, type Pool } from '@zeddev/db';
 import {
   createTestDatabase,
   SKIP_REASON,
@@ -32,6 +32,7 @@ import {
 import { specTest, unitTest } from '@zeddev/testing';
 import {
   DISPATCH_READABLE_TABLES,
+  HEARTBEAT_SCOPE_TABLES,
   INBOUND_SCOPE_TABLES,
   migrateToLatest,
   PLATFORM_READABLE_TABLES,
@@ -208,6 +209,64 @@ describe('baseline schema', { skip: testDatabaseConfigured() ? false : SKIP_REAS
           `${row.table_name} grants the inbound scope but is not in INBOUND_SCOPE_TABLES`,
         );
       }
+    },
+  );
+
+  specTest(
+    'tenant-data-isolation.md',
+    'AC2 no data from one tenant conversation appears in another tenant context',
+    'no table outside the declared heartbeat-scope list is reachable under the heartbeat scope',
+    async () => {
+      if (!testDatabaseConfigured()) return;
+      // Every service holds this scope, so a table that grew a heartbeat policy
+      // would be readable by all of them. Both halves of every policy are scanned,
+      // as for the inbound scope.
+      const reachable = new Set<string>(HEARTBEAT_SCOPE_TABLES);
+      const withHeartbeatPolicy = await pool.query<{ table_name: string }>(
+        `SELECT DISTINCT c.relname AS table_name
+           FROM pg_policy p
+           JOIN pg_class c ON c.oid = p.polrelid
+          WHERE COALESCE(pg_get_expr(p.polqual, p.polrelid), '') LIKE '%has_heartbeat_scope%'
+             OR COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') LIKE '%has_heartbeat_scope%'`,
+      );
+      assert.ok(withHeartbeatPolicy.rows.length > 0, 'the scan must find a policy, or it proves nothing');
+      for (const row of withHeartbeatPolicy.rows) {
+        assert.ok(
+          reachable.has(row.table_name),
+          `${row.table_name} grants the heartbeat scope but is not in HEARTBEAT_SCOPE_TABLES`,
+        );
+      }
+      // And behaviourally: the scope sees no tenant and no account.
+      const seen = await withHeartbeatScope(pool, async (tx) => ({
+        tenants: (await tx.query('SELECT id FROM tenants')).rowCount,
+        accounts: (await tx.query('SELECT id FROM accounts')).rowCount,
+      }));
+      assert.deepEqual(seen, { tenants: 0, accounts: 0 });
+    },
+  );
+
+  specTest(
+    'tenant-data-isolation.md',
+    'AC7 the operator sees status and metrics only, never conversation content',
+    'the component heartbeat table has no tenant id and no column that could hold text beyond a component and host name',
+    async () => {
+      if (!testDatabaseConfigured()) return;
+      const columns = await pool.query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns
+          WHERE table_name = 'component_heartbeats' ORDER BY column_name`,
+      );
+      assert.deepEqual(
+        columns.rows.map((row) => `${row.column_name}:${row.data_type}`),
+        [
+          'component:text',
+          'host:text',
+          'instance_id:uuid',
+          'interval_ms:integer',
+          'last_seen_at:timestamp with time zone',
+          'started_at:timestamp with time zone',
+          'stopped_at:timestamp with time zone',
+        ],
+      );
     },
   );
 

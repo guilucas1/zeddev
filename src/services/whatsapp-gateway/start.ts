@@ -18,6 +18,7 @@ import { loadAll, loadConfig, type RawEnv } from '@zeddev/config';
 import { assertTenantIsolationEnforceable, createPool, loadDatabaseConfig, type Pool } from '@zeddev/db';
 import { Logger, LOGGING_CONFIG_SCHEMA, type LogSink } from '@zeddev/logging';
 import { PostgresQueue } from '@zeddev/queue';
+import { startHeartbeat } from '@zeddev/monitoring';
 import { migrateToLatest } from '@zeddev/schema';
 import { INBOUND_QUEUE, loadWhatsAppConfig } from '@zeddev/whatsapp';
 import { createGateway } from './app.ts';
@@ -33,6 +34,8 @@ export interface RunningGateway {
   readonly settings: GatewaySettings;
   /** The bound address — useful when the configured port was 0. */
   readonly url: string;
+  /** This process's row in `component_heartbeats`: how the operator sees it (component-independence.md AC9). */
+  readonly instanceId: string;
   /** Stop accepting, finish in-flight notifications within the grace period, release everything. Idempotent. */
   stop(): Promise<void>;
 }
@@ -87,6 +90,9 @@ export async function startGateway(
 
   const address = server.address() as AddressInfo;
   const host = address.family === 'IPv6' ? `[${address.address}]` : address.address;
+  // Reported only once listening, so "live" means able to do its work. Stopped before the
+  // pool closes, so a clean shutdown is recorded as one (component-independence.md AC9).
+  const heartbeat = await startHeartbeat({ pool, component: 'whatsapp-gateway', logger });
   logger.info('gateway.started', { port: address.port });
 
   let stopping: Promise<void> | undefined;
@@ -98,6 +104,7 @@ export async function startGateway(
       const forced = setTimeout(() => server.closeAllConnections(), settings.shutdownGraceMs);
       await closed;
       clearTimeout(forced);
+      await heartbeat.stop();
       await scheduler.close().catch((error: unknown) => logger.error('gateway.stop.queue_failed', error));
       await pool.end().catch((error: unknown) => logger.error('gateway.stop.pool_failed', error));
       logger.info('gateway.stopped');
@@ -105,5 +112,5 @@ export async function startGateway(
     return stopping;
   };
 
-  return { server, pool, settings, url: `http://${host}:${address.port}`, stop };
+  return { server, pool, settings, url: `http://${host}:${address.port}`, instanceId: heartbeat.instanceId, stop };
 }

@@ -145,7 +145,9 @@ export function createWeb({ settings, assets, logger }: WebDependencies): Web {
       sendJson(
         response,
         503,
-        { error: { code: 'service.unavailable', requestId } },
+        // Names the API, so the dashboard can tell this from the API's own 503 for an
+        // unreachable database (component-independence.md AC9).
+        { error: { code: 'service.unavailable', component: 'api', requestId } },
         { 'retry-after': String(UPSTREAM_RETRY_AFTER_SECONDS) },
       );
     };

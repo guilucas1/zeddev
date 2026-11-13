@@ -9,6 +9,7 @@
   "dependencies": {
     "@zeddev/db": "*",
     "@zeddev/errors": "*",
+    "@zeddev/logging": "*",
     "@zeddev/tenancy": "*",
     "@zeddev/whatsapp": "*"
   },
