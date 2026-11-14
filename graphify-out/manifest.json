@@ -955,14 +955,14 @@
     "semantic_hash": "e358cd382dbce1524eef6a6e54ec0ae5"
   },
   "src/lib/vault/store.test.ts": {
-    "mtime": 1789868275.6865327,
-    "ast_hash": "58dced429ab0b337bedc27e9c74394f5",
-    "semantic_hash": "58dced429ab0b337bedc27e9c74394f5"
+    "mtime": 1794686082.8140645,
+    "ast_hash": "2ef53024368b5f7b5b23d03221dcf0bc",
+    "semantic_hash": ""
   },
   "src/lib/vault/store.ts": {
-    "mtime": 1789867339.051944,
-    "ast_hash": "1296b31494603d0f2d18e40a15f478d1",
-    "semantic_hash": "1296b31494603d0f2d18e40a15f478d1"
+    "mtime": 1794686061.6024868,
+    "ast_hash": "a43f51d23008dd979097b65357718f49",
+    "semantic_hash": ""
   },
   "src/lib/vault/tsconfig.json": {
     "mtime": 1789866585.6903677,
@@ -1025,14 +1025,14 @@
     "semantic_hash": ""
   },
   "src/lib/whatsapp/onboarding.test.ts": {
-    "mtime": 1789944508.0254002,
-    "ast_hash": "5068ea83704c2dee02817a88fec0aab1",
-    "semantic_hash": "5068ea83704c2dee02817a88fec0aab1"
+    "mtime": 1794686145.4550617,
+    "ast_hash": "63067c47990da2edf7783ee9a2efda79",
+    "semantic_hash": ""
   },
   "src/lib/whatsapp/onboarding.ts": {
-    "mtime": 1789867675.689916,
-    "ast_hash": "5fd13b6acb81eb2eb88a0980e5a9a97c",
-    "semantic_hash": "5fd13b6acb81eb2eb88a0980e5a9a97c"
+    "mtime": 1794686102.5015826,
+    "ast_hash": "5a651a2e1421a8f905c62348205b6dbe",
+    "semantic_hash": ""
   },
   "src/lib/whatsapp/package.json": {
     "mtime": 1793741337.5374212,
@@ -1055,8 +1055,8 @@
     "semantic_hash": "e146d3233b6cca252095ccce3cbe202e"
   },
   "src/services/api/app.test.ts": {
-    "mtime": 1794604847.5111444,
-    "ast_hash": "3fe94b86f49fb5cfad0b0e1bce1f286a",
+    "mtime": 1794686145.4440563,
+    "ast_hash": "8c07299afb5e8be9214b7d0c488fee8b",
     "semantic_hash": ""
   },
   "src/services/api/app.ts": {
@@ -1215,8 +1215,8 @@
     "semantic_hash": ""
   },
   "IMPLEMENTATION_PLAN.md": {
-    "mtime": 1794685951.9067774,
-    "ast_hash": "fc29eefaa8baf15fb2594e1641f45424",
+    "mtime": 1794686419.7290728,
+    "ast_hash": "c9e0ad718cd548dbf8dffc06d39b30bc",
     "semantic_hash": ""
   },
   "PROMPT_build.md": {
@@ -1540,8 +1540,8 @@
     "semantic_hash": ""
   },
   "src/services/web/contract.test.ts": {
-    "mtime": 1794604932.1893356,
-    "ast_hash": "8a21dd4c34e18988759a85f5e32c6749",
+    "mtime": 1794686143.4036734,
+    "ast_hash": "7ad01a2df9590364ad8dd6f891519af9",
     "semantic_hash": ""
   },
   "src/services/web/index.ts": {
@@ -1580,8 +1580,8 @@
     "semantic_hash": ""
   },
   "src/services/web/ui/client-setup-screens.ts": {
-    "mtime": 1794238422.2034729,
-    "ast_hash": "5dce9621bca101b94a1aa4c34c70c434",
+    "mtime": 1794686118.7471204,
+    "ast_hash": "c7b19b9a5d1e596191497af02a0964db",
     "semantic_hash": ""
   },
   "src/services/web/ui/conversations-screen.ts": {
@@ -1675,8 +1675,8 @@
     "semantic_hash": ""
   },
   "src/lib/deployment/tiers.test.ts": {
-    "mtime": 1794606892.4574285,
-    "ast_hash": "20bbca16f627f92d9ca6226ce47f2a8e",
+    "mtime": 1794686339.1936479,
+    "ast_hash": "b828a637667d6e8c6ead44b70fdfe696",
     "semantic_hash": ""
   },
   "src/lib/deployment/tiers.ts": {

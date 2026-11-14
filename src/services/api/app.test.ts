@@ -2042,6 +2042,11 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
         ],
       );
       assert.ok(!Number.isNaN(Date.parse(answer.body.checkedAt)));
+      // The queue backlog travels with it (migration 0022), as counts charged to a component.
+      const inbound = answer.body.queues.find((entry: any) => entry.queue === 'inbound_messages');
+      assert.equal(inbound.consumer, 'conversation-worker');
+      assert.equal(typeof inbound.due, 'number');
+      assert.equal(typeof inbound.stalled, 'boolean');
 
       const { cookie: clientCookie } = await onboard();
       const borrowed = `${OPERATOR_SESSION_COOKIE}=${clientCookie.split('=')[1]}`;

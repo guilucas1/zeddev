@@ -39,8 +39,10 @@ export {
   type TenantHealthSort,
 } from './health.ts';
 export {
+  BACKLOG,
   COMPONENTS,
   HEARTBEAT,
+  QUEUE_CONSUMERS,
   readComponentStatus,
   startHeartbeat,
   type Component,
@@ -52,4 +54,5 @@ export {
   type HeartbeatOptions,
   type InstanceState,
   type InstanceStatus,
+  type QueueBacklog,
 } from './components.ts';

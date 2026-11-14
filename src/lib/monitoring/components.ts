@@ -10,6 +10,12 @@
  * Lateness is judged by the database's clock on both sides, so processes on
  * different hosts, with clocks that disagree, are still judged consistently.
  *
+ * A heartbeat proves a process is alive, not that it is doing its work, so the
+ * report also carries the job queue's backlog, as counts (`app.queue_backlog()`,
+ * migration 0022). A component that is reporting while the queue it consumes has
+ * work waiting past `BACKLOG.stalledAfterMs` reads as `degraded`, reason `backlog`:
+ * a stuck consumer, or too few workers for the traffic.
+ *
  * The reporter never throws and never stops its service. A heartbeat that cannot
  * be written means the database is unreachable, which the service will notice on
  * its own; taking the service down for it would turn one component's outage into
@@ -20,6 +26,7 @@ import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { withHeartbeatScope, type Connection, type Pool } from '@zeddev/db';
 import type { Logger } from '@zeddev/logging';
+import { INBOUND_QUEUE } from '@zeddev/whatsapp';
 
 /**
  * The components that report themselves. Mirrored by a CHECK in migration 0021; a
@@ -47,6 +54,51 @@ export const HEARTBEAT = {
   instancesShown: 20,
 } as const;
 
+/**
+ * Which component consumes each queue, so that work waiting on a queue is charged to
+ * the component that should be taking it. Every consumed queue is always reported,
+ * with zeros when it is empty, so an operator sees it is being watched.
+ */
+export const QUEUE_CONSUMERS: Readonly<Record<string, Component>> = {
+  [INBOUND_QUEUE]: 'conversation-worker',
+};
+
+export const BACKLOG = {
+  /**
+   * How long work that could run may wait before its consumer reads as degraded.
+   * A healthy consumer takes a due job within milliseconds (it is woken by NOTIFY,
+   * by the due time, and by a lease running out), and a busy one sweeps expired
+   * leases every 30 s, so a minute is beyond any healthy wait while still well
+   * inside what a customer would notice.
+   */
+  stalledAfterMs: 60_000,
+} as const;
+
+/** One queue's waiting work, as counts. Nothing here names a tenant, a customer, or a job. */
+export interface QueueBacklog {
+  readonly queue: string;
+  /** The component that should be taking this work, or `null` for a queue nothing here consumes. */
+  readonly consumer: Component | null;
+  /** Ready, due, and first in its partition: what a consumer would take next. */
+  readonly due: number;
+  readonly tenantsWaiting: number;
+  /** Ready but not yet due: a turn inside its quiet period, a retry in its backoff. */
+  readonly scheduled: number;
+  readonly running: number;
+  /** Running past its lease and not yet taken back by any consumer. */
+  readonly expiredLeases: number;
+  readonly deadLastDay: number;
+  /**
+   * Since when the longest-waiting work has been waiting: the oldest due job's due
+   * time or the oldest expired lease's end, whichever is earlier. `null` when nothing waits.
+   */
+  readonly waitingSince: string | null;
+  /** How long that is, by the database's clock. 0 when nothing waits. */
+  readonly waitingMs: number;
+  /** `waitingMs` has passed `BACKLOG.stalledAfterMs`. */
+  readonly stalled: boolean;
+}
+
 /** A process the operator can see: running, shut down on purpose, or gone quiet without saying so. */
 export type InstanceState = 'live' | 'stopped' | 'silent';
 
@@ -71,9 +123,10 @@ export type ComponentState = 'up' | 'degraded' | 'down';
  * Why a component is not `up`. `stopped`: its last instance shut down cleanly.
  * `silent`: its last instance stopped reporting without shutting down, which is a
  * crash, a hang, or a lost database. `never_reported`: no instance on record.
- * `instance_silent`: the `degraded` case.
+ * `instance_silent`: degraded, an instance went quiet. `backlog`: degraded, it is
+ * reporting but work on the queue it consumes has waited past `BACKLOG.stalledAfterMs`.
  */
-export type ComponentReason = 'stopped' | 'silent' | 'never_reported' | 'instance_silent';
+export type ComponentReason = 'stopped' | 'silent' | 'never_reported' | 'instance_silent' | 'backlog';
 
 export interface ComponentStatus {
   readonly component: Component;
@@ -91,6 +144,20 @@ export interface ComponentReport {
   /** The database's clock at the moment of reading, which every state was judged against. */
   readonly checkedAt: string;
   readonly components: readonly ComponentStatus[];
+  /** Every queue with work in it, and every consumed queue even when empty, by name. */
+  readonly queues: readonly QueueBacklog[];
+}
+
+export interface BacklogRow {
+  queue: string;
+  due: string | number;
+  oldest_due_at: Date | null;
+  tenants_waiting: string | number;
+  scheduled: string | number;
+  running: string | number;
+  expired_leases: string | number;
+  oldest_expired_lease_at: Date | null;
+  dead_last_day: string | number;
 }
 
 export interface InstanceRow {
@@ -135,10 +202,53 @@ export async function readComponentStatus(tx: Connection): Promise<ComponentRepo
     byComponent.set(row.component, list);
   }
 
+  const now = clock.rows[0]!.now;
+  const backlog = await tx.query<BacklogRow>('SELECT * FROM app.queue_backlog()');
+  const queues = describeBacklog(backlog.rows, now);
+
   return {
-    checkedAt: clock.rows[0]!.now.toISOString(),
-    components: COMPONENTS.map((component) => summarize(component, byComponent.get(component) ?? [])),
+    checkedAt: now.toISOString(),
+    components: COMPONENTS.map((component) =>
+      withBacklog(summarize(component, byComponent.get(component) ?? []), queues),
+    ),
+    queues,
   };
+}
+
+/** Exported for tests: the database's counts, with every consumed queue present and each judged. */
+export function describeBacklog(rows: readonly BacklogRow[], now: Date): QueueBacklog[] {
+  const byQueue = new Map(rows.map((row) => [row.queue, row]));
+  const names = [...new Set([...Object.keys(QUEUE_CONSUMERS), ...byQueue.keys()])].sort();
+  return names.map((queue): QueueBacklog => {
+    const row = byQueue.get(queue);
+    const candidates = [row?.oldest_due_at, row?.oldest_expired_lease_at].filter((at): at is Date => at instanceof Date);
+    const since = candidates.length === 0 ? null : new Date(Math.min(...candidates.map((at) => at.getTime())));
+    const waitingMs = since === null ? 0 : Math.max(0, now.getTime() - since.getTime());
+    return {
+      queue,
+      consumer: QUEUE_CONSUMERS[queue] ?? null,
+      due: Number(row?.due ?? 0),
+      tenantsWaiting: Number(row?.tenants_waiting ?? 0),
+      scheduled: Number(row?.scheduled ?? 0),
+      running: Number(row?.running ?? 0),
+      expiredLeases: Number(row?.expired_leases ?? 0),
+      deadLastDay: Number(row?.dead_last_day ?? 0),
+      waitingSince: since?.toISOString() ?? null,
+      waitingMs,
+      stalled: waitingMs > BACKLOG.stalledAfterMs,
+    };
+  });
+}
+
+/**
+ * Exported for tests. A reporting component whose queue is stalled is degraded. One
+ * that is down stays down (nothing is consuming, and saying so is more specific), and
+ * one already degraded by a silent instance keeps that reason, which names the cause.
+ */
+export function withBacklog(status: ComponentStatus, queues: readonly QueueBacklog[]): ComponentStatus {
+  if (status.state !== 'up') return status;
+  const stalled = queues.some((queue) => queue.consumer === status.component && queue.stalled);
+  return stalled ? { ...status, state: 'degraded', reason: 'backlog' } : status;
 }
 
 /** Exported for tests: the rule for one component, given its instances newest first. */

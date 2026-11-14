@@ -17,7 +17,7 @@ import { after, before, describe } from 'node:test';
 import { InMemoryAiProvider } from '@zeddev/ai/testing';
 import { createApi, type Api as ApiService } from '@zeddev/api';
 import { loadServerSettings } from '@zeddev/api/config';
-import { withHeartbeatScope, withTenant } from '@zeddev/db';
+import { withDispatchScope, withHeartbeatScope, withTenant } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { IdentityService, type IdentityPolicy } from '@zeddev/identity';
 import { Logger, MemorySink } from '@zeddev/logging';
@@ -739,6 +739,35 @@ describe('the dashboards against the real API', { skip: testDatabaseConfigured()
     view = screen.view().text;
     assert.match(row(view, 'Conversation worker'), /pill bad">Down/);
     assert.match(row(view, 'Conversation worker'), /Shut down cleanly/);
+
+    // A worker that is reporting but not taking work is degraded, and the waiting
+    // work is shown as counts, with nothing naming the business or the customer.
+    const { tenantId } = await onboard('Backlogged Bakery');
+    await withDispatchScope(db.pool, (tx) => tx.query('DELETE FROM queue_jobs'));
+    await withHeartbeatScope(db.pool, (tx) =>
+      tx.query(
+        `INSERT INTO component_heartbeats (instance_id, component, host, interval_ms) VALUES (gen_random_uuid(), 'conversation-worker', 'worker-2', 60000)`,
+      ),
+    );
+    await withTenant(db.pool, tenantId, (tx) =>
+      tx.query(
+        `INSERT INTO queue_jobs (tenant_id, queue, kind, max_attempts, run_at)
+         VALUES (app.current_tenant_id(), 'inbound_messages', 'test.job', 3, now() - interval '5 minutes')`,
+      ),
+    );
+    try {
+      await screen.poll!();
+      view = screen.view().text;
+      assert.match(row(view, 'Conversation worker'), /pill warn">Degraded/);
+      assert.match(row(view, 'Conversation worker'), /waited over a minute/);
+      const queue = row(view, 'Customer messages');
+      assert.ok(queue.includes('<td class="number">1</td>'), queue);
+      assert.match(queue, /pill warn">5 min/);
+      const card = view.slice(view.indexOf('<h2>Components</h2>'));
+      assert.doesNotMatch(card.slice(0, card.indexOf('</section>')), /Backlogged Bakery|data-tenant/);
+    } finally {
+      await withDispatchScope(db.pool, (tx) => tx.query('DELETE FROM queue_jobs'));
+    }
   });
 
   specTest('operator-health-monitoring.md', 'AC2 a change reaches the page without a reload', 'a poll after a state change redraws from fresh data', async () => {

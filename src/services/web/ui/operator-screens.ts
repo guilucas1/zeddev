@@ -124,7 +124,7 @@ interface VerificationAnswer {
 interface ComponentStatus {
   readonly component: string;
   readonly state: 'up' | 'degraded' | 'down';
-  readonly reason: 'stopped' | 'silent' | 'never_reported' | 'instance_silent' | null;
+  readonly reason: 'stopped' | 'silent' | 'never_reported' | 'instance_silent' | 'backlog' | null;
   readonly live: number;
   readonly lastSeenAt: string | null;
   readonly instances: readonly {
@@ -137,9 +137,65 @@ interface ComponentStatus {
   }[];
 }
 
+/** One queue's waiting work, as counts only (migration 0022). */
+interface QueueBacklog {
+  readonly queue: string;
+  readonly consumer: string | null;
+  readonly due: number;
+  readonly tenantsWaiting: number;
+  readonly scheduled: number;
+  readonly running: number;
+  readonly expiredLeases: number;
+  readonly deadLastDay: number;
+  readonly waitingSince: string | null;
+  readonly waitingMs: number;
+  readonly stalled: boolean;
+}
+
 interface ComponentsAnswer {
   readonly checkedAt: string;
   readonly components: readonly ComponentStatus[];
+  readonly queues: readonly QueueBacklog[];
+}
+
+const QUEUE_NAMES: Readonly<Record<string, string>> = {
+  inbound_messages: 'Customer messages',
+};
+
+/** "45 s", "3 min", "2 h 5 min": how long the oldest work has been waiting. */
+function waited(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${String(seconds)} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${String(minutes)} min`;
+  const rest = minutes % 60;
+  return `${String(Math.floor(minutes / 60))} h${rest === 0 ? '' : ` ${String(rest)} min`}`;
+}
+
+/**
+ * The work waiting on each queue. A worker can be reporting and still not be taking
+ * work (stuck, or too few for the traffic); only the queue shows that. Counts only:
+ * which tenant or customer is waiting is not the operator's to see.
+ */
+function queuesTable(queues: readonly QueueBacklog[]): Html {
+  return html`<h3>Waiting work</h3>
+    <table>
+      <thead><tr><th>Queue</th><th class="number">Ready now</th><th class="number">Businesses waiting</th><th>Oldest waiting</th><th class="number">Being handled</th><th class="number">Scheduled</th><th class="number">Gave up (24 h)</th></tr></thead>
+      <tbody>
+        ${queues.map(
+          (queue) => html`<tr>
+            <td>${QUEUE_NAMES[queue.queue] ?? queue.queue}</td>
+            <td class="number">${String(queue.due)}</td>
+            <td class="number">${String(queue.tenantsWaiting)}</td>
+            <td>${queue.waitingSince === null ? '—' : queue.stalled ? pill(waited(queue.waitingMs), 'warn') : waited(queue.waitingMs)}</td>
+            <td class="number">${String(queue.running)}${queue.expiredLeases > 0 ? ` (${String(queue.expiredLeases)} abandoned)` : ''}</td>
+            <td class="number">${String(queue.scheduled)}</td>
+            <td class="number">${String(queue.deadLastDay)}</td>
+          </tr>`,
+        )}
+      </tbody>
+    </table>
+    <p class="hint">"Ready now" can run at once. A customer's later message waiting behind their earlier one is not counted, and neither is a reply still inside its quiet period ("Scheduled").</p>`;
 }
 
 const COMPONENT_NAMES: Readonly<Record<string, string>> = {
@@ -156,6 +212,7 @@ const COMPONENT_REASONS: Readonly<Record<string, string>> = {
   silent: 'Stopped reporting without shutting down: crashed, hung, or cut off from the database.',
   never_reported: 'No instance has ever reported. Is it running?',
   instance_silent: 'An instance stopped reporting and nothing replaced it.',
+  backlog: 'Running, but work it should be taking has waited over a minute: stuck, or too few instances for the traffic.',
 };
 
 /**
@@ -183,6 +240,7 @@ function componentsCard(answer: ComponentsAnswer | undefined, unreachable: strin
         })}
       </tbody>
     </table>
+    ${queuesTable(answer.queues)}
     <p class="hint">Checked ${when(answer.checkedAt)}. The database is reachable and the API is answering, or this could not have been read.</p>`}
   </section>`;
 }

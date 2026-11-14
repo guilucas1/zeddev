@@ -245,6 +245,7 @@ too. See PROMPT_build.md/PROMPT_plan.md Step 0 for how the build/plan loops use 
   (`docker compose -p <other-name>`).
 - `core.autocrlf` is on for this checkout. `.gitattributes` keeps `*.sh`, `Dockerfile`, and `*.yaml` as LF
   regardless, because those files run inside Linux containers.
+- A migration cannot give a function a `SET app.x = ...` clause: PostgreSQL lets only a superuser attach a custom setting to a function. Call `set_config` in the body and restore the previous value before returning, as `app.queue_backlog()` in 0022 does.
 - Row-level security applies to migrations: the migration role is not exempt. A data backfill must bind
   each tenant with `set_config('app.tenant_id', …, true)` (see the `DO` block at the end of
   `0007_bot_activation.sql`) or it silently touches no rows.
