@@ -405,8 +405,8 @@
     "semantic_hash": ""
   },
   "src/lib/deployment/package.json": {
-    "mtime": 1794238641.4917417,
-    "ast_hash": "37bd01d4bf02f0ea390a4c260e83c523",
+    "mtime": 1794605429.4804363,
+    "ast_hash": "f1c9e49353992b4708217833c8e179cb",
     "semantic_hash": ""
   },
   "src/lib/deployment/tsconfig.json": {
@@ -615,14 +615,14 @@
     "semantic_hash": "b2f94dc1928d5da70ff9ed8a21492065"
   },
   "src/lib/queue/conformance.ts": {
-    "mtime": 1789844928.2963917,
-    "ast_hash": "bc8e64fb4237705c24a802d3e2e56107",
-    "semantic_hash": "bc8e64fb4237705c24a802d3e2e56107"
+    "mtime": 1794605670.5739436,
+    "ast_hash": "f760618caae9e7af1a0c9c731628bb0e",
+    "semantic_hash": ""
   },
   "src/lib/queue/consumer.ts": {
-    "mtime": 1787683631.3437433,
-    "ast_hash": "679712dd980525c96a9e85975dc2afe4",
-    "semantic_hash": "679712dd980525c96a9e85975dc2afe4"
+    "mtime": 1794605618.7122767,
+    "ast_hash": "1ce78c7bc83dc0c0417149c868750efd",
+    "semantic_hash": ""
   },
   "src/lib/queue/index.test.ts": {
     "mtime": 1787684817.4417825,
@@ -635,9 +635,9 @@
     "semantic_hash": "304d918c39e6aae18981113e71d7dd64"
   },
   "src/lib/queue/memory.ts": {
-    "mtime": 1789844943.2191248,
-    "ast_hash": "afe48261dcf0c25fe883844238dea050",
-    "semantic_hash": "afe48261dcf0c25fe883844238dea050"
+    "mtime": 1794605678.1617002,
+    "ast_hash": "1ed96a492c9b1962dd3551833976c95f",
+    "semantic_hash": ""
   },
   "src/lib/queue/package.json": {
     "mtime": 1787683806.5568867,
@@ -650,9 +650,9 @@
     "semantic_hash": "b0f433696f9fb4b396dce41dbaf42a2a"
   },
   "src/lib/queue/postgres.ts": {
-    "mtime": 1789844928.2963917,
-    "ast_hash": "2fe57d80f2f9919a31e52d2558961207",
-    "semantic_hash": "2fe57d80f2f9919a31e52d2558961207"
+    "mtime": 1794605678.1617002,
+    "ast_hash": "96c6c52e5a18726f783df5d42b07dadc",
+    "semantic_hash": ""
   },
   "src/lib/queue/testing.ts": {
     "mtime": 1787683801.9239173,
@@ -1210,13 +1210,13 @@
     "semantic_hash": ""
   },
   "AGENTS.md": {
-    "mtime": 1794604987.54241,
-    "ast_hash": "f610f9848772586300c2b7b4abf14f5d",
+    "mtime": 1794605969.4883666,
+    "ast_hash": "ea560346785c88f84ffa4c6d4cf2839e",
     "semantic_hash": ""
   },
   "IMPLEMENTATION_PLAN.md": {
-    "mtime": 1794605072.5437953,
-    "ast_hash": "69e02b7aa56a592496a5d2a568490759",
+    "mtime": 1794605963.131346,
+    "ast_hash": "38c2dac448935986081bff526d076e2e",
     "semantic_hash": ""
   },
   "PROMPT_build.md": {
@@ -1662,6 +1662,11 @@
   "src/lib/schema/migrations/0021_component_heartbeats.sql": {
     "mtime": 1794604565.9830306,
     "ast_hash": "ac85335f7ffc1d4de98daa75aed91d7f",
+    "semantic_hash": ""
+  },
+  "src/lib/deployment/independence.test.ts": {
+    "mtime": 1794605793.0944126,
+    "ast_hash": "1faf5d7698b97df7bdc73e32f2df4c09",
     "semantic_hash": ""
   }
 }

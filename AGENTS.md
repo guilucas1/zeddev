@@ -19,7 +19,7 @@ Run from the repo root.
 | `npm install` | Links workspaces. Required after adding a package under `src/lib/*` or `src/services/*`. |
 | `npm test` | Runs the full suite with `--env-file-if-exists=.env.test`, so database settings are picked up automatically. |
 | `npm run typecheck` | `tsc --noEmit` for the repo, then for `src/services/web/ui/shell.ts`, the one browser-only file, under its own project with the DOM lib. Type errors do **not** fail `npm test` — type stripping ignores types — so this must be run separately. |
-| `npm run db:up` | Starts a disposable PostgreSQL 17 container (`zeddev-pg`) on `127.0.0.1:55432` and adds its settings to `.env.test`. Required before `npm run check`. |
+| `npm run db:up` | Starts a disposable PostgreSQL 17 container (`zeddev-pg`) on `127.0.0.1:55432`, gives it TLS under a test CA (`.tmp/postgres-tls/`, cert names `localhost`), and adds its settings to `.env.test`. Required before `npm run check`; re-run it on an older container or the TLS and tier suites fail. |
 | `npm run db:down` | Removes the `zeddev-pg` container and its `.env.test` entries. |
 | `npm run storage:up` | Starts a disposable MinIO container (`zeddev-minio`) on `127.0.0.1:59000` and adds its settings to `.env.test`. Required before `npm run check`. |
 | `npm run storage:down` | Removes the `zeddev-minio` container and its `.env.test` entries. |

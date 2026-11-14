@@ -147,7 +147,9 @@ Component status is done too: an operator can now see which component is down, i
 
 Component independence is now proven on the running services, not just on their definitions: `src/lib/deployment/independence.test.ts` starts the gateway, the worker, and the API from configuration against one real PostgreSQL and stops, restarts, redeploys, scales, and crashes each while two tenants keep talking to the bot. Doing so found a queue defect: a turn held by a worker that died was taken over only at the next 30 s sweep and idle wake *after* its lease ran out, up to about two minutes of silence for that customer with production defaults. Both queue adapters now wake when a lease runs out, and an idle consumer sweeps before it sleeps. See §4ad. That brings the totals to 1315 passing tests, zero skipped, 25 of 27 specs with covering tests, 643 spec-linked assertions; `component-independence.md` has tests for 10 of its 11 criteria.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. The next unblocked work is the component-independence and environment-portability validation in P4.
+Environment portability is proven too: the three deployment tiers are documented as data (`DEPLOYMENT_TIERS`, rendered into `docs/configuration.md`), and `src/lib/deployment/tiers.test.ts` starts every service from each tier's values and runs the same signup-to-answered-customer scenario on all three, requires the answers to be identical across tiers, and moves one deployment through all three tiers on the same data. The managed-cloud tier reaches PostgreSQL over verified TLS, which the test server now speaks; doing so fixed an IP address being sent as SNI and made a refused certificate name the setting to change. See §4ae. That brings the totals to 1330 passing tests, zero skipped, 25 of 27 specs with covering tests, 653 spec-linked assertions; `environment-portability.md` has tests for all 9 of its criteria.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. With P4 portability and independence done, the next unblocked work is the mail-over-TLS follow-up in §4ae; offboarding waits on the retention window.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -586,9 +588,11 @@ call must never be able to cause Meta to redeliver.
   explicit irreversibility confirmation. Deletion must reach secrets and any backup or archived copy.
 - **[DONE]** AI provider verification mode and revert: the `AI_CANDIDATE_*` slot, `verifyAiProvider`, and
   `POST /v1/operator/ai-provider/verify`; promotion and revert are one exchange of configuration values. See §4ab.
-- Environment portability validation: bring the same artifacts up on all three tiers from configuration
-  alone, and add an automated check that fails the build if environment-detection branching appears in the
-  source. `environment-portability.md` states this as an inspectable criterion, so it should be a test.
+- **[DONE]** Environment portability validation. The three tiers are data (`DEPLOYMENT_TIERS` in
+  `src/lib/deployment/tiers.ts`), rendered into `docs/configuration.md`, and `tiers.test.ts` starts every
+  service from each tier's values and runs the same end-to-end scenario on all three, including the move
+  between tiers on the same data (AC1–AC4, AC6, AC8, AC9). The managed-cloud tier reaches a real PostgreSQL
+  over verified TLS. The environment-branching scan (AC5) is `src/lib/testing/portability.test.ts`. See §4ae.
 - **[DONE]** Component independence validation. Which component is down is observable (AC9) via heartbeats
   and `GET /v1/operator/components` (§4ac). Redeploy, restart, scale, crash, and replacement are proven on the
   running gateway, worker, and API in-process against one PostgreSQL (AC1–AC3, AC5–AC8, AC10, AC11), in
@@ -1956,6 +1960,34 @@ SMTP).
 - **The crash test costs 10 s,** the minimum `WORKER_VISIBILITY_TIMEOUT`. That minimum is now also the floor on how long a dead worker's customer waits, so it may be worth lowering once renewals are proven against real provider latency.
 
 ---
+
+## 4ae. Findings from the environment portability increment
+
+- **[DECISION] A tier is data, not prose.** `DEPLOYMENT_TIERS` holds only what makes a tier that tier
+  (transport security, pool size, worker concurrency, proxy hops, mail transport, log level), each with its
+  reason. What every deployment supplies for itself (addresses, credentials, public URL, Meta app, model) is
+  deliberately not a tier value, and `tiers.test.ts` asserts its harness never overrides a key a tier sets.
+  So the documented values are the values that ran: they cannot drift from working ones (AC6).
+- **The managed-cloud tier's database transport had never run.** Laptop and VPS use `DATABASE_SSL_MODE=disable`
+  on a container network, so `verify-full` + `DATABASE_CA_CERTIFICATE` was code no test had exercised.
+  `scripts/db.sh` now gives the test server a certificate naming `localhost`, signed by a CA it generates in
+  `.tmp/postgres-tls/`, and writes `ZEDDEV_TEST_DATABASE_TLS_HOST`/`_CA_FILE` to `.env.test`;
+  `testDatabaseTls()` throws (rather than skipping) when they are missing. Re-run `npm run db:up` on an
+  existing container to add TLS. Since the default mode is `prefer`, every database test now runs encrypted.
+- **Bug fixed: SNI carried an IP address.** The client passed `servername: host` even for `127.0.0.1`, which
+  RFC 6066 forbids and Node warns it will stop sending. It now passes `host` for verification and
+  `servername` only for a name.
+- **Bug fixed: every TLS refusal blamed `DATABASE_SSL_MODE`** with only an error class name. `tlsFailureIssue`
+  now names the key to change: `DATABASE_HOST` for a certificate naming another host (with `verify-ca` as the
+  alternative), `DATABASE_CA_CERTIFICATE` for an untrusted authority (AC7). It reports Node's error code,
+  never certificate content.
+- **Follow-up: mail over TLS succeeds nowhere in the suite.** The VPS (`starttls`, 587) and managed
+  (`implicit`, 465) tiers' `MAIL_TLS` values parse and their failure paths are tested, but no test completes
+  a STARTTLS or implicit-TLS handshake against a real server — `tiers.test.ts` catches mail in memory. Mailpit
+  can serve TLS (`--smtp-tls-cert/--smtp-tls-key`, `--smtp-require-tls`); giving `scripts/mail.sh` a cert the
+  way `db.sh` does would close it.
+- **Not automated:** bringing the tiers up on real hosts (Compose on a VPS, a provider's container platform).
+  The in-process test proves configuration suffices; it does not prove a particular provider's platform.
 
 ## 5. Principal risks
 

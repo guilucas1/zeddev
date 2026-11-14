@@ -32,6 +32,52 @@ PASSWORD=zeddev_test_pw
 
 ENV_FILE=.env.test
 
+# The server also speaks TLS, under a certificate authority made here. A managed
+# cloud database is reached with DATABASE_SSL_MODE=verify-full and, for a private
+# CA, DATABASE_CA_CERTIFICATE; without a server that speaks TLS, that tier's
+# transport would be configuration nothing had ever exercised. The certificate
+# names `localhost` and not 127.0.0.1, as a managed instance's names its
+# endpoint rather than an address, so verify-full passes only by that name and
+# verify-ca (chain, no hostname) is distinguishable from it.
+TLS_DIR=.tmp/postgres-tls
+TLS_HOST=localhost
+
+# A path node can open on every platform: Git Bash on Windows hands out /c/... paths.
+native_path() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
+enable_tls() {
+  # Git Bash rewrites anything that looks like a POSIX path (an openssl -subj, a
+  # path inside the container) unless told not to.
+  export MSYS_NO_PATHCONV=1
+  mkdir -p "${TLS_DIR}"
+  if [ ! -f "${TLS_DIR}/ca.pem" ] || [ ! -f "${TLS_DIR}/server.pem" ] || [ ! -f "${TLS_DIR}/server.key" ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=zeddev test CA" \
+      -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -keyout "${TLS_DIR}/ca.key" -out "${TLS_DIR}/ca.pem" 2>/dev/null
+    openssl req -newkey rsa:2048 -nodes -subj "/CN=${TLS_HOST}" \
+      -keyout "${TLS_DIR}/server.key" -out "${TLS_DIR}/server.csr" 2>/dev/null
+    {
+      echo "subjectAltName=DNS:${TLS_HOST}"
+      echo "extendedKeyUsage=serverAuth"
+    } > "${TLS_DIR}/server.ext"
+    openssl x509 -req -in "${TLS_DIR}/server.csr" -CA "${TLS_DIR}/ca.pem" -CAkey "${TLS_DIR}/ca.key" \
+      -CAcreateserial -days 3650 -extfile "${TLS_DIR}/server.ext" -out "${TLS_DIR}/server.pem" 2>/dev/null
+  fi
+  docker cp "${TLS_DIR}/server.pem" "${CONTAINER}:/var/lib/postgresql/server.crt" >/dev/null
+  docker cp "${TLS_DIR}/server.key" "${CONTAINER}:/var/lib/postgresql/server.key" >/dev/null
+  # PostgreSQL refuses a key file anyone but its owner can read.
+  docker exec -u root "${CONTAINER}" sh -c \
+    'chown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key && chmod 600 /var/lib/postgresql/server.key'
+  docker exec "${CONTAINER}" psql -U zeddev -d zeddev -q \
+    -c "ALTER SYSTEM SET ssl_cert_file = '/var/lib/postgresql/server.crt'" \
+    -c "ALTER SYSTEM SET ssl_key_file = '/var/lib/postgresql/server.key'" \
+    -c "ALTER SYSTEM SET ssl = on" \
+    -c "SELECT pg_reload_conf()" >/dev/null
+  unset MSYS_NO_PATHCONV
+}
+
 # Replace this script's own block in .env.test, leaving any other tool's alone.
 upsert_env() {
   local tmp
@@ -47,6 +93,8 @@ ZEDDEV_TEST_DATABASE_PORT=${PORT}
 ZEDDEV_TEST_DATABASE_USER=zeddev
 ZEDDEV_TEST_DATABASE_PASSWORD=${PASSWORD}
 ZEDDEV_TEST_DATABASE_NAME=zeddev
+ZEDDEV_TEST_DATABASE_TLS_HOST=${TLS_HOST}
+ZEDDEV_TEST_DATABASE_CA_FILE=$(native_path "$(pwd)/${TLS_DIR}/ca.pem")
 ENVFILE
   mv "${tmp}" "${ENV_FILE}"
 }
@@ -70,10 +118,12 @@ case "${1:-up}" in
       echo
     fi
 
+    enable_tls
     upsert_env
 
     cat <<MESSAGE
-PostgreSQL is running on 127.0.0.1:${PORT} (container ${CONTAINER}).
+PostgreSQL is running on 127.0.0.1:${PORT} (container ${CONTAINER}), and speaks TLS as
+${TLS_HOST} under the test CA in ${TLS_DIR}/ca.pem.
 Updated .env.test — \`npm run check\` will now pick it up automatically.
 
 Note: the zeddev role above is a superuser and is used only to create and drop

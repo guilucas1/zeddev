@@ -225,6 +225,60 @@ The client and operator dashboards, and the single origin they share with the AP
 | `WEB_SHUTDOWN_GRACE` | duration | no | `10000` | On a stop signal, how long requests in flight are given to finish before their connections are closed. |
 | `WEB_UPSTREAM_TIMEOUT` | duration | no | `120000` | How long a forwarded request may wait for the API before the browser is told the service is unavailable. It must outlast the slowest thing a dashboard asks for, a reply preview that makes a real AI call with retries. |
 
+## Deployment tiers
+
+What each tier sets differently from the defaults above, and why. Everything not
+listed is the same on every tier, apart from what each deployment supplies for
+itself whatever its tier: addresses, credentials, `API_PUBLIC_BASE_URL`, the Meta
+app, and the model. `src/lib/deployment/tiers.test.ts` starts every service from
+each tier's values exactly as written here and runs the same end-to-end scenario
+on all three, so these are values known to work, not suggestions.
+
+### Personal computer
+
+`docker compose --profile local-mail up -d` on one machine: PostgreSQL and Mailpit run beside the services on the Compose network, and the browser reaches `web` directly. Meta reaches the gateway through a tunnel.
+
+| Variable | Value | Why |
+| --- | --- | --- |
+| `DATABASE_SSL_MODE` | `disable` | The database is a container on the same host, reached over the Compose network only. |
+| `DATABASE_POOL_MAX` | `5` | Five processes share one small PostgreSQL on a machine that is doing other things. |
+| `WORKER_CONCURRENCY` | `2` | A handful of test conversations at a time. |
+| `WORKER_MAX_IN_FLIGHT_PER_TENANT` | `1` | Below WORKER_CONCURRENCY with one worker, as that key requires. |
+| `API_TRUSTED_PROXY_HOPS` | `1` | `web` is the only proxy in front of the API. |
+| `MAIL_TLS` | `disable` | Mailpit on the Compose network catches every message; nothing leaves the machine. |
+| `MAIL_PORT` | `1025` | Mailpit's SMTP port. |
+| `LOG_LEVEL` | `debug` | The operator is the developer, reading the logs as they go. |
+
+### Low-cost VPS
+
+The same Compose file on one rented host, with a TLS-terminating reverse proxy in front of `web` and of the gateway. PostgreSQL stays on the Compose network; mail goes to a provider relay.
+
+| Variable | Value | Why |
+| --- | --- | --- |
+| `DATABASE_SSL_MODE` | `disable` | The database is still a container on the same host, unreachable from outside the Compose network. |
+| `DATABASE_POOL_MAX` | `10` | One modest host shared by every service and the database. |
+| `WORKER_CONCURRENCY` | `4` | Most of a job is waiting on the AI provider, so a small host can hold more than its CPU count. |
+| `WORKER_MAX_IN_FLIGHT_PER_TENANT` | `2` | Half the worker, so one busy business cannot occupy all of it. |
+| `API_TRUSTED_PROXY_HOPS` | `2` | The reverse proxy, then `web`. |
+| `MAIL_TLS` | `starttls` | A provider relay over the internet, on the submission port. |
+| `MAIL_PORT` | `587` | The submission port. |
+| `LOG_LEVEL` | `info` | Nobody is watching live; records are for diagnosing afterwards. |
+
+### Managed cloud provider
+
+Each service's image runs on the provider's container platform behind its load balancer, against managed PostgreSQL and a managed mail relay. Workers scale by adding instances.
+
+| Variable | Value | Why |
+| --- | --- | --- |
+| `DATABASE_SSL_MODE` | `verify-full` | The database is a managed endpoint across the provider's network, so the link is encrypted and the server must prove it is that endpoint. Connect by the name its certificate carries, and set DATABASE_CA_CERTIFICATE if the provider signs with a private authority. |
+| `DATABASE_POOL_MAX` | `20` | Managed PostgreSQL allows more connections, and each instance is sized on its own. |
+| `WORKER_CONCURRENCY` | `8` | A dedicated instance per worker. |
+| `WORKER_MAX_IN_FLIGHT_PER_TENANT` | `4` | Counted across every worker instance, so it stays below their combined concurrency. |
+| `API_TRUSTED_PROXY_HOPS` | `2` | The provider's load balancer, then `web`. |
+| `MAIL_TLS` | `implicit` | A managed relay speaking TLS from the first byte. |
+| `MAIL_PORT` | `465` | The implicit-TLS submission port. |
+| `LOG_LEVEL` | `info` | Records go to the provider's log store, which charges by volume. |
+
 ## Template
 
 ```sh

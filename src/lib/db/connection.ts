@@ -19,7 +19,7 @@
  * `cost-efficient-operation.md`.
  */
 
-import { connect as netConnect, type Socket } from 'node:net';
+import { isIP, connect as netConnect, type Socket } from 'node:net';
 import { connect as tlsConnect, type TLSSocket } from 'node:tls';
 import { ConfigurationError, TransientTransportError, type ZedError } from '@zeddev/errors';
 import type { Secret } from '@zeddev/secrets';
@@ -47,6 +47,45 @@ import {
   type BackendNotification,
   type FieldDescription,
 } from './wire.ts';
+
+/**
+ * Say which setting to change when the server's certificate was refused.
+ *
+ * `environment-portability.md` AC7 asks for an error that identifies the
+ * misconfigured value. "TLS handshake failed" does not: an untrusted authority is
+ * fixed in DATABASE_CA_CERTIFICATE, a certificate naming another host in
+ * DATABASE_HOST (or by choosing verify-ca), and neither is a DATABASE_SSL_MODE
+ * problem. Node's error code is a fixed identifier, never certificate content.
+ */
+export function tlsFailureIssue(error: Error, mode: SslMode, host: string): { key: string; reason: string } {
+  const code = (error as NodeJS.ErrnoException).code ?? error.constructor.name;
+  if (code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
+    return {
+      key: 'DATABASE_HOST',
+      reason: `the server's certificate does not name "${host}", which DATABASE_SSL_MODE="${mode}" requires; connect by a name the certificate carries, or use "verify-ca" to check the authority alone (${code})`,
+    };
+  }
+  if (UNTRUSTED_AUTHORITY_CODES.has(code)) {
+    return {
+      key: 'DATABASE_CA_CERTIFICATE',
+      reason: `the server's certificate is not signed by a trusted authority; set DATABASE_CA_CERTIFICATE to the PEM bundle of the authority that signed it (${code})`,
+    };
+  }
+  if (code === 'CERT_HAS_EXPIRED' || code === 'CERT_NOT_YET_VALID') {
+    return { key: 'DATABASE_SSL_MODE', reason: `the server's certificate is outside its validity period (${code})` };
+  }
+  return { key: 'DATABASE_SSL_MODE', reason: `TLS handshake failed (${code})` };
+}
+
+const UNTRUSTED_AUTHORITY_CODES: ReadonlySet<string> = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'CERT_UNTRUSTED',
+  'CERT_SIGNATURE_FAILURE',
+]);
 
 /**
  * TLS negotiation modes, matching libpq's vocabulary.
@@ -265,9 +304,14 @@ export class Connection {
         }
 
         const verify = mode === 'verify-ca' || mode === 'verify-full';
+        const host = this.#options.host;
         const tlsSocket = tlsConnect({
           socket,
-          servername: this.#options.host,
+          // `host` is what verify-full checks the certificate against. SNI
+          // (`servername`) may only carry a name: RFC 6066 forbids an address, and
+          // Node warns that it will stop sending one.
+          host,
+          ...(isIP(host) === 0 ? { servername: host } : {}),
           rejectUnauthorized: verify,
           // `verify-ca` checks the chain but not the hostname; `verify-full`
           // checks both. Distinguishing them matters for a managed cloud
@@ -277,13 +321,7 @@ export class Connection {
           ...(this.#options.caCertificate === undefined ? {} : { ca: this.#options.caCertificate }),
         });
         tlsSocket.once('secureConnect', () => resolvePromise(tlsSocket));
-        tlsSocket.once('error', (error) =>
-          rejectPromise(
-            new ConfigurationError([
-              { key: 'DATABASE_SSL_MODE', reason: `TLS handshake failed: ${error.constructor.name}` },
-            ]),
-          ),
-        );
+        tlsSocket.once('error', (error) => rejectPromise(new ConfigurationError([tlsFailureIssue(error, mode, host)])));
       });
       socket.write(sslRequestMessage());
     });

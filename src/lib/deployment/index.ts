@@ -44,6 +44,9 @@ import { VAULT_CONFIG_SCHEMA } from '@zeddev/vault';
 import { WHATSAPP_CONFIG_SCHEMA } from '@zeddev/whatsapp';
 import { GATEWAY_CONFIG_SCHEMA } from '@zeddev/whatsapp-gateway/config';
 import { WEB_CONFIG_SCHEMA } from '@zeddev/web/config';
+import { renderTiers } from './tiers.ts';
+
+export { DEPLOYMENT_TIERS, renderTiers, tierEnvironment, type DeploymentTier, type TierSetting } from './tiers.ts';
 
 export interface ConfigSection {
   /** Heading in the generated reference. */
@@ -184,7 +187,7 @@ export function renderPlatformReference(): string {
   const sections = PLATFORM_CONFIG_SCHEMAS.map(
     (section) => `## ${section.title}\n\n${section.rationale}\n\n${tableOnly(section.schema)}`,
   );
-  return `${PREAMBLE}\n${sections.join('\n\n')}\n\n## Template\n\n\`\`\`sh\n${renderEnvTemplate(
+  return `${PREAMBLE}\n${sections.join('\n\n')}\n\n${renderTiers()}\n\n## Template\n\n\`\`\`sh\n${renderEnvTemplate(
     combinedSchema(),
   )}\`\`\`\n`;
 }

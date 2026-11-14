@@ -40,6 +40,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { Secret } from '@zeddev/secrets';
 import { Connection, type ConnectionOptions } from './connection.ts';
 import { Pool } from './pool.ts';
@@ -54,6 +55,24 @@ function envValue(suffix: string): string | undefined {
 /** Whether a test database is configured. Tests skip themselves when it is not. */
 export function testDatabaseConfigured(): boolean {
   return envValue('HOST') !== undefined;
+}
+
+/**
+ * How to reach the test server over verified TLS, as `scripts/db.sh` set it up:
+ * the name its certificate carries and the authority that signed it.
+ *
+ * Throws rather than returning nothing when the server is configured without it,
+ * because a test of the managed-cloud tier's transport that skipped quietly would
+ * leave that tier's configuration unexercised behind a green run. Re-running
+ * `npm run db:up` adds it to an existing container.
+ */
+export function testDatabaseTls(): { readonly host: string; readonly caCertificate: string } {
+  const host = envValue('TLS_HOST');
+  const caFile = envValue('CA_FILE');
+  if (host === undefined || caFile === undefined) {
+    throw new Error(`${PREFIX}TLS_HOST and ${PREFIX}CA_FILE are not set — re-run \`npm run db:up\` to give the test server TLS`);
+  }
+  return { host, caCertificate: readFileSync(caFile, 'utf8') };
 }
 
 /**
