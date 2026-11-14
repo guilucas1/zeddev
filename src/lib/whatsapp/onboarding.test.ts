@@ -603,6 +603,8 @@ describe('whatsapp connection flow', { skip: testDatabaseConfigured() ? false : 
       assert.equal(waiting.currentStep, 'reply');
       assert.equal(waiting.verification?.outcome, 'pending');
       assert.equal(waiting.number?.credentialConfigured, true);
+      const stored = await withTenant(pool, tenant, (tx) => describeTenantSecret(tx, 'tenant_whatsapp_credential'));
+      assert.equal(waiting.number?.credentialConfiguredAt, stored?.configuredAt.toISOString(), 'the screen and the vault disagree on when');
       assert.equal(JSON.stringify(waiting).includes(account.accessToken), false, 'the token reached a product surface');
       assert.equal(JSON.stringify(waiting).includes(requested.code), false, 'the code reached a product surface');
 

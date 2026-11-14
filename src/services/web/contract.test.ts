@@ -441,13 +441,15 @@ describe('the dashboards against the real API', { skip: testDatabaseConfigured()
     assert.match(connected, /data-action="startReplace"/);
   });
 
-  specTest('credential-and-secret-handling.md', 'AC6 a client sees a credential is configured, never its value', 'the token is not on the page after it is saved', async () => {
+  specTest('credential-and-secret-handling.md', 'AC6 a client sees a credential is configured, never its value', 'the token is not on the page after it is saved, and when it was saved is', async () => {
     const { page } = await onboard();
     const account = metaAccount();
     const screen = await page.open('/whatsapp');
     await screen.forms!.credentials!(account);
     const view = screen.view().text;
-    assert.match(view, /Access token<\/dt><dd>Configured/);
+    const connection = await page.api.get<{ setup: { number: { credentialConfiguredAt: string } } }>('/v1/whatsapp/connection');
+    const configuredAt = new Date(connection.setup.number.credentialConfiguredAt).toLocaleString();
+    assert.ok(view.includes(`Access token</dt><dd>Configured ${configuredAt}</dd>`), 'the page does not say when the token was saved');
     assert.ok(!view.includes(account.accessToken));
   });
 

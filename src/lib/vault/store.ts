@@ -50,7 +50,17 @@ export interface StoredSecretDescription {
   /** Which sealing key protects it — the input to "which rows still use the retired key?". */
   readonly keyId: string;
   readonly createdAt: Date;
+  /**
+   * When the value was last replaced by a new one, or `null` if never. Re-sealing
+   * under a new key does not count: the client supplied nothing, so it is not a
+   * change of credential, and the access record already says it happened.
+   */
   readonly rotatedAt: Date | null;
+  /**
+   * When the current value was supplied — the "and when" of AC6. Derived here,
+   * once, so every surface that answers the question gives the same answer.
+   */
+  readonly configuredAt: Date;
 }
 
 interface SecretRow {
@@ -78,6 +88,7 @@ function describe(row: Omit<SecretRow, 'sealed_value'>): StoredSecretDescription
     keyId: row.key_id,
     createdAt: row.created_at,
     rotatedAt: row.rotated_at,
+    configuredAt: row.rotated_at ?? row.created_at,
   };
 }
 
@@ -280,6 +291,11 @@ export async function secretsAwaitingReseal(
  * Unseals and re-seals in one transaction. Recorded as `replaced` rather than as
  * a read, because the value did not leave the platform — what changed is which
  * key protects it.
+ *
+ * `rotated_at` is left alone. It answers "when did the client last supply this
+ * credential" (AC6, via `configuredAt`), and an operator rotating sealing keys
+ * would otherwise tell every tenant they had reconfigured their number that day.
+ * Rotation progress is `key_id`'s to answer, not a timestamp's.
  */
 export async function resealTenantSecrets(
   connection: Connection,
@@ -300,7 +316,7 @@ export async function resealTenantSecrets(
     const plaintext = sealer.unsealToBuffer(row.sealed_value);
     await connection.query(
       `UPDATE tenant_secrets
-          SET sealed_value = $1, key_id = $2, rotated_at = now()
+          SET sealed_value = $1, key_id = $2
         WHERE tenant_id = app.current_tenant_id() AND secret_class = $3`,
       [sealer.seal(plaintext), sealer.activeKeyId, row.secret_class],
     );

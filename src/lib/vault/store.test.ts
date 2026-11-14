@@ -132,11 +132,51 @@ describe('tenant secret store', { skip: testDatabaseConfigured() ? false : SKIP_
         describeTenantSecret(tx, 'tenant_whatsapp_credential'),
       );
       assert.ok(described !== undefined);
-      assert.deepEqual(Object.keys(described).sort(), ['createdAt', 'keyId', 'rotatedAt', 'secretClass', 'valueRef']);
+      assert.deepEqual(Object.keys(described).sort(), ['configuredAt', 'createdAt', 'keyId', 'rotatedAt', 'secretClass', 'valueRef']);
       assert.equal(JSON.stringify(described).includes(token), false);
       assert.equal(described.valueRef, secretRef(token));
       assert.ok(described.createdAt instanceof Date);
       assert.equal(described.rotatedAt, null);
+      assert.equal(described.configuredAt.getTime(), described.createdAt.getTime());
+    },
+  );
+
+  specTest(
+    'credential-and-secret-handling.md',
+    'AC6 a client sees that a credential is configured and when, never its value',
+    'the configured time follows the client replacing the value, not the operator re-sealing it',
+    async () => {
+      const tenant = await newTenant();
+      const oldKey = parseSealingKey(generateSealingKey('k-cfg-old'), 'VAULT_SEALING_KEYS');
+      const newKey = parseSealingKey(generateSealingKey('k-cfg-new'), 'VAULT_SEALING_KEYS');
+      const before = new SecretSealer([oldKey], 'k-cfg-old');
+      const during = new SecretSealer([oldKey, newKey], 'k-cfg-new');
+      const describeNow = async () => {
+        const described = await withTenant(pool, tenant, (tx) => describeTenantSecret(tx, 'tenant_whatsapp_credential'));
+        assert.ok(described !== undefined);
+        return described;
+      };
+
+      const created = await withTenant(pool, tenant, (tx) =>
+        putTenantSecret(tx, before, { secretClass: 'tenant_whatsapp_credential', value: tokenFor('cfg-1'), principal: 'acct-1' }),
+      );
+      assert.equal(created.configuredAt.getTime(), created.createdAt.getTime());
+
+      // Each statement runs in its own transaction, so now() moves between them.
+      const replaced = await withTenant(pool, tenant, (tx) =>
+        putTenantSecret(tx, before, { secretClass: 'tenant_whatsapp_credential', value: tokenFor('cfg-2'), principal: 'acct-1' }),
+      );
+      assert.ok(replaced.configuredAt.getTime() > created.configuredAt.getTime(), 'replacing the token did not move the configured time');
+      assert.equal((await describeNow()).configuredAt.getTime(), replaced.configuredAt.getTime());
+
+      await withTenant(pool, tenant, (tx) => resealTenantSecrets(tx, during, { principal: 'operator' }));
+      const resealed = await describeNow();
+      assert.equal(resealed.keyId, 'k-cfg-new');
+      assert.equal(
+        resealed.configuredAt.getTime(),
+        replaced.configuredAt.getTime(),
+        'a key rotation told the client they had reconfigured their credential',
+      );
     },
   );
 

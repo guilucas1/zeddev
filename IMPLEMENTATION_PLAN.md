@@ -151,7 +151,9 @@ Environment portability is proven too: the three deployment tiers are documented
 
 Mail over TLS is proven too: the test Mailpit offers STARTTLS and a second one speaks implicit TLS, both under a test CA, and `src/lib/mail/tls.test.ts` runs the whole mail conformance suite over each mode. That found the mail client retrying a refused certificate as a network failure and sending an IP address as SNI; both are fixed, and certificate refusals are now judged once for the database and mail clients. See §4af. That brings the totals to 1367 passing tests, zero skipped, 25 of 27 specs with covering tests, 663 spec-linked assertions.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. With mail over TLS done (§4af), the unblocked work left is follow-ups: the credential `configuredAt` timestamp (§4aa), keeping AI verification results (§4ab), and a counts-only queue backlog view (§4ac). Offboarding waits on the retention window.
+A client now sees when their WhatsApp access token was configured, not only that it is, which closes the last gap in `credential-and-secret-handling.md` AC6. The vault answers it (`StoredSecretDescription.configuredAt`), the connection setup asks the vault instead of assuming, and re-sealing under a new key no longer counts as reconfiguring. See §4ag. That brings the totals to 1368 passing tests, zero skipped, 25 of 27 specs with covering tests, 664 spec-linked assertions.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. With mail over TLS done (§4af), the unblocked work left is follow-ups: keeping AI verification results (§4ab) and a counts-only queue backlog view (§4ac). The credential `configuredAt` timestamp is done (§4ag). Offboarding waits on the retention window.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -1894,7 +1896,7 @@ SMTP).
 
 ### Follow-ups the dashboard increment leaves open
 
-- `credential-and-secret-handling.md` AC6 says a client sees that a credential is configured "and when". The screen says "Configured", because `setup.number` carries no timestamp. It needs a `configuredAt` from `@zeddev/vault` metadata.
+- ~~`credential-and-secret-handling.md` AC6 "and when": the screen said only "Configured".~~ **Done in §4ag.**
 - Screens still to come with their blocked features: language setting, document upload, memory reset, offboarding.
 - `API_PUBLIC_BASE_URL` with a path prefix is accepted by the API but does not work end to end: pages use absolute `/assets/` and `/v1/` paths, and the operator cookie is `Path=/v1/operator`.
 - The browser walkthrough was a one-off script, not part of `npm test`. `shell.ts` therefore has no automated coverage; `contract.test.ts` stops at the screens.
@@ -2016,6 +2018,13 @@ SMTP).
 
 - `tiers.test.ts` still catches mail in memory. Pointing its VPS and managed tiers at the TLS Mailpits would make the
   end-to-end scenario prove it too; the mail-level suite already covers the transport.
+
+## 4ag. Findings from the credential configured-time increment
+
+- **[DECISION] "When was it configured" is `rotated_at ?? created_at`, derived once, in `@zeddev/vault`** (`StoredSecretDescription.configuredAt`). Every surface that answers AC6's "and when" therefore gives the same answer. No migration was needed: the table already held both timestamps.
+- **Bug fixed: re-sealing moved `rotated_at`.** `resealTenantSecrets` set `rotated_at = now()`, so once `configuredAt` was derived from it, an operator rotating sealing keys would have told every tenant they had reconfigured their number that day. `rotated_at` now means "the client last supplied a new value". Re-sealing still records a `replaced` access row, and rotation progress is `key_id`'s to answer (`secretsAwaitingReseal`). A vault test proves both: replacing the token moves `configuredAt`, re-sealing leaves it.
+- **`setup.number.credentialConfigured` is now the vault's answer, not an assumption.** It used to be the literal `true` whenever a number was present, which held only because every flow that writes the number also writes the token. `readConnectedNumber` now calls `describeTenantSecret`, which reads no sealed value and writes no access record, and the setup view gains `credentialConfiguredAt` (ISO, or `null`). The screen shows "Configured <local time>", or "Not configured" when the two ever disagree.
+- **`tiers.test.ts` timed out once under full parallel load.** One tier's second business was not answered within 10 s, and the later tier checks failed after it. Run on its own, and on a full re-run, it passed. Its `eventually` deadline is now 30 s: the checks assert that answers arrive, not how fast.
 
 ## 5. Principal risks
 

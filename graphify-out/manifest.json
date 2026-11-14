@@ -25,19 +25,19 @@
     "semantic_hash": "82878e0ec4d274d58a95e152ec0cb5d2"
   },
   "scripts/db.sh": {
-    "mtime": 1794685267.8522816,
-    "ast_hash": "e9691b4f5c2a337f777d5ab89a75ea6f",
+    "mtime": 1794685646.433171,
+    "ast_hash": "d44dd881c6981367e1927c365ce92e15",
     "semantic_hash": ""
   },
   "scripts/mail.sh": {
-    "mtime": 1789693246.281584,
-    "ast_hash": "494ba73a63bb65c6ab655b73dc81295e",
-    "semantic_hash": "494ba73a63bb65c6ab655b73dc81295e"
+    "mtime": 1794685689.6754172,
+    "ast_hash": "bddbf2983fc81144b9e60bf94160b4d5",
+    "semantic_hash": ""
   },
   "scripts/require-services.ts": {
-    "mtime": 1789677658.7109773,
-    "ast_hash": "3219701a289cfb3025d541fed50a476c",
-    "semantic_hash": "3219701a289cfb3025d541fed50a476c"
+    "mtime": 1794685827.5754454,
+    "ast_hash": "d29834d231dc1c55aecd36356e7846c5",
+    "semantic_hash": ""
   },
   "scripts/spec-coverage.ts": {
     "mtime": 1787682560.6905854,
@@ -330,8 +330,8 @@
     "semantic_hash": "a5b0d2de958f1dbc5ec564db6502da30"
   },
   "src/lib/db/connection.ts": {
-    "mtime": 1794606940.8283284,
-    "ast_hash": "b1729b4446f88896fb3e55158d9690a9",
+    "mtime": 1794685593.4728448,
+    "ast_hash": "772439212a68d23c1aa9f2bc2db8d067",
     "semantic_hash": ""
   },
   "src/lib/db/errors.ts": {
@@ -415,14 +415,14 @@
     "semantic_hash": "e146d3233b6cca252095ccce3cbe202e"
   },
   "src/lib/errors/index.test.ts": {
-    "mtime": 1789818179.7681634,
-    "ast_hash": "d89544efd3e0c834656ce5f5951f2ad7",
-    "semantic_hash": "d89544efd3e0c834656ce5f5951f2ad7"
+    "mtime": 1794685811.6090138,
+    "ast_hash": "60ad4a8751c0b2a511809b61af2dfdec",
+    "semantic_hash": ""
   },
   "src/lib/errors/index.ts": {
-    "mtime": 1789818173.8863237,
-    "ast_hash": "338e4513088306d7ababd328bcb3fde3",
-    "semantic_hash": "338e4513088306d7ababd328bcb3fde3"
+    "mtime": 1794685583.116933,
+    "ast_hash": "dacc29e9149a570459ed0808a6780e08",
+    "semantic_hash": ""
   },
   "src/lib/errors/package.json": {
     "mtime": 1787680399.9888747,
@@ -550,9 +550,9 @@
     "semantic_hash": "61df482e2d752ecaabe9d1b6ed45082c"
   },
   "src/lib/mail/fixtures.ts": {
-    "mtime": 1789677576.4063642,
-    "ast_hash": "b67e8687ea31ef74f0b72907d1f33e82",
-    "semantic_hash": "b67e8687ea31ef74f0b72907d1f33e82"
+    "mtime": 1794685737.0005,
+    "ast_hash": "e32c17089d8716983ac019c8bb891c9e",
+    "semantic_hash": ""
   },
   "src/lib/mail/index.test.ts": {
     "mtime": 1789677639.1323216,
@@ -590,14 +590,14 @@
     "semantic_hash": "33353dfde286d00390db14a2ecd41df9"
   },
   "src/lib/mail/socket.ts": {
-    "mtime": 1789676798.524086,
-    "ast_hash": "fe846fb1ad2621e523345e10183cdaab",
-    "semantic_hash": "fe846fb1ad2621e523345e10183cdaab"
+    "mtime": 1794685791.3443842,
+    "ast_hash": "52fbd8018ea632a2043f8f048cdefc40",
+    "semantic_hash": ""
   },
   "src/lib/mail/testing.ts": {
-    "mtime": 1789677138.4881754,
-    "ast_hash": "9c7a8856540d18d5290bd689da322231",
-    "semantic_hash": "9c7a8856540d18d5290bd689da322231"
+    "mtime": 1794685737.0005,
+    "ast_hash": "953bda2a5a7d70f654d26311bf76e429",
+    "semantic_hash": ""
   },
   "src/lib/mail/tsconfig.json": {
     "mtime": 1789677138.5174203,
@@ -1210,13 +1210,13 @@
     "semantic_hash": ""
   },
   "AGENTS.md": {
-    "mtime": 1794685365.7102137,
-    "ast_hash": "0f57c9ad06ee3665427beb83fd18de5a",
+    "mtime": 1794685823.7014692,
+    "ast_hash": "46ca984e15b97fe3914e6f7e306a2255",
     "semantic_hash": ""
   },
   "IMPLEMENTATION_PLAN.md": {
-    "mtime": 1794685456.419207,
-    "ast_hash": "d04ae603e60cd6d3b4636286d336f06d",
+    "mtime": 1794685951.9067774,
+    "ast_hash": "fc29eefaa8baf15fb2594e1641f45424",
     "semantic_hash": ""
   },
   "PROMPT_build.md": {
@@ -1682,6 +1682,16 @@
   "src/lib/deployment/tiers.ts": {
     "mtime": 1794606383.4521055,
     "ast_hash": "04ed8134c79db8ac031a0783c7191b75",
+    "semantic_hash": ""
+  },
+  "scripts/test-tls.sh": {
+    "mtime": 1794685646.1918123,
+    "ast_hash": "ede3b277242029015e4da4226040a379",
+    "semantic_hash": ""
+  },
+  "src/lib/mail/tls.test.ts": {
+    "mtime": 1794685778.0291128,
+    "ast_hash": "240eaac6e7a819dcbccf99eba6d8b628",
     "semantic_hash": ""
   }
 }

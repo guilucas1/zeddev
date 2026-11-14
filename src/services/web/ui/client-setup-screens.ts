@@ -132,7 +132,8 @@ interface Connection {
       readonly businessAccountId: string;
       readonly displayNumber: string | null;
       readonly verifiedName: string | null;
-      readonly credentialConfigured: true;
+      readonly credentialConfigured: boolean;
+      readonly credentialConfiguredAt: string | null;
     } | null;
     readonly verification: {
       readonly recipient: string;
@@ -258,7 +259,7 @@ export function connectionScreen(context: ScreenContext): Screen {
             ${setup.number.displayNumber !== null && html`<dt>Number</dt><dd>${setup.number.displayNumber}</dd>`}
             ${setup.number.verifiedName !== null && html`<dt>Business name</dt><dd>${setup.number.verifiedName}</dd>`}
             <dt>Phone number ID</dt><dd>${setup.number.phoneNumberId}</dd>
-            <dt>Access token</dt><dd>Configured</dd>
+            <dt>Access token</dt><dd>${setup.number.credentialConfiguredAt === null ? 'Not configured' : `Configured ${when(setup.number.credentialConfiguredAt)}`}</dd>
           </dl>`}
           ${body()}
         </section>

@@ -1663,6 +1663,11 @@ describe('api service', { skip: testDatabaseConfigured() ? false : SKIP_REASON }
       assert.equal(submitted.body.state, 'connecting', 'submitting credentials connected the number');
       assert.equal(submitted.body.setup.currentStep, 'send');
       assert.equal(submitted.body.setup.number.credentialConfigured, true);
+      // credential-and-secret-handling.md AC6: "and when". Judged by the database
+      // clock, so only its shape and its relation to the request are asserted.
+      const configuredAt = Date.parse(submitted.body.setup.number.credentialConfiguredAt);
+      assert.ok(Number.isFinite(configuredAt), 'no configured time for the stored token');
+      assert.ok(Math.abs(configuredAt - Date.now()) < 60_000, 'the configured time is not the time it was stored');
 
       const asked = await call(served, 'POST', '/v1/whatsapp/connection/verification', {
         cookie,

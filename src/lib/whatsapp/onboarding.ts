@@ -48,7 +48,7 @@ import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 import type { Connection } from '@zeddev/db';
 import { ConflictError, DefectError, NotFoundError, ValidationError, type ConfigIssue } from '@zeddev/errors';
 import type { SecretSealer } from '@zeddev/secrets';
-import { deleteTenantSecret, putTenantSecret, requireTenantSecret } from '@zeddev/vault';
+import { deleteTenantSecret, describeTenantSecret, putTenantSecret, requireTenantSecret } from '@zeddev/vault';
 import { META_ID, WHATSAPP_ADDRESS, type CloudCredentials } from './cloud.ts';
 import {
   readConnection,
@@ -561,6 +561,13 @@ export interface ConnectedNumber {
   readonly businessAccountId: string;
   readonly displayNumber: string | null;
   readonly verifiedName: string | null;
+  /**
+   * When the access token now held was supplied, from the vault's own record of
+   * it, or `null` if none is held. Asked of the vault rather than assumed from
+   * the number being present: a screen saying "configured" must be the vault's
+   * answer, not an inference that holds only while every flow writes both.
+   */
+  readonly credentialConfiguredAt: Date | null;
 }
 
 /** The number the tenant is connecting or connected to, as a product surface may show it. */
@@ -577,11 +584,15 @@ export async function readConnectedNumber(connection: Connection): Promise<Conne
   );
   const row = result.rows[0];
   if (phoneNumberId === undefined || row?.business_account_id == null) return undefined;
+  // Describing reads no sealed value and records no access: it is the question
+  // "is one configured, and since when", which AC6 lets a client ask freely.
+  const credential = await describeTenantSecret(connection, 'tenant_whatsapp_credential');
   return {
     phoneNumberId,
     businessAccountId: row.business_account_id,
     displayNumber: row.display_number,
     verifiedName: row.verified_name,
+    credentialConfiguredAt: credential?.configuredAt ?? null,
   };
 }
 
@@ -631,8 +642,9 @@ export function describeConnectionSetup(
     readonly businessAccountId: string;
     readonly displayNumber: string | null;
     readonly verifiedName: string | null;
-    /** AC6 of the credential spec: that a credential is configured, never its value. */
-    readonly credentialConfigured: true;
+    /** AC6 of the credential spec: that a credential is configured and when, never its value. */
+    readonly credentialConfigured: boolean;
+    readonly credentialConfiguredAt: string | null;
   } | null;
   readonly verification: {
     readonly recipient: string;
@@ -654,7 +666,8 @@ export function describeConnectionSetup(
             businessAccountId: number.businessAccountId,
             displayNumber: number.displayNumber,
             verifiedName: number.verifiedName,
-            credentialConfigured: true,
+            credentialConfigured: number.credentialConfiguredAt !== null,
+            credentialConfiguredAt: number.credentialConfiguredAt?.toISOString() ?? null,
           },
     verification:
       verification === undefined

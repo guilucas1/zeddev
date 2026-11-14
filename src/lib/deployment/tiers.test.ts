@@ -143,7 +143,11 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-async function eventually<T>(read: () => Promise<T> | T, done: (value: T) => boolean, label: string, ms = 10_000): Promise<T> {
+// 30 s, not 10: an answer waits out the burst quiet period and then a worker
+// cycle, and under `npm test`'s full parallel load one tier once took longer than
+// 10 s for one business. These checks assert that answers arrive, not how fast,
+// so the deadline only bounds how long a genuine failure takes to report.
+async function eventually<T>(read: () => Promise<T> | T, done: (value: T) => boolean, label: string, ms = 30_000): Promise<T> {
   const deadline = Date.now() + ms;
   for (;;) {
     const value = await read();
