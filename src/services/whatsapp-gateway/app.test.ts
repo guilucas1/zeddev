@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { after, before, describe } from 'node:test';
+import { REPLY_LIMITS } from '@zeddev/bot';
 import { withIdentityScope, withPlatformScope, withTenant, type Pool } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { ConfigurationError } from '@zeddev/errors';
@@ -29,6 +30,7 @@ import {
   transitionConnection,
 } from '@zeddev/whatsapp';
 import { WEBHOOK_PATH } from './app.ts';
+import { GATEWAY_CONFIG_SCHEMA } from './config.ts';
 import { startGateway, type RunningGateway } from './start.ts';
 
 const APP_SECRET = 'gateway-test-app-secret-4417';
@@ -467,6 +469,48 @@ describe('whatsapp gateway', { skip: testDatabaseConfigured() ? false : SKIP_REA
     const stored = await withTenant(pool, tenant, (tx) => listInboundMessages(tx));
     assert.equal(stored.length, 1);
   });
+  specTest(
+    'text-conversation-handling.md',
+    'AC6 a text message containing emoji, unusual punctuation, or line breaks is still processed',
+    'a maximum-length message of emoji, punctuation and line breaks is stored exactly, even at the smallest body bound',
+    async () => {
+      // The smallest bound an operator can configure, so no valid setting can
+      // refuse a message WhatsApp itself allows ("any length WhatsApp permits").
+      const smallest = await startGateway(
+        envFor(db, { GATEWAY_MAX_BODY_BYTES: String(GATEWAY_CONFIG_SCHEMA.GATEWAY_MAX_BODY_BYTES.min) }),
+        { sink: new MemorySink() },
+      );
+      try {
+        const { tenant, phoneNumberId } = await connectedTenant();
+        const opening = 'Olá!!! Do you DELIVER to Porto??? 🙏🏽\n\n— “price”: €12,50 (approx.)…\r\n¿Sí? ¡OK! ;-) #42 @shop\n';
+        const text = opening + '😊'.repeat(REPLY_LIMITS.messageMaxLength - [...opening].length);
+        assert.equal([...text].length, REPLY_LIMITS.messageMaxLength);
+
+        // The worst case on the wire: every non-ASCII UTF-16 unit as a `\uXXXX`
+        // escape, which is legal JSON and the largest encoding of this text.
+        const escape = '\\' + 'u';
+        const body = envelope(phoneNumberId, [textMessage('wamid.longest', text, 1_760_000_200)]).replace(
+          /[^\x00-\x7f]/g,
+          (unit) => escape + unit.charCodeAt(0).toString(16).padStart(4, '0'),
+        );
+        // Nearly three times the old 16 KiB floor, which could refuse this message.
+        assert.ok(body.length > 3 * 16 * 1024 - 1024, `the escaped notification is only ${body.length} bytes`);
+
+        const response = await fetch(`${smallest.url}${WEBHOOK_PATH}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature(body) },
+          body,
+        });
+        assert.equal(response.status, 200);
+        const stored = await withTenant(pool, tenant, (tx) => listInboundMessages(tx));
+        assert.equal(stored.length, 1);
+        assert.deepEqual(stored[0]!.content, { text }, 'the text must be stored exactly as written, line breaks and all');
+      } finally {
+        await smallest.stop();
+      }
+    },
+  );
+
   unitTest('an oversized notification is refused before it is buffered, and unknown routes are 404/405', async () => {
     const huge = 'x'.repeat(gateway.settings.maxBodyBytes + 1);
     assert.equal((await post(huge, { 'x-hub-signature-256': signature(huge) })).status, 413);

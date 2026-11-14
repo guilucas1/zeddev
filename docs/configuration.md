@@ -181,7 +181,7 @@ The inbound webhook Meta delivers every message to, deployed apart from the API 
 | --- | --- | --- | --- | --- |
 | `GATEWAY_HTTP_HOST` | string | no | `0.0.0.0` | Address the webhook listener binds to. The default listens on every interface, which is what a container needs. |
 | `GATEWAY_HTTP_PORT` | integer | no | `8081` | TCP port the webhook listener binds to. Meta must reach it over public HTTPS, so on a VPS or laptop a TLS-terminating reverse proxy or tunnel forwards to it; the URL Meta is given is that proxy's, followed by /v1/whatsapp/webhook. 0 asks the operating system for any free port, which is only useful to a test harness. |
-| `GATEWAY_MAX_BODY_BYTES` | integer | no | `262144` | Largest webhook notification accepted, in bytes. Notifications carry message text and media references, never media itself, so they are small; the bound stops a caller making the gateway hash and buffer megabytes before the signature check refuses them. |
+| `GATEWAY_MAX_BODY_BYTES` | integer | no | `262144` | Largest webhook notification accepted, in bytes. Notifications carry message text and media references, never media itself, so they are small; the bound stops a caller making the gateway hash and buffer megabytes before the signature check refuses them. The minimum still admits one maximum-length text message (4096 characters) even when every character arrives JSON-escaped. |
 | `GATEWAY_REQUEST_TIMEOUT` | duration | no | `10000` | How long one notification may take to arrive in full and be acknowledged before the connection is dropped. Meta treats a slow acknowledgement as a failure and redelivers, so this bounds a slow client, not the gateway: acknowledging is a signature check and one short transaction. |
 | `GATEWAY_SHUTDOWN_GRACE` | duration | no | `10000` | On a stop signal, how long in-flight notifications are given to be stored and acknowledged before connections are closed. One cut short is not lost: it was never acknowledged, so Meta redelivers it, and duplicate suppression makes the redelivery safe. |
 
@@ -432,7 +432,7 @@ GATEWAY_HTTP_HOST=0.0.0.0
 # default: 8081
 GATEWAY_HTTP_PORT=8081
 
-# Largest webhook notification accepted, in bytes. Notifications carry message text and media references, never media itself, so they are small; the bound stops a caller making the gateway hash and buffer megabytes before the signature check refuses them.
+# Largest webhook notification accepted, in bytes. Notifications carry message text and media references, never media itself, so they are small; the bound stops a caller making the gateway hash and buffer megabytes before the signature check refuses them. The minimum still admits one maximum-length text message (4096 characters) even when every character arrives JSON-escaped.
 # default: 262144
 GATEWAY_MAX_BODY_BYTES=262144
 

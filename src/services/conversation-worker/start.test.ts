@@ -18,8 +18,8 @@
 
 import assert from 'node:assert/strict';
 import { after, before, describe } from 'node:test';
-import { InMemoryAiProvider } from '@zeddev/ai/testing';
-import { savePersona, setBotActive } from '@zeddev/bot';
+import { InMemoryAiProvider, type ObservedGeneration } from '@zeddev/ai/testing';
+import { createBehaviorRule, createKnowledgeEntry, saveFallbackMessages, savePersona, setBotActive } from '@zeddev/bot';
 import { withIdentityScope, withPlatformScope, withTenant, type Pool } from '@zeddev/db';
 import { createTestDatabase, SKIP_REASON, testDatabaseConfigured, type TestDatabase } from '@zeddev/db/testing';
 import { ConfigurationError } from '@zeddev/errors';
@@ -300,6 +300,210 @@ describe('conversation worker', { skip: testDatabaseConfigured() ? false : SKIP_
       assert.equal(counted.answered, 1);
       assert.equal(counted.timed, 1);
       assert.ok(counted.waited >= 600, `recorded ${counted.waited} ms, shorter than the aggregation window`);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Text conversation handling, through the running process
+  //
+  // `@zeddev/bot` proves what a prompt says and how the model's answer is read;
+  // these prove the process around them: the message the gateway stored is what
+  // the model is shown, the configuration in the prompt is the tenant's own as
+  // committed, and the words the customer receives are the model's answer or the
+  // tenant's own fallback text, never anything else. Whether a real model's
+  // answer is *correct* is outside what a fake can show and is the verification
+  // suite's job (`verifyAiProvider`, which runs a knowledge question too).
+  // -------------------------------------------------------------------------
+
+  /** The one generation request whose customer turns contain `needle`. */
+  function generationShowing(needle: string): ObservedGeneration {
+    const matching = provider.backend.requests.filter(
+      (request): request is ObservedGeneration =>
+        request.operation === 'generate' &&
+        request.turns.some((turn) => turn.parts.some((part) => part.type === 'text' && part.text.includes(needle))),
+    );
+    assert.equal(matching.length, 1, `expected one generation showing ${JSON.stringify(needle)}`);
+    return matching[0]!;
+  }
+
+  /** The text of the last thing the customer said, as the model was shown it. */
+  function lastCustomerText(generation: ObservedGeneration): string {
+    const turn = generation.turns.at(-1)!;
+    assert.equal(turn.role, 'customer');
+    return turn.parts.map((part) => (part.type === 'text' ? part.text : '')).join('');
+  }
+
+  specTest(
+    'text-conversation-handling.md',
+    'AC1 a question covered by the configured knowledge is answered using that knowledge',
+    "the question reaches the model with the tenant's knowledge in its prompt, and the answer reaches the customer as written",
+    async () => {
+      const { tenant, phoneNumberId } = await liveTenant();
+      const fact = 'We deliver within Lisbon only; delivery there is free above 30 euros.';
+      await withTenant(pool, tenant, async (tx) => {
+        await createKnowledgeEntry(tx, { content: fact });
+        await createKnowledgeEntry(tx, { content: 'Gift wrapping costs 2 euros.' });
+      });
+      const customer = '15551230101';
+      const question = 'Do you deliver to Porto?';
+      const answer = 'Sorry, we only deliver within Lisbon. There, delivery is free above 30 euros.';
+      provider.backend.script({ kind: 'text', text: `[reply]\n${answer}` });
+
+      await deliver(tenant, phoneNumberId, customer, 'wamid.text-knowledge', question);
+      await eventually(async () => sentTo(customer), (sends) => sends.length > 0, 'the answer to be delivered');
+
+      const seen = generationShowing(question);
+      assert.ok(seen.instructions.includes(fact), 'the knowledge the question is about was not in the prompt');
+      assert.equal(lastCustomerText(seen), question);
+      assert.deepEqual(sentTo(customer), [answer]);
+    },
+  );
+
+  specTest(
+    'text-conversation-handling.md',
+    "AC2 each bot reply reflects its own business's configured persona",
+    "two live tenants answering the same message are each prompted with their own persona, and each customer gets their own tenant's answer",
+    async () => {
+      const formal = await liveTenant();
+      const casual = await liveTenant();
+      await withTenant(pool, formal.tenant, (tx) =>
+        savePersona(tx, { botName: 'Dona Helena', formality: 'formal', styleTraits: [], freeformInstructions: 'Address customers as "o senhor" or "a senhora".' }),
+      );
+      await withTenant(pool, casual.tenant, (tx) =>
+        savePersona(tx, { botName: 'Zé', formality: 'casual', styleTraits: [], freeformInstructions: 'Keep it short and friendly, emoji welcome.' }),
+      );
+      const message = (n: string) => `Are you open on Saturday? (${n})`;
+
+      // One at a time, so each scripted answer is the one its own turn consumes.
+      provider.backend.script({ kind: 'text', text: '[reply]\nGood afternoon. Yes, we are open on Saturday from nine.' });
+      await deliver(formal.tenant, formal.phoneNumberId, '15551230201', 'wamid.persona-formal', message('formal'));
+      await eventually(async () => sentTo('15551230201'), (sends) => sends.length > 0, 'the formal answer');
+      provider.backend.script({ kind: 'text', text: '[reply]\nYep! Saturday from 9 😄' });
+      await deliver(casual.tenant, casual.phoneNumberId, '15551230202', 'wamid.persona-casual', message('casual'));
+      await eventually(async () => sentTo('15551230202'), (sends) => sends.length > 0, 'the casual answer');
+
+      const formalPrompt = generationShowing(message('formal')).instructions;
+      const casualPrompt = generationShowing(message('casual')).instructions;
+      assert.match(formalPrompt, /"Dona Helena"/);
+      assert.match(formalPrompt, /o senhor/);
+      assert.match(casualPrompt, /"Zé"/);
+      assert.match(casualPrompt, /emoji welcome/);
+      for (const [prompt, foreign] of [
+        [formalPrompt, ['Zé', 'emoji welcome']],
+        [casualPrompt, ['Dona Helena', 'o senhor']],
+      ] as const) {
+        for (const text of foreign) assert.ok(!prompt.includes(text), `another tenant's persona reached the prompt: ${text}`);
+      }
+      assert.deepEqual(sentTo('15551230201'), ['Good afternoon. Yes, we are open on Saturday from nine.']);
+      assert.deepEqual(sentTo('15551230202'), ['Yep! Saturday from 9 😄']);
+    },
+  );
+
+  specTest(
+    'text-conversation-handling.md',
+    'AC5 a message that would prompt a rule violation gets a reply that complies with the rule',
+    "the tenant's rule is in the prompt, and a model that declines under it sends the tenant's own fallback text, not its words",
+    async () => {
+      const { tenant, phoneNumberId } = await liveTenant();
+      const declined = 'We can only help with questions about our own products.';
+      await withTenant(pool, tenant, async (tx) => {
+        await createBehaviorRule(tx, {
+          kind: 'never',
+          subject: 'discuss the prices of competitor products',
+          condition: null,
+          action: 'fallback',
+        });
+        await saveFallbackMessages(tx, { triggerMessages: { out_of_scope: declined } });
+      });
+      const customer = '15551230301';
+      const question = 'Is the bakery across the street cheaper than you?';
+      provider.backend.script({ kind: 'text', text: '[fallback] out_of_scope' });
+
+      await deliver(tenant, phoneNumberId, customer, 'wamid.text-rule', question);
+      await eventually(async () => sentTo(customer), (sends) => sends.length > 0, 'the declining answer');
+
+      const prompt = generationShowing(question).instructions;
+      assert.match(prompt, /\[rule 1\] Never do this: "discuss the prices of competitor products"\./);
+      assert.match(prompt, /take the "fallback" action/);
+      assert.deepEqual(sentTo(customer), [declined]);
+      assert.deepEqual(await outcomes(tenant), [{ outcome: 'fallback', message: declined }]);
+    },
+  );
+
+  specTest(
+    'text-conversation-handling.md',
+    'AC6 a text message containing emoji, unusual punctuation, or line breaks is still processed',
+    'emoji, line breaks, punctuation and mixed casing reach the model unchanged, and a reply carrying them reaches the customer unchanged',
+    async () => {
+      const { tenant, phoneNumberId } = await liveTenant();
+      const customer = '15551230601';
+      const message = 'Oi!!! 😍😍\n\nVocês têm bolo de CHOCOLATE??? (sem glúten…) 🎂🍫\n— obrigada!! ;-) #42 @loja';
+      const answer = 'Temos sim! 🎂\n\nBolo de chocolate sem glúten: €18,50 (encomenda com 24h…).\n— Até já! 😊';
+      provider.backend.script({ kind: 'text', text: `[reply]\n${answer}` });
+
+      await deliver(tenant, phoneNumberId, customer, 'wamid.text-emoji', message);
+      await eventually(async () => sentTo(customer), (sends) => sends.length > 0, 'the answer to be delivered');
+
+      assert.equal(lastCustomerText(generationShowing('bolo de CHOCOLATE')), message);
+      assert.deepEqual(sentTo(customer), [answer]);
+    },
+  );
+
+  specTest(
+    'text-conversation-handling.md',
+    'AC7 no empty, malformed, or placeholder-broken message is sent',
+    "model output the platform cannot act on sends the tenant's error fallback, never the output itself",
+    async () => {
+      const { tenant, phoneNumberId } = await liveTenant();
+      const apology = 'Our assistant is having trouble right now; we will reply soon.';
+      await withTenant(pool, tenant, (tx) => saveFallbackMessages(tx, { triggerMessages: { ai_error: apology } }));
+      const unusable = [
+        ['15551230701', ''],
+        ['15551230702', '[reply]\n   '],
+        ['15551230703', 'Sure, we are open.\n[handoff] human_request'],
+      ] as const;
+
+      for (const [customer, output] of unusable) {
+        provider.backend.script({ kind: 'text', text: output });
+        await deliver(tenant, phoneNumberId, customer, `wamid.unusable-${customer}`, `hello from ${customer}`);
+        await eventually(async () => sentTo(customer), (sends) => sends.length > 0, `the fallback for ${customer}`);
+        assert.deepEqual(sentTo(customer), [apology], `output ${JSON.stringify(output)} must become the error fallback`);
+      }
+      assert.ok(
+        cloudBackend.sends.every((send) => send.body.trim() !== '' && !/^\s*\[(reply|handoff|fallback)\]/im.test(send.body)),
+        'an empty or tag-carrying message was sent',
+      );
+    },
+  );
+
+  specTest(
+    'text-conversation-handling.md',
+    'AC8 the reply is sent as text on the same WhatsApp conversation thread the customer messaged from',
+    'each reply goes to the customer who wrote, from the business number they wrote to, even when one person writes to two businesses at once',
+    async () => {
+      const first = await liveTenant();
+      const second = await liveTenant();
+      const person = '15551230801';
+      const other = '15551230802';
+      // Concurrent on purpose: each turn takes whatever answer it is given, so
+      // what is asserted is where each answer went, not which one it was.
+      await Promise.all([
+        deliver(first.tenant, first.phoneNumberId, person, 'wamid.thread-1', 'hi first shop'),
+        deliver(second.tenant, second.phoneNumberId, person, 'wamid.thread-2', 'hi second shop'),
+        deliver(first.tenant, first.phoneNumberId, other, 'wamid.thread-3', 'hi from someone else'),
+      ]);
+      const threads = () =>
+        cloudBackend.sends
+          .filter((send) => send.to === person || send.to === other)
+          .map((send) => `${send.phoneNumberId}->${send.to}`)
+          .sort();
+      await eventually(async () => threads(), (sent) => sent.length >= 3, 'all three replies');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      assert.deepEqual(
+        threads(),
+        [`${first.phoneNumberId}->${person}`, `${first.phoneNumberId}->${other}`, `${second.phoneNumberId}->${person}`].sort(),
+      );
     },
   );
 

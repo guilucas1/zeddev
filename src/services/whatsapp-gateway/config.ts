@@ -32,9 +32,14 @@ export const GATEWAY_CONFIG_SCHEMA = {
   GATEWAY_MAX_BODY_BYTES: {
     type: 'integer',
     description:
-      'Largest webhook notification accepted, in bytes. Notifications carry message text and media references, never media itself, so they are small; the bound stops a caller making the gateway hash and buffer megabytes before the signature check refuses them.',
+      'Largest webhook notification accepted, in bytes. Notifications carry message text and media references, never media itself, so they are small; the bound stops a caller making the gateway hash and buffer megabytes before the signature check refuses them. The minimum still admits one maximum-length text message (4096 characters) even when every character arrives JSON-escaped.',
     default: 256 * 1024,
-    min: 16 * 1024,
+    // One WhatsApp text body may be 4096 characters, and the spec requires any
+    // length WhatsApp permits be accepted. Written as `\uXXXX` surrogate pairs
+    // that is 12 bytes per character, about 49 KB before the envelope. The old
+    // floor of 16 KiB let a valid setting refuse a valid message, which Meta
+    // would keep redelivering, and the gateway keep refusing, until Meta gave up.
+    min: 64 * 1024,
     max: 4 * 1024 * 1024,
   },
   GATEWAY_REQUEST_TIMEOUT: {

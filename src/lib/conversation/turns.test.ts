@@ -22,6 +22,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readdir, readFile } from 'node:fs/promises';
 import { after, before, describe } from 'node:test';
 import { InMemoryAiProvider, type ObservedGeneration, type ObservedTranscription } from '@zeddev/ai/testing';
 import { MAX_REQUEST_MEDIA_BYTES, type AiCapability } from '@zeddev/ai';
@@ -553,6 +554,59 @@ describe('conversation turns', { skip: testDatabaseConfigured() ? false : SKIP_R
     const vouchers = await instructionsFor(w, tenant, customer, 'gift vouchers, do they expire?', 60_000);
     assert.match(vouchers, /Gift vouchers never expire/);
   });
+
+  // -------------------------------------------------------------------------
+  // Any hour, any day
+  // -------------------------------------------------------------------------
+
+  specTest(
+    'text-conversation-handling.md',
+    'AC4 a message at any hour of any day to an activated bot is replied to',
+    'a message at every hour of every day of a week is answered and delivered, and no part of the reply path reads the hour or the weekday',
+    async () => {
+      const w = world();
+      const tenant = await liveTenant();
+      const hour = 3_600_000;
+      // T0 is a Monday at 10:00 UTC. From Tuesday 00:00 through the following
+      // Monday, so all seven weekdays, at the edges of the day and in between,
+      // including the minute before midnight.
+      const start = 14 * hour;
+      const instants: number[] = [];
+      for (let day = 0; day < 7; day += 1) {
+        for (const h of [0, 3, 6, 9, 12, 15, 18, 21, 23]) instants.push(start + day * 24 * hour + h * hour);
+        instants.push(start + day * 24 * hour + 24 * hour - 60_000);
+      }
+
+      for (const [i, instant] of instants.entries()) {
+        const customer = `1555000${String(9000 + i)}`;
+        await w.receive(tenant, customer, { text: `are you there? ${at(instant).toISOString()}` }, { receivedMs: instant });
+        await w.advanceTo(instant);
+        await w.advanceTo(instant + POLICY.windowMs + 1_000);
+        const outcomes = await outcomesOf(tenant, customer);
+        assert.deepEqual(
+          outcomes.map((row) => [row.outcome, row.delivery_state]),
+          [['reply', 'sent']],
+          `a message at ${at(instant).toISOString()} was not answered and delivered`,
+        );
+        assert.equal(cloudBackend.sends.filter((send) => send.to === customer).length, 1);
+      }
+
+      // What the loop cannot show is a rule keyed to an hour it skipped, so the
+      // reply path is also held to never asking what time of day it is. A
+      // business-hours restriction would have to read one of these.
+      const root = new URL('../../../', import.meta.url);
+      const readsTimeOfDay = /\.get(?:UTC)?(?:Hours|Day)\(|Intl\.DateTimeFormat|\.toLocale(?:Date|Time)?String\(/;
+      const offenders: string[] = [];
+      for (const dir of ['src/lib/conversation', 'src/lib/bot', 'src/lib/whatsapp', 'src/lib/queue', 'src/lib/ai', 'src/services/conversation-worker', 'src/services/whatsapp-gateway']) {
+        for (const entry of await readdir(new URL(`${dir}/`, root), { recursive: true })) {
+          if (!entry.endsWith('.ts') || entry.endsWith('.test.ts')) continue;
+          const source = await readFile(new URL(`${dir}/${entry.replaceAll('\\', '/')}`, root), 'utf8');
+          if (readsTimeOfDay.test(source)) offenders.push(`${dir}/${entry}`);
+        }
+      }
+      assert.deepEqual(offenders, [], 'the reply path reads the hour or the weekday');
+    },
+  );
 
   // -------------------------------------------------------------------------
   // Grouping

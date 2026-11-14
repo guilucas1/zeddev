@@ -155,6 +155,8 @@ A client now sees when their WhatsApp access token was configured, not only that
 
 The operator can now see work waiting on the job queue, which shows a worker that is alive but not taking work: one that is stuck, or too few for the traffic. Until now it read as `up`. Migration `0022_queue_backlog` adds one function, `app.queue_backlog()`, that returns per-queue counts and refuses anything but the platform scope. `GET /v1/operator/components` now carries `queues`, and the conversation worker reads as `degraded` with reason `backlog` when work it should take has waited over a minute. The dashboard's Components card gained a "Waiting work" table. See §4ah. That brings the totals to 1378 passing tests, zero skipped, 25 of 27 specs with covering tests, 669 spec-linked assertions.
 
+Text conversation handling now has tests end to end for 7 of its 8 criteria. Only AC3, the configured reply language, is missing, because language is blocked on §4. The new tests run through the running worker over the real queue: the customer's question reaches the model alongside the tenant's knowledge, each tenant is prompted with its own persona, a rule's decline sends the tenant's fallback text, emoji and line breaks survive both ways unchanged, unusable output becomes the error fallback, and each reply goes back on the thread it came from. A message at every hour of every day of a week is answered. Doing this found that a valid `GATEWAY_MAX_BODY_BYTES` could refuse a maximum-length WhatsApp text. Its floor is now 64 KiB. See §4ai. That brings the totals to 1386 passing tests, zero skipped, 25 of 27 specs with covering tests, 677 spec-linked assertions.
+
 **Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. With the queue backlog view done (§4ah), the unblocked work left is follow-ups: keeping AI verification results (§4ab), and pointing `tiers.test.ts`'s mail at the TLS Mailpits (§4af). The credential `configuredAt` timestamp is done (§4ag). Offboarding waits on the retention window.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
@@ -2041,6 +2043,18 @@ SMTP).
 
 - **No alert.** A stalled queue is visible only with the dashboard open. `operator-proactive-alerting.md` is still blocked on the notification channel. `readComponentStatus` is what an alert should reuse.
 - **Dead jobs are never purged** (deliberately, `purgeSucceeded`): they are the AC8 failure record. Their payloads, which hold message content, stay with them. This belongs with the retention decision that blocks offboarding (§4).
+
+## 4ai. Findings from the text conversation handling increment
+
+- **What was missing was evidence, not behaviour.** `text-conversation-handling.md` had tests for AC2 and AC7 at the prompt and protocol layer only. The other criteria held, but nothing showed them holding through the process. The new tests are in `src/services/conversation-worker/start.test.ts` (real PostgreSQL, real queue, running consumer; only the model and Meta faked at their ports) and `turns.test.ts` (AC4, FakeClock).
+- **What a fake model can and cannot prove.** The tests assert what the model was *shown* (the customer's exact text, the tenant's own knowledge, persona, and rule in the prompt, no other tenant's) and what the customer *received* (the model's answer byte for byte, or the tenant's literal fallback text). Whether a real model answers correctly is the verification suite's job (§4ab), and that suite has still not run against a real upstream.
+- **AC4 is shown two ways.** A message at 70 instants spread across all seven days, including 23:59, is answered and delivered. A source scan then fails if any reply-path package (`conversation`, `bot`, `whatsapp`, `queue`, `ai`, the worker, the gateway) reads the hour or the weekday, because a business-hours rule keyed to an hour the loop skipped would otherwise pass.
+- **Bug fixed: a valid gateway setting could refuse a valid message.** `GATEWAY_MAX_BODY_BYTES` accepted values down to 16 KiB. One WhatsApp text body may be 4096 characters, and the spec requires any length WhatsApp permits. Written entirely as JSON unicode escapes (legal JSON), that is about 49 KB before the envelope. Meta would keep redelivering a refused notification, and the gateway would keep refusing it. The floor is now 64 KiB, and the default stays 256 KiB. `app.test.ts` starts a gateway at the schema's own minimum and posts a fully escaped maximum-length message of emoji, CRLF, and punctuation, which is stored exactly as written. The gateway package gained `@zeddev/bot` as a dev dependency for `REPLY_LIMITS.messageMaxLength`, the one place the 4096 limit is written down.
+
+### Follow-ups the text conversation increment leaves open
+
+- AC3 (reply in the configured language) waits on language configuration (§4).
+- Meta may batch several messages into one notification. 256 KiB holds several maximum-length messages even when escaped, but nothing bounds how many Meta batches. Nothing here has been observed against Meta.
 
 ## 5. Principal risks
 
