@@ -149,7 +149,9 @@ Component independence is now proven on the running services, not just on their 
 
 Environment portability is proven too: the three deployment tiers are documented as data (`DEPLOYMENT_TIERS`, rendered into `docs/configuration.md`), and `src/lib/deployment/tiers.test.ts` starts every service from each tier's values and runs the same signup-to-answered-customer scenario on all three, requires the answers to be identical across tiers, and moves one deployment through all three tiers on the same data. The managed-cloud tier reaches PostgreSQL over verified TLS, which the test server now speaks; doing so fixed an IP address being sent as SNI and made a refused certificate name the setting to change. See §4ae. That brings the totals to 1330 passing tests, zero skipped, 25 of 27 specs with covering tests, 653 spec-linked assertions; `environment-portability.md` has tests for all 9 of its criteria.
 
-**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. With P4 portability and independence done, the next unblocked work is the mail-over-TLS follow-up in §4ae; offboarding waits on the retention window.
+Mail over TLS is proven too: the test Mailpit offers STARTTLS and a second one speaks implicit TLS, both under a test CA, and `src/lib/mail/tls.test.ts` runs the whole mail conformance suite over each mode. That found the mail client retrying a refused certificate as a network failure and sending an IP address as SNI; both are fixed, and certificate refusals are now judged once for the database and mail clients. See §4af. That brings the totals to 1367 passing tests, zero skipped, 25 of 27 specs with covering tests, 663 spec-linked assertions.
+
+**Every remaining P1 item is blocked on a §4 operator decision:** language configuration on the supported-language list, document upload on accepted document formats and size limits, memory reset policy on the default inactivity window. Operator alerting and client handoff notification are blocked on the notification channel decision, and offboarding on the retention window. With mail over TLS done (§4af), the unblocked work left is follow-ups: the credential `configuredAt` timestamp (§4aa), keeping AI verification results (§4ab), and a counts-only queue backlog view (§4ac). Offboarding waits on the retention window.
 
 **Requirements baseline:** `specs/` (27 specs plus a README index — 22 originals, 5 authored during this
 planning pass and listed in §0). Specs are behavior-only by design and deliberately
@@ -1981,13 +1983,39 @@ SMTP).
   now names the key to change: `DATABASE_HOST` for a certificate naming another host (with `verify-ca` as the
   alternative), `DATABASE_CA_CERTIFICATE` for an untrusted authority (AC7). It reports Node's error code,
   never certificate content.
-- **Follow-up: mail over TLS succeeds nowhere in the suite.** The VPS (`starttls`, 587) and managed
-  (`implicit`, 465) tiers' `MAIL_TLS` values parse and their failure paths are tested, but no test completes
-  a STARTTLS or implicit-TLS handshake against a real server — `tiers.test.ts` catches mail in memory. Mailpit
-  can serve TLS (`--smtp-tls-cert/--smtp-tls-key`, `--smtp-require-tls`); giving `scripts/mail.sh` a cert the
-  way `db.sh` does would close it.
+- ~~Follow-up: mail over TLS succeeds nowhere in the suite.~~ **Done in §4af.**
 - **Not automated:** bringing the tiers up on real hosts (Compose on a VPS, a provider's container platform).
   The in-process test proves configuration suffices; it does not prove a particular provider's platform.
+
+## 4af. Findings from the mail-over-TLS increment
+
+- **Two Mailpits, because one SMTP listener cannot be both.** `zeddev-mailpit` now offers STARTTLS without requiring
+  it (the cleartext suites still read the SMTP conversation in the clear), and `zeddev-mailpit-tls` speaks TLS from
+  the first byte (`MP_SMTP_REQUIRE_TLS`, port 51465, API 58026). Both hold a certificate naming `localhost` from a
+  CA in `.tmp/mail-tls/`. `mail.sh` replaces a running container that has no certificate, since Mailpit reads it
+  only at start.
+- **One certificate recipe:** `issue_test_certificate` in `scripts/test-tls.sh`, sourced by `db.sh` and `mail.sh`.
+- **`src/lib/mail/tls.test.ts`** runs the full `runMailConformance` suite over `starttls` and over `implicit`
+  (VPS and managed-cloud tiers, `environment-portability.md` AC2/AC3), with `MAIL_ALLOW_INSECURE_AUTH` off, so
+  every authenticated send is proof the credential crossed an encrypted connection. It also covers a certificate
+  naming another host, an untrusted authority, and each TLS mode pointed at the other's server (AC7).
+- **Bug fixed: a refused certificate was retried as a network failure.** It was a `TransientTransportError`, so
+  `send` spent `MAIL_MAX_ATTEMPTS` with backoff reaching the same verdict, and `verifyAccess` blamed
+  `MAIL_TLS`/`MAIL_CA_CERTIFICATE` or `MAIL_HOST`/`MAIL_PORT`/`MAIL_TLS` depending on the mode. It is now a
+  `ConfigurationError` naming `MAIL_HOST` (wrong name, expired) or `MAIL_CA_CERTIFICATE` (untrusted
+  authority), and is not retried. Four tests fail without the fix.
+- **Bug fixed: SNI carried an IP address**, the same defect §4ae fixed in the database client. Both TLS paths in
+  `socket.ts` now share `tlsOptions`.
+- **[DECISION] What kind of refusal a certificate got is decided once, in `@zeddev/errors`**
+  (`classifyTlsVerificationFailure`). `@zeddev/db`'s `tlsFailureIssue` and the mail socket each map the verdict to
+  their own key. Before this, the list of untrusted-authority codes lived in the db client only.
+- A handshake failure that is not a certificate verdict (a reset, a peer not speaking TLS) is still transient, and
+  the phase it failed in names the keys, as before.
+
+### Follow-ups the mail-over-TLS increment leaves open
+
+- `tiers.test.ts` still catches mail in memory. Pointing its VPS and managed tiers at the TLS Mailpits would make the
+  end-to-end scenario prove it too; the mail-level suite already covers the transport.
 
 ## 5. Principal risks
 

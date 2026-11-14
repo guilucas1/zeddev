@@ -51,7 +51,7 @@ const SERVICES: readonly Service[] = [
     variable: 'ZEDDEV_TEST_MAIL_HOST',
     command: 'npm run mail:up',
     covers:
-      '@zeddev/mail — the SMTP conversation, message encoding, and dot-stuffing. Skipping it leaves only the fake, which cannot disagree with the encoder it shares',
+      '@zeddev/mail — the SMTP conversation, message encoding, dot-stuffing, and both TLS modes. Skipping it leaves only the fake, which cannot disagree with the encoder it shares',
   },
 ];
 

@@ -28,16 +28,39 @@
 # order — a script that truncated the file would silently disable the others'
 # suites depending on which ran last.
 #
-# The container is disposable and holds nothing worth keeping. Tests never clear
+# Both servers also speak TLS, under a certificate authority made here (see
+# `scripts/test-tls.sh`). The VPS tier reaches its relay with MAIL_TLS=starttls
+# and the managed tier with MAIL_TLS=implicit; until a test server spoke TLS,
+# no test had completed either handshake, so those tiers' mail transport was
+# configuration nothing had run (`environment-portability.md` AC3). One SMTP
+# listener cannot be both, so there are two containers:
+#
+#   - `zeddev-mailpit` offers STARTTLS but does not require it, so the suites
+#     that exercise the SMTP conversation in cleartext keep working;
+#   - `zeddev-mailpit-tls` speaks TLS from the first byte (implicit TLS).
+#
+# The certificate names `localhost`, so a test that connects by 127.0.0.1 sees
+# a certificate naming another host. Mailpit reads its certificate only at
+# start, so a container from before this change is replaced on `up`.
+#
+# The containers are disposable and hold nothing worth keeping. Tests never clear
 # it: test files run in parallel against this one server, so each fixture owns a
 # unique recipient domain and reads only its own mail. A "clear the mailbox" step
 # would delete another file's message between its send and its assertion.
 set -euo pipefail
 
 CONTAINER=zeddev-mailpit
+TLS_CONTAINER=zeddev-mailpit-tls
 IMAGE=axllent/mailpit:latest
 SMTP_PORT="${ZEDDEV_TEST_MAIL_PORT:-51025}"
 API_PORT="${ZEDDEV_TEST_MAIL_API_PORT:-58025}"
+IMPLICIT_PORT="${ZEDDEV_TEST_MAIL_IMPLICIT_PORT:-51465}"
+IMPLICIT_API_PORT="${ZEDDEV_TEST_MAIL_IMPLICIT_API_PORT:-58026}"
+TLS_DIR=.tmp/mail-tls
+TLS_HOST=localhost
+
+# shellcheck source=scripts/test-tls.sh
+. "$(dirname "$0")/test-tls.sh"
 USERNAME=zeddevtest
 
 # Not a secret. This server is created empty by this script, accepts any
@@ -63,52 +86,81 @@ ZEDDEV_TEST_MAIL_PORT=${SMTP_PORT}
 ZEDDEV_TEST_MAIL_API_PORT=${API_PORT}
 ZEDDEV_TEST_MAIL_USERNAME=${USERNAME}
 ZEDDEV_TEST_MAIL_PASSWORD=${PASSWORD}
+ZEDDEV_TEST_MAIL_IMPLICIT_PORT=${IMPLICIT_PORT}
+ZEDDEV_TEST_MAIL_IMPLICIT_API_PORT=${IMPLICIT_API_PORT}
+ZEDDEV_TEST_MAIL_TLS_HOST=${TLS_HOST}
+ZEDDEV_TEST_MAIL_CA_FILE=$(native_path "$(pwd)/${TLS_DIR}/ca.pem")
 ENVFILE
   mv "${tmp}" "${ENV_FILE}"
 }
 
+# start_mailpit NAME SMTP_PORT API_PORT [docker run options...]
+# Starts a Mailpit holding the test certificate, unless one with it is already running.
+start_mailpit() {
+  local name="$1" smtp_port="$2" api_port="$3"
+  shift 3
+  if [ -n "$(docker ps -q -f name="^${name}$")" ] &&
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${name}" | grep -q '^MP_SMTP_TLS_CERT='; then
+    return
+  fi
+  docker rm -f "${name}" >/dev/null 2>&1 || true
+  # Created, given its certificate, then started: Mailpit reads the files once,
+  # at start. MSYS_NO_PATHCONV stops Git Bash rewriting the in-container paths.
+  MSYS_NO_PATHCONV=1 docker create --name "${name}" \
+    -e MP_SMTP_AUTH_ACCEPT_ANY=true \
+    -e MP_SMTP_TLS_CERT=/smtp-tls.pem \
+    -e MP_SMTP_TLS_KEY=/smtp-tls.key \
+    "$@" \
+    -p "127.0.0.1:${smtp_port}:1025" \
+    -p "127.0.0.1:${api_port}:8025" \
+    "${IMAGE}" >/dev/null
+  MSYS_NO_PATHCONV=1 docker cp "${TLS_DIR}/server.pem" "${name}:/smtp-tls.pem" >/dev/null
+  MSYS_NO_PATHCONV=1 docker cp "${TLS_DIR}/server.key" "${name}:/smtp-tls.key" >/dev/null
+  docker start "${name}" >/dev/null
+  printf 'waiting for %s' "${name}"
+  for _ in $(seq 1 60); do
+    if curl -fsS -o /dev/null "http://127.0.0.1:${api_port}/api/v1/info" 2>/dev/null; then break; fi
+    printf '.'
+    sleep 1
+  done
+  echo
+}
+
 case "${1:-up}" in
   up)
-    if [ -z "$(docker ps -q -f name="^${CONTAINER}$")" ]; then
-      docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
-      # MP_SMTP_AUTH_ACCEPT_ANY plus MP_SMTP_AUTH_ALLOW_INSECURE make the server
-      # accept AUTH over a cleartext connection. That combination is exactly what
-      # a production deployment must never do, and it is set here on purpose: it
-      # is what lets the suite exercise the AUTH PLAIN and AUTH LOGIN paths
-      # without also standing up a certificate authority. The rule that the
-      # client *refuses* to do this unless MAIL_ALLOW_INSECURE_AUTH is set is
-      # covered by its own test against the connector seam.
-      docker run -d --name "${CONTAINER}" \
-        -e MP_SMTP_AUTH_ACCEPT_ANY=true \
-        -e MP_SMTP_AUTH_ALLOW_INSECURE=true \
-        -p "127.0.0.1:${SMTP_PORT}:1025" \
-        -p "127.0.0.1:${API_PORT}:8025" \
-        "${IMAGE}" >/dev/null
-      printf 'waiting for smtp'
-      for _ in $(seq 1 60); do
-        if curl -fsS -o /dev/null "http://127.0.0.1:${API_PORT}/api/v1/info" 2>/dev/null; then break; fi
-        printf '.'
-        sleep 1
-      done
-      echo
-    fi
+    issue_test_certificate "${TLS_DIR}" "${TLS_HOST}"
+
+    # MP_SMTP_AUTH_ACCEPT_ANY plus MP_SMTP_AUTH_ALLOW_INSECURE make the first
+    # server accept AUTH over a cleartext connection. That combination is
+    # exactly what a production deployment must never do, and it is set here on
+    # purpose: it is what lets the suite exercise the AUTH PLAIN and AUTH LOGIN
+    # paths in the clear, where the conversation can be read. The rule that the
+    # client *refuses* to do this unless MAIL_ALLOW_INSECURE_AUTH is set is
+    # covered by its own test against the connector seam, and `tls.test.ts`
+    # authenticates over both TLS modes with that permission off.
+    start_mailpit "${CONTAINER}" "${SMTP_PORT}" "${API_PORT}" \
+      -e MP_SMTP_AUTH_ALLOW_INSECURE=true
+    start_mailpit "${TLS_CONTAINER}" "${IMPLICIT_PORT}" "${IMPLICIT_API_PORT}" \
+      -e MP_SMTP_REQUIRE_TLS=true
 
     upsert_env
 
     cat <<MESSAGE
-SMTP is running on 127.0.0.1:${SMTP_PORT} (container ${CONTAINER}).
+SMTP is running on 127.0.0.1:${SMTP_PORT} (container ${CONTAINER}, STARTTLS offered), and
+implicit-TLS SMTP on 127.0.0.1:${IMPLICIT_PORT} (container ${TLS_CONTAINER}), both as
+${TLS_HOST} under the test CA in ${TLS_DIR}/ca.pem.
 Received mail is readable at http://127.0.0.1:${API_PORT}/ and over its API.
 Updated .env.test — \`npm run check\` will now pick it up automatically.
 MESSAGE
     ;;
   down)
-    docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+    docker rm -f "${CONTAINER}" "${TLS_CONTAINER}" >/dev/null 2>&1 || true
     if [ -f "${ENV_FILE}" ]; then
       tmp="$(mktemp)"
       grep -v '^ZEDDEV_TEST_MAIL_' "${ENV_FILE}" > "${tmp}" || true
       mv "${tmp}" "${ENV_FILE}"
     fi
-    echo "Removed ${CONTAINER} and its .env.test entries."
+    echo "Removed ${CONTAINER}, ${TLS_CONTAINER}, and their .env.test entries."
     ;;
   *)
     echo "usage: $0 [up|down]" >&2

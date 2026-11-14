@@ -25,9 +25,9 @@
     "semantic_hash": "82878e0ec4d274d58a95e152ec0cb5d2"
   },
   "scripts/db.sh": {
-    "mtime": 1787685506.912648,
-    "ast_hash": "dafae801158c1a7c9cbecd8f3906851e",
-    "semantic_hash": "dafae801158c1a7c9cbecd8f3906851e"
+    "mtime": 1794685267.8522816,
+    "ast_hash": "e9691b4f5c2a337f777d5ab89a75ea6f",
+    "semantic_hash": ""
   },
   "scripts/mail.sh": {
     "mtime": 1789693246.281584,
@@ -330,9 +330,9 @@
     "semantic_hash": "a5b0d2de958f1dbc5ec564db6502da30"
   },
   "src/lib/db/connection.ts": {
-    "mtime": 1787681407.7400525,
-    "ast_hash": "480ae6031dc5322c6fd067e3a1c4891b",
-    "semantic_hash": "480ae6031dc5322c6fd067e3a1c4891b"
+    "mtime": 1794606940.8283284,
+    "ast_hash": "b1729b4446f88896fb3e55158d9690a9",
+    "semantic_hash": ""
   },
   "src/lib/db/errors.ts": {
     "mtime": 1787681315.895838,
@@ -380,9 +380,9 @@
     "semantic_hash": ""
   },
   "src/lib/db/testing.ts": {
-    "mtime": 1787682236.6980865,
-    "ast_hash": "ab503a57f168ea7e768276d27f838a88",
-    "semantic_hash": "ab503a57f168ea7e768276d27f838a88"
+    "mtime": 1794606231.852055,
+    "ast_hash": "442a7c1b0e6076236c433ce4a32a9e7c",
+    "semantic_hash": ""
   },
   "src/lib/db/tsconfig.json": {
     "mtime": 1787681575.8804028,
@@ -400,8 +400,8 @@
     "semantic_hash": "2f5596c2f8c54a6d8e0f88394c79f4c5"
   },
   "src/lib/deployment/index.ts": {
-    "mtime": 1794603541.84589,
-    "ast_hash": "46c8ba8a52afc9aa7ffb6bb3d2492e8e",
+    "mtime": 1794606396.9293041,
+    "ast_hash": "7e65ef4f55324ac9b56a52bd6d8140e7",
     "semantic_hash": ""
   },
   "src/lib/deployment/package.json": {
@@ -1210,13 +1210,13 @@
     "semantic_hash": ""
   },
   "AGENTS.md": {
-    "mtime": 1794605969.4883666,
-    "ast_hash": "ea560346785c88f84ffa4c6d4cf2839e",
+    "mtime": 1794685365.7102137,
+    "ast_hash": "0f57c9ad06ee3665427beb83fd18de5a",
     "semantic_hash": ""
   },
   "IMPLEMENTATION_PLAN.md": {
-    "mtime": 1794605963.131346,
-    "ast_hash": "38c2dac448935986081bff526d076e2e",
+    "mtime": 1794685456.419207,
+    "ast_hash": "d04ae603e60cd6d3b4636286d336f06d",
     "semantic_hash": ""
   },
   "PROMPT_build.md": {
@@ -1235,8 +1235,8 @@
     "semantic_hash": ""
   },
   "docs/configuration.md": {
-    "mtime": 1794603949.6544766,
-    "ast_hash": "ecdb459b54e61eacf07a7e288cd05306",
+    "mtime": 1794685279.0887516,
+    "ast_hash": "bb7e6a8fec3a9d8b519e084afc513eb7",
     "semantic_hash": ""
   },
   "specs/README.md": {
@@ -1667,6 +1667,21 @@
   "src/lib/deployment/independence.test.ts": {
     "mtime": 1794605793.0944126,
     "ast_hash": "1faf5d7698b97df7bdc73e32f2df4c09",
+    "semantic_hash": ""
+  },
+  "src/lib/db/tls.test.ts": {
+    "mtime": 1794606262.0644276,
+    "ast_hash": "3144b8e4038532f04dccf9f7bcc69670",
+    "semantic_hash": ""
+  },
+  "src/lib/deployment/tiers.test.ts": {
+    "mtime": 1794606892.4574285,
+    "ast_hash": "20bbca16f627f92d9ca6226ce47f2a8e",
+    "semantic_hash": ""
+  },
+  "src/lib/deployment/tiers.ts": {
+    "mtime": 1794606383.4521055,
+    "ast_hash": "04ed8134c79db8ac031a0783c7191b75",
     "semantic_hash": ""
   }
 }

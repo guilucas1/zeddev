@@ -23,8 +23,8 @@ Run from the repo root.
 | `npm run db:down` | Removes the `zeddev-pg` container and its `.env.test` entries. |
 | `npm run storage:up` | Starts a disposable MinIO container (`zeddev-minio`) on `127.0.0.1:59000` and adds its settings to `.env.test`. Required before `npm run check`. |
 | `npm run storage:down` | Removes the `zeddev-minio` container and its `.env.test` entries. |
-| `npm run mail:up` | Starts a disposable Mailpit container (`zeddev-mailpit`) with SMTP on `127.0.0.1:51025` and its message API on `127.0.0.1:58025`, and adds its settings to `.env.test`. Required before `npm run check`. |
-| `npm run mail:down` | Removes the `zeddev-mailpit` container and its `.env.test` entries. |
+| `npm run mail:up` | Starts two disposable Mailpits under a test CA (`.tmp/mail-tls/`, cert names `localhost`): `zeddev-mailpit` (SMTP `127.0.0.1:51025`, STARTTLS offered, API `58025`) and `zeddev-mailpit-tls` (implicit TLS `51465`, API `58026`), and adds their settings to `.env.test`. Required before `npm run check`; re-run it on an older container or `mail/tls.test.ts` fails. |
+| `npm run mail:down` | Removes both Mailpit containers and their `.env.test` entries. |
 | `npm run check` | `typecheck`, then requires PostgreSQL, object storage, and SMTP, then `test`. Use this as the gate before committing. Calls `scripts/require-services.ts`. |
 | `npm run check:offline` | `typecheck` + `test` without any container. Does not cover `@zeddev/db`, `@zeddev/schema`, `@zeddev/storage`, or `@zeddev/mail`'s SMTP adapter. Only use when Docker is unavailable. |
 | `npm run spec-coverage` | Prints which `specs/*.md` have covering tests and which have none. |
@@ -224,6 +224,9 @@ too. See PROMPT_build.md/PROMPT_plan.md Step 0 for how the build/plan loops use 
   match for values containing the offending characters.
 - `scripts/db.sh` and `scripts/storage.sh` each upsert only their own `ZEDDEV_TEST_*` block in
   `.env.test` and can be run in either order. Do not make either one truncate the file.
+- A test server's TLS certificate comes from `issue_test_certificate` in `scripts/test-tls.sh` (sourced by `db.sh` and
+  `mail.sh`). Which kind of certificate refusal Node reported is judged once, by `classifyTlsVerificationFailure` in
+  `@zeddev/errors`; a client maps it to its own config key, and a refusal is a `ConfigurationError`, never retried.
 - A new log field name is silently redacted unless it is added to `OPERATIONAL_FIELDS` in
   `src/lib/logging/index.ts`.
 - `access_records` and `tenant_lifecycle_events` grant SELECT only to the **platform scope** and to

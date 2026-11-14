@@ -42,29 +42,14 @@ ENV_FILE=.env.test
 TLS_DIR=.tmp/postgres-tls
 TLS_HOST=localhost
 
-# A path node can open on every platform: Git Bash on Windows hands out /c/... paths.
-native_path() {
-  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
-}
+# shellcheck source=scripts/test-tls.sh
+. "$(dirname "$0")/test-tls.sh"
 
 enable_tls() {
   # Git Bash rewrites anything that looks like a POSIX path (an openssl -subj, a
   # path inside the container) unless told not to.
   export MSYS_NO_PATHCONV=1
-  mkdir -p "${TLS_DIR}"
-  if [ ! -f "${TLS_DIR}/ca.pem" ] || [ ! -f "${TLS_DIR}/server.pem" ] || [ ! -f "${TLS_DIR}/server.key" ]; then
-    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=zeddev test CA" \
-      -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
-      -keyout "${TLS_DIR}/ca.key" -out "${TLS_DIR}/ca.pem" 2>/dev/null
-    openssl req -newkey rsa:2048 -nodes -subj "/CN=${TLS_HOST}" \
-      -keyout "${TLS_DIR}/server.key" -out "${TLS_DIR}/server.csr" 2>/dev/null
-    {
-      echo "subjectAltName=DNS:${TLS_HOST}"
-      echo "extendedKeyUsage=serverAuth"
-    } > "${TLS_DIR}/server.ext"
-    openssl x509 -req -in "${TLS_DIR}/server.csr" -CA "${TLS_DIR}/ca.pem" -CAkey "${TLS_DIR}/ca.key" \
-      -CAcreateserial -days 3650 -extfile "${TLS_DIR}/server.ext" -out "${TLS_DIR}/server.pem" 2>/dev/null
-  fi
+  issue_test_certificate "${TLS_DIR}" "${TLS_HOST}"
   docker cp "${TLS_DIR}/server.pem" "${CONTAINER}:/var/lib/postgresql/server.crt" >/dev/null
   docker cp "${TLS_DIR}/server.key" "${CONTAINER}:/var/lib/postgresql/server.key" >/dev/null
   # PostgreSQL refuses a key file anyone but its owner can read.

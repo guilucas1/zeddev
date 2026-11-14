@@ -21,7 +21,13 @@
 
 import { isIP, connect as netConnect, type Socket } from 'node:net';
 import { connect as tlsConnect, type TLSSocket } from 'node:tls';
-import { ConfigurationError, TransientTransportError, type ZedError } from '@zeddev/errors';
+import {
+  classifyTlsVerificationFailure,
+  ConfigurationError,
+  tlsFailureCode,
+  TransientTransportError,
+  type ZedError,
+} from '@zeddev/errors';
 import type { Secret } from '@zeddev/secrets';
 import { decodeValue, encodeParam, rowCountFromTag } from './codec.ts';
 import { mapPostgresFailure, toPostgresFailure } from './errors.ts';
@@ -58,34 +64,25 @@ import {
  * problem. Node's error code is a fixed identifier, never certificate content.
  */
 export function tlsFailureIssue(error: Error, mode: SslMode, host: string): { key: string; reason: string } {
-  const code = (error as NodeJS.ErrnoException).code ?? error.constructor.name;
-  if (code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
-    return {
-      key: 'DATABASE_HOST',
-      reason: `the server's certificate does not name "${host}", which DATABASE_SSL_MODE="${mode}" requires; connect by a name the certificate carries, or use "verify-ca" to check the authority alone (${code})`,
-    };
+  const verdict = classifyTlsVerificationFailure(error);
+  const code = verdict?.code ?? tlsFailureCode(error);
+  switch (verdict?.kind) {
+    case 'hostname':
+      return {
+        key: 'DATABASE_HOST',
+        reason: `the server's certificate does not name "${host}", which DATABASE_SSL_MODE="${mode}" requires; connect by a name the certificate carries, or use "verify-ca" to check the authority alone (${code})`,
+      };
+    case 'authority':
+      return {
+        key: 'DATABASE_CA_CERTIFICATE',
+        reason: `the server's certificate is not signed by a trusted authority; set DATABASE_CA_CERTIFICATE to the PEM bundle of the authority that signed it (${code})`,
+      };
+    case 'validity':
+      return { key: 'DATABASE_SSL_MODE', reason: `the server's certificate is outside its validity period (${code})` };
+    case undefined:
+      return { key: 'DATABASE_SSL_MODE', reason: `TLS handshake failed (${code})` };
   }
-  if (UNTRUSTED_AUTHORITY_CODES.has(code)) {
-    return {
-      key: 'DATABASE_CA_CERTIFICATE',
-      reason: `the server's certificate is not signed by a trusted authority; set DATABASE_CA_CERTIFICATE to the PEM bundle of the authority that signed it (${code})`,
-    };
-  }
-  if (code === 'CERT_HAS_EXPIRED' || code === 'CERT_NOT_YET_VALID') {
-    return { key: 'DATABASE_SSL_MODE', reason: `the server's certificate is outside its validity period (${code})` };
-  }
-  return { key: 'DATABASE_SSL_MODE', reason: `TLS handshake failed (${code})` };
 }
-
-const UNTRUSTED_AUTHORITY_CODES: ReadonlySet<string> = new Set([
-  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
-  'UNABLE_TO_GET_ISSUER_CERT',
-  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
-  'SELF_SIGNED_CERT_IN_CHAIN',
-  'DEPTH_ZERO_SELF_SIGNED_CERT',
-  'CERT_UNTRUSTED',
-  'CERT_SIGNATURE_FAILURE',
-]);
 
 /**
  * TLS negotiation modes, matching libpq's vocabulary.

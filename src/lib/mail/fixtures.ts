@@ -33,6 +33,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { Secret } from '@zeddev/secrets';
 import type { SmtpSettings } from './types.ts';
 
@@ -186,15 +187,19 @@ interface MailpitSummary {
   readonly Created: string;
 }
 
-async function api<T>(path: string): Promise<T> {
-  const port = envValue('API_PORT') ?? '58025';
-  const response = await fetch(`http://${envValue('HOST') ?? '127.0.0.1'}:${port}${path}`);
+/** Where one Mailpit's message API listens. Each server keeps only the mail sent to it. */
+function apiBase(apiPort: string): string {
+  return `http://${envValue('HOST') ?? '127.0.0.1'}:${apiPort}`;
+}
+
+async function api<T>(apiPort: string, path: string): Promise<T> {
+  const response = await fetch(`${apiBase(apiPort)}${path}`);
   if (!response.ok) throw new Error(`mailpit ${path} responded ${response.status}`);
   return (await response.json()) as T;
 }
 
-async function summaries(domain: string): Promise<MailpitSummary[]> {
-  const page = await api<{ messages: MailpitSummary[] | null }>('/api/v1/messages?limit=500');
+async function summaries(apiPort: string, domain: string): Promise<MailpitSummary[]> {
+  const page = await api<{ messages: MailpitSummary[] | null }>(apiPort, '/api/v1/messages?limit=500');
   const suffix = `@${domain}`;
   return (page.messages ?? [])
     .filter((message) => (message.To ?? []).some((to) => to.Address.toLowerCase().endsWith(suffix)))
@@ -209,6 +214,48 @@ async function summaries(domain: string): Promise<MailpitSummary[]> {
  * rediscovering it — the same choice `createTestBucket` makes.
  */
 export function createTestMailbox(overrides: Partial<SmtpSettings> = {}): TestMailbox {
+  return mailboxOn(envValue('API_PORT') ?? '58025', overrides);
+}
+
+/** The name the test servers' certificate carries, and the authority that signed it. */
+export function testMailTls(): { readonly host: string; readonly caCertificate: string } {
+  const host = envValue('TLS_HOST');
+  const caFile = envValue('CA_FILE');
+  if (host === undefined || caFile === undefined) {
+    throw new Error(`${PREFIX}TLS_HOST and ${PREFIX}CA_FILE are not set — re-run \`npm run mail:up\` to give the test servers TLS`);
+  }
+  return { host, caCertificate: readFileSync(caFile, 'utf8') };
+}
+
+/**
+ * A mailbox reached over verified TLS, the way the VPS (`starttls`) and
+ * managed-cloud (`implicit`) tiers reach their relay.
+ *
+ * Unlike `createTestMailbox`, authentication over cleartext is *not* allowed, so
+ * a send that authenticates is one whose credential crossed an encrypted
+ * connection: the client refuses to send it otherwise. The host is the name the
+ * certificate carries and the authority is the test one, so the handshake
+ * passes only if verification does.
+ */
+export function createTestTlsMailbox(mode: 'starttls' | 'implicit', overrides: Partial<SmtpSettings> = {}): TestMailbox {
+  const tls = testMailTls();
+  const implicit = mode === 'implicit';
+  const port = implicit ? envValue('IMPLICIT_PORT') : envValue('PORT');
+  const apiPort = implicit ? envValue('IMPLICIT_API_PORT') : envValue('API_PORT');
+  if (port === undefined || apiPort === undefined) {
+    throw new Error(`${PREFIX}IMPLICIT_PORT is not set — re-run \`npm run mail:up\` to start the implicit-TLS server`);
+  }
+  return mailboxOn(apiPort, {
+    host: tls.host,
+    port: Number(port),
+    tls: mode,
+    caCertificate: tls.caCertificate,
+    allowInsecureAuth: false,
+    ...overrides,
+  });
+}
+
+function mailboxOn(apiPort: string, overrides: Partial<SmtpSettings>): TestMailbox {
   const host = envValue('HOST');
   if (host === undefined) throw new Error(SKIP_REASON);
 
@@ -217,10 +264,11 @@ export function createTestMailbox(overrides: Partial<SmtpSettings> = {}): TestMa
   const settings: SmtpSettings = {
     host,
     port: Number(envValue('PORT') ?? '51025'),
-    // The test server has no certificate, so the suite speaks cleartext and
-    // authenticates over it on purpose — see `scripts/mail.sh`. That the client
-    // *refuses* to do this by default is covered against the connector seam,
-    // where it can be checked without standing up a certificate authority.
+    // Cleartext by default, authenticating over it on purpose — see
+    // `scripts/mail.sh` — so the SMTP conversation the suites exercise can be
+    // read. `createTestTlsMailbox` is the encrypted counterpart, and that the
+    // client *refuses* cleartext authentication by default is covered against
+    // the connector seam.
     tls: 'disable',
     username: envValue('USERNAME') ?? '',
     password: new Secret(envValue('PASSWORD') ?? '', 'test mail password'),
@@ -238,18 +286,17 @@ export function createTestMailbox(overrides: Partial<SmtpSettings> = {}): TestMa
     settings,
     recipient: (localPart: string): string => `${localPart}@${domain}`,
     async rawMessages(): Promise<Buffer[]> {
-      const list = await summaries(domain);
-      const port = envValue('API_PORT') ?? '58025';
+      const list = await summaries(apiPort, domain);
       const messages: Buffer[] = [];
       for (const summary of list) {
-        const response = await fetch(`http://${host}:${port}/api/v1/message/${summary.ID}/raw`);
+        const response = await fetch(`${apiBase(apiPort)}/api/v1/message/${summary.ID}/raw`);
         if (!response.ok) throw new Error(`mailpit raw fetch responded ${response.status}`);
         messages.push(Buffer.from(await response.arrayBuffer()));
       }
       return messages;
     },
     async serverParsed(): Promise<readonly ServerParsedMail[]> {
-      const list = await summaries(domain);
+      const list = await summaries(apiPort, domain);
       const parsed: ServerParsedMail[] = [];
       for (const summary of list) {
         const full = await api<{
@@ -258,7 +305,7 @@ export function createTestMailbox(overrides: Partial<SmtpSettings> = {}): TestMa
           MessageID: string;
           From: { Address: string } | null;
           To: readonly { Address: string }[] | null;
-        }>(`/api/v1/message/${summary.ID}`);
+        }>(apiPort, `/api/v1/message/${summary.ID}`);
         parsed.push({
           subject: full.Subject,
           text: full.Text,

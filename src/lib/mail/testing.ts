@@ -17,9 +17,11 @@ export {
 } from './conformance.ts';
 export {
   createTestMailbox,
+  createTestTlsMailbox,
   decodeMail,
   mailTestConfigured,
   SKIP_REASON,
+  testMailTls,
   type DecodedMail,
   type ServerParsedMail,
   type TestMailbox,

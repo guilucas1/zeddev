@@ -9,6 +9,8 @@
 import assert from 'node:assert/strict';
 import { specTest, unitTest } from '@zeddev/testing';
 import {
+  classifyTlsVerificationFailure,
+  tlsFailureCode,
   AiGenerationError,
   AiRequestRejectedError,
   AuthenticationError,
@@ -282,4 +284,20 @@ unitTest('InternalError keeps a caller-supplied code rather than overwriting it'
   // discard the specific code and make every internal failure look identical.
   assert.equal(new InternalError('m', { code: 'worker.crashed' }).code, 'worker.crashed');
   assert.equal(new InternalError('m').code, 'internal.error');
+});
+
+unitTest('a refused certificate is classified by the Node error code, the same way for every client', () => {
+  const failure = (code: string): Error => Object.assign(new Error('refused'), { code });
+  assert.deepEqual(classifyTlsVerificationFailure(failure('ERR_TLS_CERT_ALTNAME_INVALID')), {
+    kind: 'hostname',
+    code: 'ERR_TLS_CERT_ALTNAME_INVALID',
+  });
+  for (const code of ['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT']) {
+    assert.equal(classifyTlsVerificationFailure(failure(code))?.kind, 'authority', code);
+  }
+  assert.equal(classifyTlsVerificationFailure(failure('CERT_HAS_EXPIRED'))?.kind, 'validity');
+  // Not a certificate verdict: the caller decides what it is.
+  assert.equal(classifyTlsVerificationFailure(failure('ECONNRESET')), undefined);
+  assert.equal(classifyTlsVerificationFailure(new TypeError('no code')), undefined);
+  assert.equal(tlsFailureCode(new TypeError('no code')), 'TypeError');
 });

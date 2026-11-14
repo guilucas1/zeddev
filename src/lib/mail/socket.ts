@@ -21,9 +21,76 @@
  * network never promises.
  */
 
-import { connect as netConnect, type Socket } from 'node:net';
+import { isIP, connect as netConnect, type Socket } from 'node:net';
 import { connect as tlsConnect, type TLSSocket } from 'node:tls';
-import { TransientTransportError } from '@zeddev/errors';
+import { classifyTlsVerificationFailure, ConfigurationError, TransientTransportError } from '@zeddev/errors';
+
+/**
+ * The TLS options both ways into an encrypted session share.
+ *
+ * `host` is what the certificate is checked against. SNI (`servername`) may
+ * only carry a name: RFC 6066 forbids an address, and Node warns that it will
+ * stop sending one — the same correction `@zeddev/db` made when its test server
+ * first spoke TLS. The system trust store is used unless MAIL_CA_CERTIFICATE
+ * names an authority; there is deliberately no switch that turns verification
+ * off, because a relay that cannot be verified cannot be told from an attacker
+ * holding the password the client is about to send.
+ */
+function tlsOptions(host: string, caCertificate: string | undefined): {
+  host: string;
+  servername?: string;
+  ca?: string;
+} {
+  return {
+    host,
+    ...(isIP(host) === 0 ? { servername: host } : {}),
+    ...(caCertificate === undefined || caCertificate.length === 0 ? {} : { ca: caCertificate }),
+  };
+}
+
+/**
+ * A refused certificate is a configuration error naming the setting to change,
+ * not a transient failure.
+ *
+ * Retrying it would spend MAIL_MAX_ATTEMPTS and their backoff rediscovering the
+ * same verdict, and "could not reach the mail server" would send the operator to
+ * look at the network when the fix is MAIL_HOST or MAIL_CA_CERTIFICATE
+ * (`environment-portability.md` AC7). Which kind of refusal it was is judged by
+ * `classifyTlsVerificationFailure`, shared with the database client. Anything
+ * else — a reset mid-handshake, a peer that does not speak TLS — stays transient,
+ * as before, and the phase it failed in names the keys.
+ */
+function certificateRefusal(error: Error, host: string): ConfigurationError | undefined {
+  const verdict = classifyTlsVerificationFailure(error);
+  if (verdict === undefined) return undefined;
+  switch (verdict.kind) {
+    case 'hostname':
+      return new ConfigurationError(
+        [
+          {
+            key: 'MAIL_HOST',
+            reason: `the mail server's certificate does not name "${host}"; set MAIL_HOST to a name the certificate carries (${verdict.code})`,
+          },
+        ],
+        { cause: error },
+      );
+    case 'authority':
+      return new ConfigurationError(
+        [
+          {
+            key: 'MAIL_CA_CERTIFICATE',
+            reason: `the mail server's certificate is not signed by a trusted authority; set MAIL_CA_CERTIFICATE to the PEM bundle of the authority that signed it (${verdict.code})`,
+          },
+        ],
+        { cause: error },
+      );
+    case 'validity':
+      return new ConfigurationError(
+        [{ key: 'MAIL_HOST', reason: `the mail server's certificate is outside its validity period (${verdict.code})` }],
+        { cause: error },
+      );
+  }
+}
 
 export interface SmtpConnectOptions {
   readonly host: string;
@@ -193,21 +260,16 @@ class SocketConnection implements SmtpConnection {
     const plain = this.#socket;
     const upgraded = await new Promise<TLSSocket>((resolve, reject) => {
       const secureSocket = tlsConnect(
-        {
-          socket: plain,
-          servername: options.host,
-          ...(options.caCertificate === undefined || options.caCertificate.length === 0
-            ? {}
-            : { ca: options.caCertificate }),
-        },
+        { socket: plain, ...tlsOptions(options.host, options.caCertificate) },
         () => resolve(secureSocket),
       );
       secureSocket.once('error', (error: Error) => {
         reject(
-          new TransientTransportError('TLS handshake with the mail server failed', {
-            code: 'mail.tls_handshake_failed',
-            cause: error,
-          }),
+          certificateRefusal(error, options.host) ??
+            new TransientTransportError('TLS handshake with the mail server failed', {
+              code: 'mail.tls_handshake_failed',
+              cause: error,
+            }),
         );
       });
     });
@@ -234,10 +296,11 @@ export function createConnector(): SmtpConnector {
         clearTimeout(timer);
         candidate.destroy();
         reject(
-          new TransientTransportError('Could not reach the mail server', {
-            code: 'mail.connect_failed',
-            cause: error,
-          }),
+          (options.tls ? certificateRefusal(error, options.host) : undefined) ??
+            new TransientTransportError('Could not reach the mail server', {
+              code: 'mail.connect_failed',
+              cause: error,
+            }),
         );
       };
       const succeed = (): void => {
@@ -254,17 +317,7 @@ export function createConnector(): SmtpConnector {
       timer.unref?.();
 
       const candidate = options.tls
-        ? tlsConnect(
-            {
-              host: options.host,
-              port: options.port,
-              servername: options.host,
-              ...(options.caCertificate === undefined || options.caCertificate.length === 0
-                ? {}
-                : { ca: options.caCertificate }),
-            },
-            succeed,
-          )
+        ? tlsConnect({ port: options.port, ...tlsOptions(options.host, options.caCertificate) }, succeed)
         : netConnect({ host: options.host, port: options.port }, succeed);
 
       candidate.once('error', fail);

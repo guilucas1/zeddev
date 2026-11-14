@@ -529,3 +529,55 @@ export function toDiagnostic(error: unknown): Diagnostic {
     context: { errorType: name },
   };
 }
+
+/**
+ * What a refused TLS certificate means, judged once for every client that verifies one.
+ *
+ * The database and mail clients both reach a server over verified TLS, and both
+ * owe the operator the setting to change when the certificate is refused
+ * (`environment-portability.md` AC7). The setting differs between them —
+ * `DATABASE_HOST` against `MAIL_HOST`, `DATABASE_CA_CERTIFICATE` against
+ * `MAIL_CA_CERTIFICATE` — but which kind of refusal Node reported does not. Kept
+ * here, once, so a code one client learns to read is learned by both.
+ *
+ * - `hostname`: the certificate is valid but names another host. Fixed by
+ *   connecting by a name it carries.
+ * - `authority`: the chain does not end at a trusted authority. Fixed by
+ *   supplying that authority's PEM bundle.
+ * - `validity`: the certificate is expired or not yet valid. Fixed on the server.
+ *
+ * `undefined` means the failure is not a certificate verdict at all (a reset
+ * mid-handshake, a peer that does not speak TLS), so the caller decides what it
+ * is. `code` is Node's fixed identifier, never certificate content.
+ */
+export type TlsVerificationFailure = {
+  readonly kind: 'hostname' | 'authority' | 'validity';
+  readonly code: string;
+};
+
+const UNTRUSTED_AUTHORITY_CODES: ReadonlySet<string> = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'CERT_UNTRUSTED',
+  'CERT_SIGNATURE_FAILURE',
+]);
+
+/** Node's code for a failure, or the error's class name when it carries none. */
+export function tlsFailureCode(error: unknown): string {
+  if (error instanceof Error) {
+    const code = (error as Error & { code?: unknown }).code;
+    return typeof code === 'string' && code.length > 0 ? code : error.constructor.name;
+  }
+  return typeof error;
+}
+
+export function classifyTlsVerificationFailure(error: unknown): TlsVerificationFailure | undefined {
+  const code = tlsFailureCode(error);
+  if (code === 'ERR_TLS_CERT_ALTNAME_INVALID') return { kind: 'hostname', code };
+  if (UNTRUSTED_AUTHORITY_CODES.has(code)) return { kind: 'authority', code };
+  if (code === 'CERT_HAS_EXPIRED' || code === 'CERT_NOT_YET_VALID') return { kind: 'validity', code };
+  return undefined;
+}
